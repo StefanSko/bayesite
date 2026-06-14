@@ -15,7 +15,8 @@ plus convergence gates (R-hat, ESS, divergence rate) on the Rust run.
 
 Run from the repository root:
 
-    uv run scripts/check_rust_backend_posterior.py [--draws N] [--warmup N]
+    uv run scripts/check_rust_backend_posterior.py \
+        --jaxstanv5-path ../jaxstanv5 [--draws N] [--warmup N]
 
 Exits nonzero on the first failed comparison; output is one line per
 parameter so failures are attributable.
@@ -32,6 +33,19 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Protocol, cast
+
+
+def _bootstrap_jaxstanv5_path() -> None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--jaxstanv5-path", type=Path, default=None)
+    args, _ = parser.parse_known_args()
+    if args.jaxstanv5_path is None:
+        return
+    source_path = args.jaxstanv5_path / "src"
+    sys.path.insert(0, str(source_path if source_path.exists() else args.jaxstanv5_path))
+
+
+_bootstrap_jaxstanv5_path()
 
 import jax
 
@@ -173,6 +187,12 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=500)
     parser.add_argument("--chains", type=int, default=4)
     parser.add_argument("--seed", type=int, default=20240608)
+    parser.add_argument(
+        "--jaxstanv5-path",
+        type=Path,
+        default=None,
+        help="path to a jaxstanv5 checkout or importable source tree",
+    )
     args = parser.parse_args()
 
     binary = build_bayesite()

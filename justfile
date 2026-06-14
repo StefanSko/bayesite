@@ -5,8 +5,12 @@ default: check
 fmt:
     cargo fmt --manifest-path crates/core/Cargo.toml
 
-# The four gates that must pass before every commit.
+# The self-contained gates that must pass before every commit.
 check:
+    python3 scripts/check_validation_ladder.py
+
+# Raw cargo gates, useful when Python is not available in a dev shell.
+check-cargo:
     cargo fmt --check --manifest-path crates/core/Cargo.toml
     cargo clippy --all-targets --manifest-path crates/core/Cargo.toml -- -D warnings
     cargo test --manifest-path crates/core/Cargo.toml
@@ -26,5 +30,11 @@ demo:
 
 # Optional cross-backend posterior comparison over the golden corpus (needs uv
 # and a jaxstanv5 checkout or installation).
-check-posterior:
-    uv run scripts/check_rust_backend_posterior.py
+check-posterior jaxstanv5_path="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n "{{jaxstanv5_path}}" ]]; then
+        uv run scripts/check_rust_backend_posterior.py --jaxstanv5-path "{{jaxstanv5_path}}"
+    else
+        uv run scripts/check_rust_backend_posterior.py
+    fi

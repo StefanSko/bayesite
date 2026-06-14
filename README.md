@@ -86,13 +86,15 @@ exception and only moves bytes.
 ## Building and testing
 
 ```sh
-just check        # fmt + clippy -D warnings + tests + wasm build
-just wasm-release # optimized wasm artifact
+python3 scripts/check_validation_ladder.py  # self-contained default gates
+just check                                  # same, if just is installed
+just wasm-release                           # optimized wasm artifact
 ```
 
-Without `just`, run the four cargo commands in the `check` recipe directly. The
-wasm target (`rustup target add wasm32-unknown-unknown`) is a build gate from day
-one: the build breaking on wasm is a bug.
+The validation ladder is documented in
+[`docs/validation-ladder.md`](docs/validation-ladder.md). The wasm target
+(`rustup target add wasm32-unknown-unknown`) is a build gate from day one: the
+build breaking on wasm is a bug.
 
 ## CLI
 

@@ -28,6 +28,36 @@ fn rel_close(got: f64, want: f64, rtol: f64) -> bool {
 }
 
 #[test]
+fn every_golden_fixture_is_in_the_logp_gradient_gate() {
+    let dir = format!(
+        "{}/../../tests/golden_ir/fixtures",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut fixture_names: Vec<String> = std::fs::read_dir(dir)
+        .expect("fixture directory readable")
+        .filter_map(|entry| {
+            let path = entry.expect("fixture directory entry readable").path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                return None;
+            }
+            Some(
+                path.file_stem()
+                    .expect("fixture has a file stem")
+                    .to_str()
+                    .expect("fixture path is UTF-8")
+                    .to_string(),
+            )
+        })
+        .collect();
+    fixture_names.sort();
+    let expected: Vec<String> = ALL_FIXTURES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    assert_eq!(fixture_names, expected);
+}
+
+#[test]
 fn logp_and_gradient_match_jax_at_committed_points() {
     for name in ALL_FIXTURES {
         let doc = fixture(name);

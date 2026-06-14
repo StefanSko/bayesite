@@ -105,24 +105,24 @@ allowed exception and should only move bytes across the boundary.
 - Prefer typed enums/structs over loose maps or stringly state.
 - Make invalid states hard to represent.
 - Avoid speculative abstractions and plugin surfaces.
-- Add vertical tests against fixtures before broad refactors.
+- Follow the validation ladder in `docs/validation-ladder.md`: start from
+  committed IR fixtures, prove decode/protocol behavior, then logp/gradient
+  parity, transform/layout checks, sampler mechanics, analytic targets, and
+  only then optional oracle comparisons (`jaxstanv5`, CmdStan, SBC reports).
 
 ## Validation
 
 From this repository:
 
 ```sh
-just check
+python3 scripts/check_validation_ladder.py
 ```
 
-Equivalent cargo gates:
-
-```sh
-cargo fmt --check --manifest-path crates/core/Cargo.toml
-cargo clippy --all-targets --manifest-path crates/core/Cargo.toml -- -D warnings
-cargo test --manifest-path crates/core/Cargo.toml
-cargo build --target wasm32-unknown-unknown --manifest-path crates/core/Cargo.toml
-```
+Equivalent cargo gates remain in `just check-cargo`.
 
 Optional cross-backend checks against the Python producer should use a pinned
-`jaxstanv5` checkout and must not become part of the default agent path.
+`jaxstanv5` checkout and must not become part of the default agent path:
+
+```sh
+python3 scripts/check_validation_ladder.py --posterior --jaxstanv5-path ../jaxstanv5
+```
