@@ -37,7 +37,7 @@ decision, not a repository cleanup.
 - `AGENTS.md` — Bayesite project instructions and invariants.
 - `README.md` — runtime/workflow overview.
 - `NOTICE` — provenance for ported numerical routines.
-- `docs/invariants.md` — jaxstanv5 invariants relevant to IR semantics.
+- `docs/invariants.md` — Bayesite runtime/workflow invariants.
 - `docs/ir-format-v1.md` — current IR v1 wire format.
 - `docs/ir-v1-tags.md` — built-in core-profile tag inventory.
 - `docs/sampler.md` — NUTS/adaptation behavior notes.
