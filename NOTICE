@@ -1,0 +1,33 @@
+Provenance of ported numerical routines in crates/core
+=====================================================
+
+This crate is intentionally zero-dependency; the routines below are ports,
+not vendored code. Each site carries a comment pointing back here.
+
+1. erf, erfc, ndtr, ndtri (src/special.rs)
+   Ported from the Cephes Mathematical Library by Stephen L. Moshier
+   (https://netlib.org/cephes/, files cprob/ndtr.c and cprob/ndtri.c).
+   Coefficient tables are reproduced verbatim. Moshier granted permission
+   to redistribute Cephes-derived work under the Apache 2.0 license in a
+   2018 e-mail exchange with Google, quoted in full in JAX's
+   jax/_src/scipy/special.py (Apache-2.0), from which the ndtri control
+   flow was also cross-checked.
+
+2. gammaln, digamma (src/special.rs)
+   Reimplemented from the Lanczos approximation (C. Lanczos, "A Precise
+   Approximation of the Gamma Function", SIAM J. Numerical Analysis B,
+   1:86-96, 1964) with the standard g=7, n=9 coefficient set (Godfrey),
+   the same scheme XLA uses for lgamma/digamma. No code was copied.
+
+3. splitmix64, xoshiro256++ (src/rng.rs)
+   Reimplemented from the public-domain (CC0) reference implementations
+   by David Blackman and Sebastiano Vigna (https://prng.di.unimi.it/).
+   Test vectors in tests are generated from those reference programs.
+
+4. NUTS and warmup adaptation (src/nuts.rs, src/adapt.rs)
+   Implemented from the published algorithm descriptions: Hoffman &
+   Gelman (2014), Betancourt (2017, arXiv:1701.02434), and the Stan
+   Reference Manual's MCMC chapters (generalized multinomial NUTS with
+   across-subtree U-turn checks, dual-averaging step-size adaptation,
+   windowed diagonal mass-matrix adaptation). The nuts-rs project (MIT)
+   was consulted as a behavioral cross-check only.

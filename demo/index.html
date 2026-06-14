@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bayesite — zero-dependency NUTS in your browser</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    max-width: 60rem;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    line-height: 1.45;
+  }
+  h1 { font-size: 1.4rem; }
+  fieldset {
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    border-radius: 8px;
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    align-items: end;
+  }
+  label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 0.2rem; }
+  input, select, button { font: inherit; padding: 0.3rem 0.5rem; }
+  button { cursor: pointer; font-weight: 600; }
+  table { border-collapse: collapse; margin: 1rem 0; }
+  th, td {
+    padding: 0.3rem 0.8rem;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  th:first-child, td:first-child { text-align: left; }
+  .bad { color: #c0392b; font-weight: 700; }
+  #status { min-height: 1.5em; font-style: italic; }
+  canvas { border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 4px; }
+  .hists { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .hist { font-size: 0.8rem; text-align: center; }
+  footer { margin-top: 2rem; font-size: 0.8rem; opacity: 0.7; }
+</style>
+</head>
+<body>
+<h1>Bayesite — zero-dependency NUTS in your browser</h1>
+<p>
+  Pick a model from the golden corpus. Each chain runs multinomial NUTS with
+  Stan-style adaptation in its own web worker, inside a wasm build of the
+  Rust core — no server, no bundler, no third-party code.
+</p>
+
+<fieldset>
+  <label>Model
+    <select id="model">
+      <option>linear_regression</option>
+      <option>eight_schools_non_centered</option>
+      <option>bounded_rates</option>
+      <option>ordinal_regression</option>
+      <option>partially_observed_mvn</option>
+      <option>varying_intercepts_poisson</option>
+    </select>
+  </label>
+  <label>Chains <input id="chains" type="number" value="4" min="1" max="8"></label>
+  <label>Warmup <input id="warmup" type="number" value="500" min="0" step="100"></label>
+  <label>Draws <input id="draws" type="number" value="1000" min="10" step="100"></label>
+  <label>Seed <input id="seed" type="number" value="0" min="0"></label>
+  <button id="run">Sample</button>
+</fieldset>
+
+<p id="status"></p>
+<div id="results"></div>
+
+<footer>
+  Serve the repository root (e.g. <code>python3 -m http.server</code>) and run
+  <code>just wasm-release demo-assets</code> first so
+  <code>bayesite_core.wasm</code> sits next to this page.
+</footer>
+
+<script type="module">
+import { loadBayesite } from "./glue.js";
+
+const WASM_URL = new URL("./bayesite_core.wasm", import.meta.url).href;
+const FIXTURES = "../tests/golden_ir/fixtures/";
+
+const statusEl = document.getElementById("status");
+const resultsEl = document.getElementById("results");
+
+function setStatus(text) { statusEl.textContent = text; }
+
+function summarize(values) {
+  const n = values.length;
+  const mean = values.reduce((a, b) => a + b, 0) / n;
+  const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1);
+  return { mean, sd: Math.sqrt(variance) };
+}
+
+function flattenParams(header, chains) {
+  // -> [{name, coord, label, series: [chain][draw]}]
+  const out = [];
+  for (const { name, shape } of header.params) {
+    const size = shape.length ? shape.reduce((a, b) => a * b, 1) : 1;
+    for (let coord = 0; coord < size; coord++) {
+      const label = shape.length ? `${name}[${coord}]` : name;
+      const series = chains.map((chain) =>
+        chain.draws.map((values) =>
+          Array.isArray(values[name]) ? values[name][coord] : values[name]));
+      out.push({ name, coord, label, series });
+    }
+  }
+  return out;
+}
+
+function histogram(canvas, values) {
+  const ctx = canvas.getContext("2d");
+  const { width, height } = canvas;
+  ctx.clearRect(0, 0, width, height);
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const bins = 40, counts = new Array(bins).fill(0);
+  const span = hi - lo || 1;
+  for (const v of values) {
+    counts[Math.min(bins - 1, Math.floor(((v - lo) / span) * bins))]++;
+  }
+  const peak = Math.max(...counts);
+  ctx.fillStyle = "#4a7fb5";
+  counts.forEach((count, bin) => {
+    const barHeight = (count / peak) * (height - 4);
+    ctx.fillRect(bin * (width / bins), height - barHeight, width / bins - 1, barHeight);
+  });
+}
+
+async function runDemo() {
+  const model = document.getElementById("model").value;
+  const numChains = Number(document.getElementById("chains").value);
+  const settings = {
+    num_warmup: Number(document.getElementById("warmup").value),
+    num_draws: Number(document.getElementById("draws").value),
+  };
+  const seed = Number(document.getElementById("seed").value);
+
+  resultsEl.replaceChildren();
+  setStatus(`loading ${model}…`);
+  const fixture = await (await fetch(`${FIXTURES}${model}.json`)).json();
+
+  setStatus(`sampling ${numChains} chains in web workers…`);
+  const started = performance.now();
+  const chains = await Promise.all(
+    Array.from({ length: numChains }, (_, chainId) => new Promise((resolve, reject) => {
+      const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+      worker.onmessage = (event) => {
+        worker.terminate();
+        if (event.data.error) reject(new Error(`chain ${chainId}: ${event.data.error.message}`));
+        else resolve(event.data);
+      };
+      worker.onerror = (event) => { worker.terminate(); reject(new Error(event.message)); };
+      worker.postMessage({
+        wasmUrl: WASM_URL,
+        model: fixture.ir,
+        data: fixture.data,
+        settings,
+        seed,
+        chainId,
+      });
+    })),
+  );
+  const elapsed = ((performance.now() - started) / 1000).toFixed(2);
+
+  // Cross-chain diagnostics computed by the same Rust core.
+  const bayesite = await loadBayesite(WASM_URL);
+  const params = flattenParams(chains[0].header, chains);
+
+  const table = document.createElement("table");
+  table.innerHTML = `<tr><th>parameter</th><th>mean</th><th>sd</th>
+    <th>R&#770;</th><th>ESS</th></tr>`;
+  const hists = document.createElement("div");
+  hists.className = "hists";
+  for (const param of params) {
+    const pooled = param.series.flat();
+    const { mean, sd } = summarize(pooled);
+    const diag = JSON.parse(bayesite.run({ command: "diagnostics", series: param.series }));
+    const row = document.createElement("tr");
+    const rhatClass = diag.rhat > 1.05 ? "bad" : "";
+    row.innerHTML = `<td>${param.label}</td><td>${mean.toFixed(3)}</td>
+      <td>${sd.toFixed(3)}</td><td class="${rhatClass}">${diag.rhat.toFixed(3)}</td>
+      <td>${diag.ess.toFixed(0)}</td>`;
+    table.appendChild(row);
+
+    const cell = document.createElement("div");
+    cell.className = "hist";
+    const canvas = document.createElement("canvas");
+    canvas.width = 180;
+    canvas.height = 80;
+    histogram(canvas, pooled);
+    cell.append(canvas, document.createElement("br"), param.label);
+    hists.appendChild(cell);
+  }
+
+  const chainTable = document.createElement("table");
+  chainTable.innerHTML = `<tr><th>chain</th><th>divergences</th>
+    <th>step size</th><th>mean accept</th><th>tree depths</th></tr>`;
+  chains.forEach((chain, chainId) => {
+    const stats = chain.trailer.chains[0];
+    const row = document.createElement("tr");
+    const divClass = stats.divergences > 0 ? "bad" : "";
+    const depths = stats.treedepth_histogram
+      .map((count, depth) => (count ? `${depth}:${count}` : null))
+      .filter(Boolean)
+      .join(" ");
+    row.innerHTML = `<td>${chainId}</td><td class="${divClass}">${stats.divergences}</td>
+      <td>${stats.step_size.toFixed(4)}</td><td>${stats.mean_accept.toFixed(3)}</td>
+      <td>${depths}</td>`;
+    chainTable.appendChild(row);
+  });
+
+  const heading = document.createElement("p");
+  heading.textContent =
+    `${model}: ${numChains} × ${settings.num_draws} draws in ${elapsed}s`;
+  resultsEl.replaceChildren(heading, table, hists, chainTable);
+  setStatus("");
+}
+
+document.getElementById("run").addEventListener("click", () => {
+  runDemo().catch((error) => setStatus(`failed: ${error.message}`));
+});
+</script>
+</body>
+</html>

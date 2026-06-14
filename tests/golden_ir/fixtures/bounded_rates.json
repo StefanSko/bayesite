@@ -1,0 +1,199 @@
+{
+  "name": "bounded_rates",
+  "ir": {
+    "jaxstanv5_ir": 1,
+    "model": {
+      "node": "ModelMeta",
+      "params": [
+        {
+          "name": "p",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Beta",
+              "alpha": {
+                "node": "ConstNode",
+                "value": 2.0
+              },
+              "beta": {
+                "node": "ConstNode",
+                "value": 2.0
+              }
+            },
+            "constraint": {
+              "node": "UnitInterval"
+            },
+            "size": null
+          }
+        },
+        {
+          "name": "level",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 1.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": {
+              "node": "Interval",
+              "lower": -1.0,
+              "upper": 3.0
+            },
+            "size": null
+          }
+        }
+      ],
+      "data": [],
+      "observed_nodes": [
+        {
+          "node": "ResolvedObserved",
+          "name": "y",
+          "distribution": {
+            "node": "Bernoulli",
+            "probs": {
+              "node": "ParamRef",
+              "name": "p"
+            }
+          }
+        }
+      ],
+      "expressions": [],
+      "free_values": [
+        {
+          "name": "p",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": {
+              "node": "UnitInterval"
+            },
+            "size": null
+          }
+        },
+        {
+          "name": "level",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": {
+              "node": "Interval",
+              "lower": -1.0,
+              "upper": 3.0
+            },
+            "size": null
+          }
+        }
+      ],
+      "stochastic_sites": [
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "p",
+          "distribution": {
+            "node": "Beta",
+            "alpha": {
+              "node": "ConstNode",
+              "value": 2.0
+            },
+            "beta": {
+              "node": "ConstNode",
+              "value": 2.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "p"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "level",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 1.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "level"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "y",
+          "distribution": {
+            "node": "Bernoulli",
+            "probs": {
+              "node": "ParamRef",
+              "name": "p"
+            }
+          },
+          "value": {
+            "node": "DataRef",
+            "name": "y"
+          }
+        }
+      ]
+    }
+  },
+  "data": {
+    "y": {
+      "dtype": "int64",
+      "shape": [
+        5
+      ],
+      "values": [
+        0,
+        1,
+        1,
+        0,
+        1
+      ]
+    }
+  },
+  "evaluations": [
+    {
+      "q": [
+        0.0,
+        0.0
+      ],
+      "log_density": -5.365503689016126,
+      "gradient": [
+        0.5,
+        0.0
+      ]
+    },
+    {
+      "q": [
+        0.1,
+        0.2
+      ],
+      "log_density": -5.356599800587171,
+      "gradient": [
+        0.27518731268954005,
+        -0.29702383813402106
+      ]
+    },
+    {
+      "q": [
+        0.42073549240394825,
+        0.4958324052262343
+      ],
+      "log_density": -5.531730833262421,
+      "gradient": [
+        -0.432933100014307,
+        -0.7001933512277798
+      ]
+    }
+  ]
+}

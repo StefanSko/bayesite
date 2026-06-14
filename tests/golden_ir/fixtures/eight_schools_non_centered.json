@@ -1,0 +1,399 @@
+{
+  "name": "eight_schools_non_centered",
+  "ir": {
+    "jaxstanv5_ir": 1,
+    "model": {
+      "node": "ModelMeta",
+      "params": [
+        {
+          "name": "mu",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 5.0
+              }
+            },
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "tau",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "HalfNormal",
+              "scale": {
+                "node": "ConstNode",
+                "value": 5.0
+              }
+            },
+            "constraint": {
+              "node": "Positive"
+            },
+            "size": null
+          }
+        },
+        {
+          "name": "z",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": null,
+            "size": {
+              "node": "DataRef",
+              "name": "n_schools"
+            }
+          }
+        }
+      ],
+      "data": [
+        {
+          "name": "n_schools",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        },
+        {
+          "name": "sigma",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": [
+                {
+                  "node": "DataDimRef",
+                  "name": "n_schools"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "observed_nodes": [
+        {
+          "node": "ResolvedObserved",
+          "name": "y",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "BinOp",
+              "op": "+",
+              "left": {
+                "node": "ParamRef",
+                "name": "mu"
+              },
+              "right": {
+                "node": "BinOp",
+                "op": "*",
+                "left": {
+                  "node": "ParamRef",
+                  "name": "tau"
+                },
+                "right": {
+                  "node": "ParamRef",
+                  "name": "z"
+                }
+              }
+            },
+            "scale": {
+              "node": "DataRef",
+              "name": "sigma"
+            }
+          }
+        }
+      ],
+      "expressions": [
+        {
+          "name": "theta",
+          "value": {
+            "node": "BinOp",
+            "op": "+",
+            "left": {
+              "node": "ParamRef",
+              "name": "mu"
+            },
+            "right": {
+              "node": "BinOp",
+              "op": "*",
+              "left": {
+                "node": "ParamRef",
+                "name": "tau"
+              },
+              "right": {
+                "node": "ParamRef",
+                "name": "z"
+              }
+            }
+          }
+        }
+      ],
+      "free_values": [
+        {
+          "name": "mu",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "tau",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": {
+              "node": "Positive"
+            },
+            "size": null
+          }
+        },
+        {
+          "name": "z",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": null,
+            "size": {
+              "node": "DataRef",
+              "name": "n_schools"
+            }
+          }
+        }
+      ],
+      "stochastic_sites": [
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "mu",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 5.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "mu"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "tau",
+          "distribution": {
+            "node": "HalfNormal",
+            "scale": {
+              "node": "ConstNode",
+              "value": 5.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "tau"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "z",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "z"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "y",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "BinOp",
+              "op": "+",
+              "left": {
+                "node": "ParamRef",
+                "name": "mu"
+              },
+              "right": {
+                "node": "BinOp",
+                "op": "*",
+                "left": {
+                  "node": "ParamRef",
+                  "name": "tau"
+                },
+                "right": {
+                  "node": "ParamRef",
+                  "name": "z"
+                }
+              }
+            },
+            "scale": {
+              "node": "DataRef",
+              "name": "sigma"
+            }
+          },
+          "value": {
+            "node": "DataRef",
+            "name": "y"
+          }
+        }
+      ]
+    }
+  },
+  "data": {
+    "n_schools": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        8
+      ]
+    },
+    "sigma": {
+      "dtype": "float64",
+      "shape": [
+        8
+      ],
+      "values": [
+        15.0,
+        10.0,
+        16.0,
+        11.0,
+        9.0,
+        11.0,
+        10.0,
+        18.0
+      ]
+    },
+    "y": {
+      "dtype": "float64",
+      "shape": [
+        8
+      ],
+      "values": [
+        28.0,
+        8.0,
+        -3.0,
+        7.0,
+        -1.0,
+        1.0,
+        18.0,
+        12.0
+      ]
+    }
+  },
+  "evaluations": [
+    {
+      "q": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "log_density": -43.190625211350124,
+      "gradient": [
+        0.4635327549484746,
+        0.96,
+        0.12444444444444444,
+        0.08,
+        -0.01171875,
+        0.05785123966942149,
+        -0.012345679012345678,
+        0.008264462809917356,
+        0.18,
+        0.037037037037037035
+      ]
+    },
+    {
+      "q": [
+        0.1,
+        0.2,
+        0.30000000000000004,
+        0.4,
+        0.5,
+        0.6000000000000001,
+        0.7000000000000001,
+        0.8,
+        0.9,
+        1.0
+      ],
+      "log_density": -44.52013863142386,
+      "gradient": [
+        0.4051522311202791,
+        1.253557151577099,
+        -0.150535157584994,
+        -0.3094764808959117,
+        -0.5177041441371764,
+        -0.5377472379114017,
+        -0.7294792632385813,
+        -0.8007784898823873,
+        -0.694795328568101,
+        -0.9597442341837508
+      ]
+    },
+    {
+      "q": [
+        0.42073549240394825,
+        0.4958324052262343,
+        0.3377315902755755,
+        0.020790331216645468,
+        -0.30592894547135946,
+        -0.4887650588325485,
+        -0.4417273278600768,
+        -0.18693833241511842,
+        0.15577068175668893,
+        0.4252183103142822
+      ],
+      "log_density": -42.877385355825055,
+      "gradient": [
+        0.4338944619111449,
+        0.9898499020569893,
+        -0.14052722436395948,
+        0.10309046317910348,
+        0.2872114245138194,
+        0.588928968047285,
+        0.4276300142028015,
+        0.19896318277554126,
+        0.12865785891147632,
+        -0.37007845574091564
+      ]
+    }
+  ]
+}

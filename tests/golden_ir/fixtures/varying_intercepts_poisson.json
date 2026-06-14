@@ -1,0 +1,485 @@
+{
+  "name": "varying_intercepts_poisson",
+  "ir": {
+    "jaxstanv5_ir": 1,
+    "model": {
+      "node": "ModelMeta",
+      "params": [
+        {
+          "name": "alpha_pop",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 0.5
+              }
+            },
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "sigma_alpha",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "HalfNormal",
+              "scale": {
+                "node": "ConstNode",
+                "value": 0.4
+              }
+            },
+            "constraint": {
+              "node": "Positive"
+            },
+            "size": null
+          }
+        },
+        {
+          "name": "z_alpha",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": null,
+            "size": {
+              "node": "DataRef",
+              "name": "n_groups"
+            }
+          }
+        }
+      ],
+      "data": [
+        {
+          "name": "n_groups",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        },
+        {
+          "name": "group_idx",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataRankSchema",
+              "rank": 1
+            }
+          }
+        },
+        {
+          "name": "x",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataRankSchema",
+              "rank": 1
+            }
+          }
+        }
+      ],
+      "observed_nodes": [
+        {
+          "node": "ResolvedObserved",
+          "name": "y",
+          "distribution": {
+            "node": "Poisson",
+            "rate": {
+              "node": "UnaryOp",
+              "function": "exp",
+              "operand": {
+                "node": "BinOp",
+                "op": "+",
+                "left": {
+                  "node": "IndexOp",
+                  "base": {
+                    "node": "BinOp",
+                    "op": "+",
+                    "left": {
+                      "node": "ParamRef",
+                      "name": "alpha_pop"
+                    },
+                    "right": {
+                      "node": "BinOp",
+                      "op": "*",
+                      "left": {
+                        "node": "ParamRef",
+                        "name": "sigma_alpha"
+                      },
+                      "right": {
+                        "node": "ParamRef",
+                        "name": "z_alpha"
+                      }
+                    }
+                  },
+                  "index": {
+                    "node": "ScalarIndex",
+                    "expr": {
+                      "node": "DataRef",
+                      "name": "group_idx"
+                    }
+                  }
+                },
+                "right": {
+                  "node": "BinOp",
+                  "op": "*",
+                  "left": {
+                    "node": "ConstNode",
+                    "value": 0.25
+                  },
+                  "right": {
+                    "node": "DataRef",
+                    "name": "x"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "expressions": [
+        {
+          "name": "alpha",
+          "value": {
+            "node": "BinOp",
+            "op": "+",
+            "left": {
+              "node": "ParamRef",
+              "name": "alpha_pop"
+            },
+            "right": {
+              "node": "BinOp",
+              "op": "*",
+              "left": {
+                "node": "ParamRef",
+                "name": "sigma_alpha"
+              },
+              "right": {
+                "node": "ParamRef",
+                "name": "z_alpha"
+              }
+            }
+          }
+        },
+        {
+          "name": "eta",
+          "value": {
+            "node": "BinOp",
+            "op": "+",
+            "left": {
+              "node": "IndexOp",
+              "base": {
+                "node": "BinOp",
+                "op": "+",
+                "left": {
+                  "node": "ParamRef",
+                  "name": "alpha_pop"
+                },
+                "right": {
+                  "node": "BinOp",
+                  "op": "*",
+                  "left": {
+                    "node": "ParamRef",
+                    "name": "sigma_alpha"
+                  },
+                  "right": {
+                    "node": "ParamRef",
+                    "name": "z_alpha"
+                  }
+                }
+              },
+              "index": {
+                "node": "ScalarIndex",
+                "expr": {
+                  "node": "DataRef",
+                  "name": "group_idx"
+                }
+              }
+            },
+            "right": {
+              "node": "BinOp",
+              "op": "*",
+              "left": {
+                "node": "ConstNode",
+                "value": 0.25
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "x"
+              }
+            }
+          }
+        }
+      ],
+      "free_values": [
+        {
+          "name": "alpha_pop",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "sigma_alpha",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": {
+              "node": "Positive"
+            },
+            "size": null
+          }
+        },
+        {
+          "name": "z_alpha",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": null,
+            "size": {
+              "node": "DataRef",
+              "name": "n_groups"
+            }
+          }
+        }
+      ],
+      "stochastic_sites": [
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "alpha_pop",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 0.5
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "alpha_pop"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "sigma_alpha",
+          "distribution": {
+            "node": "HalfNormal",
+            "scale": {
+              "node": "ConstNode",
+              "value": 0.4
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "sigma_alpha"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "z_alpha",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "z_alpha"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "y",
+          "distribution": {
+            "node": "Poisson",
+            "rate": {
+              "node": "UnaryOp",
+              "function": "exp",
+              "operand": {
+                "node": "BinOp",
+                "op": "+",
+                "left": {
+                  "node": "IndexOp",
+                  "base": {
+                    "node": "BinOp",
+                    "op": "+",
+                    "left": {
+                      "node": "ParamRef",
+                      "name": "alpha_pop"
+                    },
+                    "right": {
+                      "node": "BinOp",
+                      "op": "*",
+                      "left": {
+                        "node": "ParamRef",
+                        "name": "sigma_alpha"
+                      },
+                      "right": {
+                        "node": "ParamRef",
+                        "name": "z_alpha"
+                      }
+                    }
+                  },
+                  "index": {
+                    "node": "ScalarIndex",
+                    "expr": {
+                      "node": "DataRef",
+                      "name": "group_idx"
+                    }
+                  }
+                },
+                "right": {
+                  "node": "BinOp",
+                  "op": "*",
+                  "left": {
+                    "node": "ConstNode",
+                    "value": 0.25
+                  },
+                  "right": {
+                    "node": "DataRef",
+                    "name": "x"
+                  }
+                }
+              }
+            }
+          },
+          "value": {
+            "node": "DataRef",
+            "name": "y"
+          }
+        }
+      ]
+    }
+  },
+  "data": {
+    "n_groups": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        3
+      ]
+    },
+    "group_idx": {
+      "dtype": "int64",
+      "shape": [
+        6
+      ],
+      "values": [
+        0,
+        0,
+        1,
+        1,
+        2,
+        2
+      ]
+    },
+    "x": {
+      "dtype": "float64",
+      "shape": [
+        6
+      ],
+      "values": [
+        -1.0,
+        -0.6,
+        -0.2,
+        0.2,
+        0.6,
+        1.0
+      ]
+    },
+    "y": {
+      "dtype": "int64",
+      "shape": [
+        6
+      ],
+      "values": [
+        0,
+        1,
+        2,
+        1,
+        3,
+        2
+      ]
+    }
+  },
+  "evaluations": [
+    {
+      "q": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "log_density": -13.933030343166488,
+      "gradient": [
+        2.9121310602107746,
+        -5.25,
+        -0.6395087594964628,
+        0.9974994791232621,
+        2.554140340583975
+      ]
+    },
+    {
+      "q": [
+        0.1,
+        0.2,
+        0.30000000000000004,
+        0.4,
+        0.5
+      ],
+      "log_density": -14.865976060856712,
+      "gradient": [
+        -2.5994735099911574,
+        -9.198723009639979,
+        -2.2711393147881895,
+        -1.141749934620375,
+        -0.4735537621948656
+      ]
+    },
+    {
+      "q": [
+        0.42073549240394825,
+        0.4958324052262343,
+        0.3377315902755755,
+        0.020790331216645468,
+        -0.30592894547135946
+      ],
+      "log_density": -20.932318619796888,
+      "gradient": [
+        -2.440795002758781,
+        -19.089030107271537,
+        -5.834162716139597,
+        -0.27672247524996824,
+        4.8140003249254075
+      ]
+    }
+  ]
+}

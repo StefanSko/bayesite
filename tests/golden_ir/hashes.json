@@ -1,0 +1,8 @@
+{
+  "linear_regression": "58d95be77a409c4b6aaa330143e6db3b5731f705f486d0e51f97155a5e91a73f",
+  "eight_schools_non_centered": "9fc18499bc69bcfbe7b4e8a71ea8862378400053e1d8d5c366428dfca62f1b10",
+  "varying_intercepts_poisson": "f7e02ef7d09f64e8392a655d10e4a634a130c9b31bdd54d2aae44184d6c7c3e9",
+  "ordinal_regression": "90e9db53dc7bac21987c8cd198a52538cb756208b7982b5870aa86e6b9326109",
+  "partially_observed_mvn": "8c90a5c0047f2b69d4252732cd250c9c65d10b3666eb12e252f984b8b80fbcc9",
+  "bounded_rates": "0bd5ec76212dfc73c6e00a15e8a1be611773fe11a8254970d1b7fef1c9b5db12"
+}

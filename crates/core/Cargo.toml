@@ -1,0 +1,20 @@
+[package]
+name = "bayesite-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Zero-dependency core for Bayesite IR workflow"
+
+# SETTLED: zero crates. `cargo tree` must show this crate and nothing else.
+[dependencies]
+
+[dev-dependencies]
+
+[lib]
+name = "bayesite_core"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "bayesite"
+path = "src/bin/bayesite.rs"

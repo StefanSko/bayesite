@@ -1,0 +1,205 @@
+{
+  "jaxstanv5_ir": 1,
+  "model": {
+    "node": "ModelMeta",
+    "params": [
+      {
+        "name": "beta",
+        "value": {
+          "node": "ResolvedParam",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "constraint": null,
+          "size": null
+        }
+      },
+      {
+        "name": "cutpoints",
+        "value": {
+          "node": "ResolvedParam",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 2.0
+            }
+          },
+          "constraint": {
+            "node": "Ordered"
+          },
+          "size": {
+            "node": "DataRef",
+            "name": "n_cutpoints"
+          }
+        }
+      }
+    ],
+    "data": [
+      {
+        "name": "n_cutpoints",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": []
+          }
+        }
+      },
+      {
+        "name": "x",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataRankSchema",
+            "rank": 1
+          }
+        }
+      }
+    ],
+    "observed_nodes": [
+      {
+        "node": "ResolvedObserved",
+        "name": "y",
+        "distribution": {
+          "node": "OrderedLogistic",
+          "eta": {
+            "node": "BinOp",
+            "op": "*",
+            "left": {
+              "node": "ParamRef",
+              "name": "beta"
+            },
+            "right": {
+              "node": "DataRef",
+              "name": "x"
+            }
+          },
+          "cutpoints": {
+            "node": "ParamRef",
+            "name": "cutpoints"
+          }
+        }
+      }
+    ],
+    "expressions": [
+      {
+        "name": "eta",
+        "value": {
+          "node": "BinOp",
+          "op": "*",
+          "left": {
+            "node": "ParamRef",
+            "name": "beta"
+          },
+          "right": {
+            "node": "DataRef",
+            "name": "x"
+          }
+        }
+      }
+    ],
+    "free_values": [
+      {
+        "name": "beta",
+        "value": {
+          "node": "ResolvedFreeValue",
+          "constraint": null,
+          "size": null
+        }
+      },
+      {
+        "name": "cutpoints",
+        "value": {
+          "node": "ResolvedFreeValue",
+          "constraint": {
+            "node": "Ordered"
+          },
+          "size": {
+            "node": "DataRef",
+            "name": "n_cutpoints"
+          }
+        }
+      }
+    ],
+    "stochastic_sites": [
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "beta",
+        "distribution": {
+          "node": "Normal",
+          "loc": {
+            "node": "ConstNode",
+            "value": 0.0
+          },
+          "scale": {
+            "node": "ConstNode",
+            "value": 1.0
+          }
+        },
+        "value": {
+          "node": "ParamRef",
+          "name": "beta"
+        }
+      },
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "cutpoints",
+        "distribution": {
+          "node": "Normal",
+          "loc": {
+            "node": "ConstNode",
+            "value": 0.0
+          },
+          "scale": {
+            "node": "ConstNode",
+            "value": 2.0
+          }
+        },
+        "value": {
+          "node": "ParamRef",
+          "name": "cutpoints"
+        }
+      },
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "y",
+        "distribution": {
+          "node": "OrderedLogistic",
+          "eta": {
+            "node": "BinOp",
+            "op": "*",
+            "left": {
+              "node": "ParamRef",
+              "name": "beta"
+            },
+            "right": {
+              "node": "DataRef",
+              "name": "x"
+            }
+          },
+          "cutpoints": {
+            "node": "ParamRef",
+            "name": "cutpoints"
+          }
+        },
+        "value": {
+          "node": "DataRef",
+          "name": "y"
+        }
+      }
+    ]
+  }
+}

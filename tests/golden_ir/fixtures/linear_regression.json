@@ -1,0 +1,331 @@
+{
+  "name": "linear_regression",
+  "ir": {
+    "jaxstanv5_ir": 1,
+    "model": {
+      "node": "ModelMeta",
+      "params": [
+        {
+          "name": "alpha",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "beta",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "sigma",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": {
+              "node": "Positive"
+            },
+            "size": null
+          }
+        }
+      ],
+      "data": [
+        {
+          "name": "x",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataRankSchema",
+              "rank": 1
+            }
+          }
+        }
+      ],
+      "observed_nodes": [
+        {
+          "node": "ResolvedObserved",
+          "name": "y",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "BinOp",
+              "op": "+",
+              "left": {
+                "node": "ParamRef",
+                "name": "alpha"
+              },
+              "right": {
+                "node": "BinOp",
+                "op": "*",
+                "left": {
+                  "node": "ParamRef",
+                  "name": "beta"
+                },
+                "right": {
+                  "node": "DataRef",
+                  "name": "x"
+                }
+              }
+            },
+            "scale": {
+              "node": "ParamRef",
+              "name": "sigma"
+            }
+          }
+        }
+      ],
+      "expressions": [
+        {
+          "name": "mu",
+          "value": {
+            "node": "BinOp",
+            "op": "+",
+            "left": {
+              "node": "ParamRef",
+              "name": "alpha"
+            },
+            "right": {
+              "node": "BinOp",
+              "op": "*",
+              "left": {
+                "node": "ParamRef",
+                "name": "beta"
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "x"
+              }
+            }
+          }
+        }
+      ],
+      "free_values": [
+        {
+          "name": "alpha",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "beta",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "sigma",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": {
+              "node": "Positive"
+            },
+            "size": null
+          }
+        }
+      ],
+      "stochastic_sites": [
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "alpha",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "alpha"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "beta",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "beta"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "sigma",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "sigma"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "y",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "BinOp",
+              "op": "+",
+              "left": {
+                "node": "ParamRef",
+                "name": "alpha"
+              },
+              "right": {
+                "node": "BinOp",
+                "op": "*",
+                "left": {
+                  "node": "ParamRef",
+                  "name": "beta"
+                },
+                "right": {
+                  "node": "DataRef",
+                  "name": "x"
+                }
+              }
+            },
+            "scale": {
+              "node": "ParamRef",
+              "name": "sigma"
+            }
+          },
+          "value": {
+            "node": "DataRef",
+            "name": "y"
+          }
+        }
+      ]
+    }
+  },
+  "data": {
+    "x": {
+      "dtype": "float64",
+      "shape": [
+        5
+      ],
+      "values": [
+        -1.0,
+        -0.5,
+        0.0,
+        0.5,
+        1.0
+      ]
+    },
+    "y": {
+      "dtype": "float64",
+      "shape": [
+        5
+      ],
+      "values": [
+        -1.6,
+        -0.3,
+        0.4,
+        1.1,
+        2.2
+      ]
+    }
+  },
+  "evaluations": [
+    {
+      "q": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "log_density": -12.281508265637381,
+      "gradient": [
+        1.8000000000000003,
+        4.5,
+        3.860000000000001
+      ]
+    },
+    {
+      "q": [
+        0.1,
+        0.2,
+        0.30000000000000004
+      ],
+      "log_density": -11.367247519454676,
+      "gradient": [
+        0.6134551269222345,
+        1.9952465443761056,
+        -2.062759093146428
+      ]
+    },
+    {
+      "q": [
+        0.42073549240394825,
+        0.4958324052262343,
+        0.3377315902755755
+      ],
+      "log_density": -11.011532035789003,
+      "gradient": [
+        -0.5752832219019737,
+        1.1634621248703376,
+        -3.734559087655737
+      ]
+    }
+  ]
+}

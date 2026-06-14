@@ -1,0 +1,284 @@
+{
+  "name": "ordinal_regression",
+  "ir": {
+    "jaxstanv5_ir": 1,
+    "model": {
+      "node": "ModelMeta",
+      "params": [
+        {
+          "name": "beta",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "cutpoints",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 2.0
+              }
+            },
+            "constraint": {
+              "node": "Ordered"
+            },
+            "size": {
+              "node": "DataRef",
+              "name": "n_cutpoints"
+            }
+          }
+        }
+      ],
+      "data": [
+        {
+          "name": "n_cutpoints",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        },
+        {
+          "name": "x",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataRankSchema",
+              "rank": 1
+            }
+          }
+        }
+      ],
+      "observed_nodes": [
+        {
+          "node": "ResolvedObserved",
+          "name": "y",
+          "distribution": {
+            "node": "OrderedLogistic",
+            "eta": {
+              "node": "BinOp",
+              "op": "*",
+              "left": {
+                "node": "ParamRef",
+                "name": "beta"
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "x"
+              }
+            },
+            "cutpoints": {
+              "node": "ParamRef",
+              "name": "cutpoints"
+            }
+          }
+        }
+      ],
+      "expressions": [
+        {
+          "name": "eta",
+          "value": {
+            "node": "BinOp",
+            "op": "*",
+            "left": {
+              "node": "ParamRef",
+              "name": "beta"
+            },
+            "right": {
+              "node": "DataRef",
+              "name": "x"
+            }
+          }
+        }
+      ],
+      "free_values": [
+        {
+          "name": "beta",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "cutpoints",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": {
+              "node": "Ordered"
+            },
+            "size": {
+              "node": "DataRef",
+              "name": "n_cutpoints"
+            }
+          }
+        }
+      ],
+      "stochastic_sites": [
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "beta",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "beta"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "cutpoints",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 2.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "cutpoints"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "y",
+          "distribution": {
+            "node": "OrderedLogistic",
+            "eta": {
+              "node": "BinOp",
+              "op": "*",
+              "left": {
+                "node": "ParamRef",
+                "name": "beta"
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "x"
+              }
+            },
+            "cutpoints": {
+              "node": "ParamRef",
+              "name": "cutpoints"
+            }
+          },
+          "value": {
+            "node": "DataRef",
+            "name": "y"
+          }
+        }
+      ]
+    }
+  },
+  "data": {
+    "n_cutpoints": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        2
+      ]
+    },
+    "x": {
+      "dtype": "float64",
+      "shape": [
+        5
+      ],
+      "values": [
+        -1.5,
+        -0.75,
+        0.0,
+        0.75,
+        1.5
+      ]
+    },
+    "y": {
+      "dtype": "int64",
+      "shape": [
+        5
+      ],
+      "values": [
+        0,
+        0,
+        1,
+        2,
+        2
+      ]
+    }
+  },
+  "evaluations": [
+    {
+      "q": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "log_density": -9.746011710355495,
+      "gradient": [
+        2.769881801917511,
+        -0.9431757358900148,
+        0.13880097097931166
+      ]
+    },
+    {
+      "q": [
+        0.1,
+        0.2,
+        0.30000000000000004
+      ],
+      "log_density": -9.843799010684114,
+      "gradient": [
+        2.657421951079619,
+        -1.5830858601851494,
+        -0.9954722632034263
+      ]
+    },
+    {
+      "q": [
+        0.42073549240394825,
+        0.4958324052262343,
+        0.3377315902755755
+      ],
+      "log_density": -9.700509288524666,
+      "gradient": [
+        1.9693851111864116,
+        -2.1467690706222804,
+        -1.2808228133620572
+      ]
+    }
+  ]
+}
