@@ -1,11 +1,16 @@
 //! Shared helpers for v0-provisional workflow artifact metadata.
 
+use crate::error::{Error, ErrorKind};
 use crate::json::Value;
 
 pub(crate) const V0_PROVISIONAL: &str = "v0-provisional";
 pub(crate) const CHAIN_INDEX_BASE: &str = "zero_based_chain_id";
+pub(crate) const WORKFLOW_FORMAT: &str = V0_PROVISIONAL;
+pub(crate) const PARAMETER_SUMMARY_SCALE: &str = "constrained_parameter_value";
 pub(crate) const POSTERIOR_DRAW_INDEX_BASE: &str = "zero_based_retained_draw_order";
 pub(crate) const PRIOR_PREDICTIVE_DRAW_INDEX_BASE: &str = "zero_based_prior_predictive_draw_order";
+pub(crate) const REPLICATE_INDEX_BASE: &str = "zero_based_replicate_order";
+pub(crate) const SIMULATION_INDEX_BASE: &str = "zero_based_simulation_order";
 pub(crate) const RHAT_STATISTIC: &str = "split_rhat";
 pub(crate) const ESS_STATISTIC: &str = "effective_sample_size_geyer_initial_monotone_sequence";
 
@@ -94,6 +99,20 @@ pub(crate) fn i64_order_value(values: &[i64]) -> Value {
     Value::Array(values.iter().map(|&value| Value::Int(value)).collect())
 }
 
+fn invalid(message: impl Into<String>) -> Error {
+    Error::new(ErrorKind::InvalidSettings, message)
+}
+
+pub(crate) fn report_count_value(count: usize, context: &str) -> Result<Value, Error> {
+    if count > i64::MAX as usize {
+        Err(invalid(format!(
+            "{context} must be in 0..=9223372036854775807 because artifacts report counts as JSON integers"
+        )))
+    } else {
+        Ok(Value::Int(count as i64))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +172,25 @@ mod tests {
         assert_eq!(
             PRIOR_PREDICTIVE_DRAW_INDEX_BASE,
             "zero_based_prior_predictive_draw_order"
+        );
+    }
+
+    #[test]
+    fn workflow_report_labels_name_their_scales_and_indexes() {
+        assert_eq!(WORKFLOW_FORMAT, V0_PROVISIONAL);
+        assert_eq!(PARAMETER_SUMMARY_SCALE, "constrained_parameter_value");
+        assert_eq!(REPLICATE_INDEX_BASE, "zero_based_replicate_order");
+        assert_eq!(SIMULATION_INDEX_BASE, "zero_based_simulation_order");
+    }
+
+    #[test]
+    fn report_count_value_rejects_unreportable_counts() {
+        assert_eq!(report_count_value(7, "test count").unwrap(), Value::Int(7));
+        assert_eq!(
+            report_count_value(i64::MAX as usize + 1, "test count")
+                .unwrap_err()
+                .message,
+            "test count must be in 0..=9223372036854775807 because artifacts report counts as JSON integers"
         );
     }
 }

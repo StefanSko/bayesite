@@ -6,6 +6,12 @@
 
 use std::collections::HashMap;
 
+use crate::artifact::{
+    coordinate_order_value, entry_order_value, report_count_value, shape_value, CHAIN_INDEX_BASE,
+    ESS_STATISTIC, PARAMETER_SUMMARY_SCALE, POSTERIOR_DRAWS,
+    PRIOR_PREDICTIVE_DRAWS as PRIOR_PREDICTIVE_ARTIFACT, PRIOR_PREDICTIVE_DRAW_INDEX_BASE,
+    REPLICATE_INDEX_BASE, RHAT_STATISTIC, SIMULATION_INDEX_BASE, WORKFLOW_FORMAT,
+};
 use crate::diagnostics;
 use crate::error::{Error, ErrorKind};
 use crate::ir::ModelMeta;
@@ -15,20 +21,8 @@ use crate::predictive::{simulate_prior_predictive, PriorPredictiveRole, PriorPre
 use crate::sampler::{sample, ChainDraws, Settings};
 use crate::tensor::Tensor;
 
-const PARAMETER_SUMMARY_SCALE: &str = "constrained_parameter_value";
-const WORKFLOW_FORMAT: &str = "v0-provisional";
-const PRIOR_PREDICTIVE_DRAWS: i64 = 1;
+const PRIOR_PREDICTIVE_DRAW_COUNT: i64 = 1;
 const PRIOR_PREDICTIVE_DRAW_INDEX: i64 = 0;
-const PRIOR_PREDICTIVE_DRAW_INDEX_BASE: &str = "zero_based_prior_predictive_draw_order";
-const PRIOR_PREDICTIVE_DRAWS_ARTIFACT_KIND: &str = "prior_predictive_draws";
-const PRIOR_PREDICTIVE_DRAWS_ARTIFACT_SCOPE: &str = "declared_data_conditioned_site_draws";
-const POSTERIOR_DRAWS_ARTIFACT_KIND: &str = "posterior_draws";
-const POSTERIOR_DRAWS_ARTIFACT_SCOPE: &str = "observed_data_conditioned_parameter_draws";
-const REPLICATE_INDEX_BASE: &str = "zero_based_replicate_order";
-const RHAT_STATISTIC: &str = "split_rhat";
-const SIMULATION_INDEX_BASE: &str = "zero_based_simulation_order";
-const ESS_STATISTIC: &str = "effective_sample_size_geyer_initial_monotone_sequence";
-const CHAIN_INDEX_BASE: &str = "zero_based_chain_id";
 
 #[derive(Clone, Copy)]
 struct RankSupport {
@@ -304,65 +298,8 @@ fn slice_to_value(shape: &[usize], data: &[f64]) -> Value {
     }
 }
 
-fn shape_value(shape: &[usize]) -> Value {
-    Value::Array(shape.iter().map(|&dim| Value::Int(dim as i64)).collect())
-}
-
-fn coordinate_order_value(shape: &[usize]) -> Value {
-    if shape.contains(&0) {
-        return Value::Array(Vec::new());
-    }
-    let size = shape.iter().product::<usize>().max(1);
-    Value::Array(
-        (0..size)
-            .map(|flat| {
-                let mut remainder = flat;
-                let mut coordinate = vec![0usize; shape.len()];
-                for axis in (0..shape.len()).rev() {
-                    let dim = shape[axis];
-                    coordinate[axis] = remainder % dim;
-                    remainder /= dim;
-                }
-                Value::Array(
-                    coordinate
-                        .iter()
-                        .map(|&index| Value::Int(index as i64))
-                        .collect(),
-                )
-            })
-            .collect(),
-    )
-}
-
-fn parameter_order_value(packing: &[(String, Vec<usize>)]) -> Value {
-    Value::Array(
-        packing
-            .iter()
-            .map(|(name, _)| Value::Str(name.clone()))
-            .collect(),
-    )
-}
-
 fn name_order_value(names: &[String]) -> Value {
     Value::Array(names.iter().map(|name| Value::Str(name.clone())).collect())
-}
-
-fn entry_order_value(entries: &[(String, Value)]) -> Value {
-    Value::Array(
-        entries
-            .iter()
-            .map(|(name, _)| Value::Str(name.clone()))
-            .collect(),
-    )
-}
-
-fn declared_data_order_value(declared_data: &[(String, DataValue)]) -> Value {
-    Value::Array(
-        declared_data
-            .iter()
-            .map(|(name, _)| Value::Str(name.clone()))
-            .collect(),
-    )
 }
 
 fn declared_data_value(value: &DataValue, context: &str) -> Result<Value, Error> {
@@ -588,11 +525,11 @@ fn summarize_param(
         ("truth_integer".to_string(), tensor_integer_value(truth)),
         (
             "truth_artifact_kind".to_string(),
-            Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_KIND.to_string()),
+            Value::Str(PRIOR_PREDICTIVE_ARTIFACT.kind.to_string()),
         ),
         (
             "truth_artifact_scope".to_string(),
-            Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_SCOPE.to_string()),
+            Value::Str(PRIOR_PREDICTIVE_ARTIFACT.scope.to_string()),
         ),
         (
             "truth_draw_index".to_string(),
@@ -629,11 +566,11 @@ fn summarize_param(
         ),
         (
             "posterior_draws_artifact_kind".to_string(),
-            Value::Str(POSTERIOR_DRAWS_ARTIFACT_KIND.to_string()),
+            Value::Str(POSTERIOR_DRAWS.kind.to_string()),
         ),
         (
             "posterior_draws_artifact_scope".to_string(),
-            Value::Str(POSTERIOR_DRAWS_ARTIFACT_SCOPE.to_string()),
+            Value::Str(POSTERIOR_DRAWS.scope.to_string()),
         ),
         (
             "rank_bounds".to_string(),
@@ -975,16 +912,6 @@ fn checked_report_count_add(left: usize, right: usize, context: &str) -> Result<
     })
 }
 
-fn report_count_value(count: usize, context: &str) -> Result<Value, Error> {
-    if count > i64::MAX as usize {
-        Err(invalid(format!(
-            "{context} must be in 0..=9223372036854775807 because workflow reports counts as JSON integers"
-        )))
-    } else {
-        Ok(Value::Int(count as i64))
-    }
-}
-
 fn workflow_phases_value() -> Value {
     Value::Array(
         [
@@ -1278,7 +1205,7 @@ pub fn recover_report(
         bin_count: rank_bin_count,
     };
     let declared_data_count = declared_data.len();
-    let declared_data_order = declared_data_order_value(&declared_data);
+    let declared_data_order = entry_order_value(&declared_data);
     let declared_data_values = declared_data_values_value(&declared_data, "recover")?;
     let declared_data_shapes = declared_data_shapes_value(&declared_data);
     let declared_data_coordinate_order = declared_data_coordinate_order_value(&declared_data);
@@ -1364,15 +1291,15 @@ pub fn recover_report(
         ),
         (
             "prior_predictive_draws".to_string(),
-            Value::Int(PRIOR_PREDICTIVE_DRAWS),
+            Value::Int(PRIOR_PREDICTIVE_DRAW_COUNT),
         ),
         (
             "prior_predictive_draws_artifact_kind".to_string(),
-            Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_KIND.to_string()),
+            Value::Str(PRIOR_PREDICTIVE_ARTIFACT.kind.to_string()),
         ),
         (
             "prior_predictive_draws_artifact_scope".to_string(),
-            Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_SCOPE.to_string()),
+            Value::Str(PRIOR_PREDICTIVE_ARTIFACT.scope.to_string()),
         ),
         ("workflow_phases".to_string(), workflow_phases_value()),
         ("seed".to_string(), Value::Int(seed as i64)),
@@ -1386,11 +1313,11 @@ pub fn recover_report(
         ),
         (
             "posterior_draws_artifact_kind".to_string(),
-            Value::Str(POSTERIOR_DRAWS_ARTIFACT_KIND.to_string()),
+            Value::Str(POSTERIOR_DRAWS.kind.to_string()),
         ),
         (
             "posterior_draws_artifact_scope".to_string(),
-            Value::Str(POSTERIOR_DRAWS_ARTIFACT_SCOPE.to_string()),
+            Value::Str(POSTERIOR_DRAWS.scope.to_string()),
         ),
         (
             "parameter_count".to_string(),
@@ -1406,11 +1333,11 @@ pub fn recover_report(
         ),
         (
             "generated_observed_artifact_kind".to_string(),
-            Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_KIND.to_string()),
+            Value::Str(PRIOR_PREDICTIVE_ARTIFACT.kind.to_string()),
         ),
         (
             "generated_observed_artifact_scope".to_string(),
-            Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_SCOPE.to_string()),
+            Value::Str(PRIOR_PREDICTIVE_ARTIFACT.scope.to_string()),
         ),
         (
             "generated_observed_draw_index".to_string(),
@@ -1554,7 +1481,7 @@ pub fn recover_report(
         ),
         (
             "parameter_order".to_string(),
-            parameter_order_value(&fit.packing),
+            entry_order_value(&fit.packing),
         ),
         (
             "sampler_summary".to_string(),
@@ -1585,7 +1512,7 @@ pub fn sbc_report(
     let rank_draws = sbc_rank_draws(settings.chains, settings.sampler.num_draws)?;
     let rank_bin_count = workflow_rank_bin_count(rank_draws, "sbc")?;
     let declared_data_count = declared_data.len();
-    let declared_data_order = declared_data_order_value(&declared_data);
+    let declared_data_order = entry_order_value(&declared_data);
     let declared_data_values = declared_data_values_value(&declared_data, "sbc")?;
     let declared_data_shapes = declared_data_shapes_value(&declared_data);
     let declared_data_coordinate_order = declared_data_coordinate_order_value(&declared_data);
@@ -1693,11 +1620,11 @@ pub fn sbc_report(
                     ("truth_integer".to_string(), truth_integer_value),
                     (
                         "truth_artifact_kind".to_string(),
-                        Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_KIND.to_string()),
+                        Value::Str(PRIOR_PREDICTIVE_ARTIFACT.kind.to_string()),
                     ),
                     (
                         "truth_artifact_scope".to_string(),
-                        Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_SCOPE.to_string()),
+                        Value::Str(PRIOR_PREDICTIVE_ARTIFACT.scope.to_string()),
                     ),
                     (
                         "truth_draw_index".to_string(),
@@ -1722,11 +1649,11 @@ pub fn sbc_report(
                     ("posterior_draws".to_string(), Value::Int(rank_draws as i64)),
                     (
                         "posterior_draws_artifact_kind".to_string(),
-                        Value::Str(POSTERIOR_DRAWS_ARTIFACT_KIND.to_string()),
+                        Value::Str(POSTERIOR_DRAWS.kind.to_string()),
                     ),
                     (
                         "posterior_draws_artifact_scope".to_string(),
-                        Value::Str(POSTERIOR_DRAWS_ARTIFACT_SCOPE.to_string()),
+                        Value::Str(POSTERIOR_DRAWS.scope.to_string()),
                     ),
                     ("rank_bounds".to_string(), rank_bounds_value(rank_draws)),
                     (
@@ -1851,24 +1778,24 @@ pub fn sbc_report(
             ("rank_draws".to_string(), Value::Int(rank_draws as i64)),
             (
                 "prior_predictive_draws".to_string(),
-                Value::Int(PRIOR_PREDICTIVE_DRAWS),
+                Value::Int(PRIOR_PREDICTIVE_DRAW_COUNT),
             ),
             (
                 "prior_predictive_draws_artifact_kind".to_string(),
-                Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_KIND.to_string()),
+                Value::Str(PRIOR_PREDICTIVE_ARTIFACT.kind.to_string()),
             ),
             (
                 "prior_predictive_draws_artifact_scope".to_string(),
-                Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_SCOPE.to_string()),
+                Value::Str(PRIOR_PREDICTIVE_ARTIFACT.scope.to_string()),
             ),
             ("posterior_draws".to_string(), Value::Int(rank_draws as i64)),
             (
                 "posterior_draws_artifact_kind".to_string(),
-                Value::Str(POSTERIOR_DRAWS_ARTIFACT_KIND.to_string()),
+                Value::Str(POSTERIOR_DRAWS.kind.to_string()),
             ),
             (
                 "posterior_draws_artifact_scope".to_string(),
-                Value::Str(POSTERIOR_DRAWS_ARTIFACT_SCOPE.to_string()),
+                Value::Str(POSTERIOR_DRAWS.scope.to_string()),
             ),
             ("rank_bounds".to_string(), rank_bounds_value(rank_draws)),
             (
@@ -1961,11 +1888,11 @@ pub fn sbc_report(
             ),
             (
                 "generated_observed_artifact_kind".to_string(),
-                Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_KIND.to_string()),
+                Value::Str(PRIOR_PREDICTIVE_ARTIFACT.kind.to_string()),
             ),
             (
                 "generated_observed_artifact_scope".to_string(),
-                Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_SCOPE.to_string()),
+                Value::Str(PRIOR_PREDICTIVE_ARTIFACT.scope.to_string()),
             ),
             (
                 "generated_observed_draw_index".to_string(),
@@ -2005,7 +1932,7 @@ pub fn sbc_report(
             ),
             (
                 "parameter_order".to_string(),
-                parameter_order_value(&fit.packing),
+                entry_order_value(&fit.packing),
             ),
             ("parameters".to_string(), Value::Object(replicate_params)),
             (
@@ -2059,11 +1986,11 @@ pub fn sbc_report(
                 ),
                 (
                     "posterior_draws_artifact_kind".to_string(),
-                    Value::Str(POSTERIOR_DRAWS_ARTIFACT_KIND.to_string()),
+                    Value::Str(POSTERIOR_DRAWS.kind.to_string()),
                 ),
                 (
                     "posterior_draws_artifact_scope".to_string(),
-                    Value::Str(POSTERIOR_DRAWS_ARTIFACT_SCOPE.to_string()),
+                    Value::Str(POSTERIOR_DRAWS.scope.to_string()),
                 ),
                 ("rank_bounds".to_string(), rank_bounds_value(rank_draws)),
                 (
@@ -2134,11 +2061,11 @@ pub fn sbc_report(
                 ("truth_integer".to_string(), Value::Array(truth_integer)),
                 (
                     "truth_artifact_kind".to_string(),
-                    Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_KIND.to_string()),
+                    Value::Str(PRIOR_PREDICTIVE_ARTIFACT.kind.to_string()),
                 ),
                 (
                     "truth_artifact_scope".to_string(),
-                    Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_SCOPE.to_string()),
+                    Value::Str(PRIOR_PREDICTIVE_ARTIFACT.scope.to_string()),
                 ),
                 (
                     "truth_draw_index".to_string(),
@@ -2197,7 +2124,7 @@ pub fn sbc_report(
         ),
         (
             "prior_predictive_draws_per_replicate".to_string(),
-            Value::Int(PRIOR_PREDICTIVE_DRAWS),
+            Value::Int(PRIOR_PREDICTIVE_DRAW_COUNT),
         ),
         (
             "generated_observed_count_per_replicate".to_string(),
@@ -2212,11 +2139,11 @@ pub fn sbc_report(
         ),
         (
             "generated_observed_artifact_kind_per_replicate".to_string(),
-            Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_KIND.to_string()),
+            Value::Str(PRIOR_PREDICTIVE_ARTIFACT.kind.to_string()),
         ),
         (
             "generated_observed_artifact_scope_per_replicate".to_string(),
-            Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_SCOPE.to_string()),
+            Value::Str(PRIOR_PREDICTIVE_ARTIFACT.scope.to_string()),
         ),
         (
             "generated_observed_draw_index_per_replicate".to_string(),
@@ -2228,11 +2155,11 @@ pub fn sbc_report(
         ),
         (
             "prior_predictive_draws_artifact_kind".to_string(),
-            Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_KIND.to_string()),
+            Value::Str(PRIOR_PREDICTIVE_ARTIFACT.kind.to_string()),
         ),
         (
             "prior_predictive_draws_artifact_scope".to_string(),
-            Value::Str(PRIOR_PREDICTIVE_DRAWS_ARTIFACT_SCOPE.to_string()),
+            Value::Str(PRIOR_PREDICTIVE_ARTIFACT.scope.to_string()),
         ),
         (
             "parameter_count".to_string(),
@@ -2261,11 +2188,11 @@ pub fn sbc_report(
         ),
         (
             "posterior_draws_artifact_kind".to_string(),
-            Value::Str(POSTERIOR_DRAWS_ARTIFACT_KIND.to_string()),
+            Value::Str(POSTERIOR_DRAWS.kind.to_string()),
         ),
         (
             "posterior_draws_artifact_scope".to_string(),
-            Value::Str(POSTERIOR_DRAWS_ARTIFACT_SCOPE.to_string()),
+            Value::Str(POSTERIOR_DRAWS.scope.to_string()),
         ),
         (
             "rank_statistic".to_string(),
