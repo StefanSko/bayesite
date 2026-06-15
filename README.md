@@ -49,6 +49,17 @@ and wasm glue are intentionally in-tree and reviewable.
    histograms, generated data, and sampler diagnostics without adding a
    uniformity verdict.
 
+All workflow artifacts are **v0-provisional**; see
+[`docs/artifacts-v0.md`](docs/artifacts-v0.md) for the current field-level
+contract.
+
+## Current limitations
+
+- Prior predictive supports directly assignable stochastic sites only.
+- `recover` is a single-scenario factual report, not repeated-scenario coverage
+  validation.
+- `sbc` reports ranks and histograms but no uniformity verdict or p-value.
+
 ## Correctness contract
 
 - **Evaluation:** every fixture in `tests/golden_ir/fixtures/` must reproduce
