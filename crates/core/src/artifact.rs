@@ -5,6 +5,7 @@ use crate::json::Value;
 pub(crate) const V0_PROVISIONAL: &str = "v0-provisional";
 pub(crate) const CHAIN_INDEX_BASE: &str = "zero_based_chain_id";
 pub(crate) const POSTERIOR_DRAW_INDEX_BASE: &str = "zero_based_retained_draw_order";
+pub(crate) const PRIOR_PREDICTIVE_DRAW_INDEX_BASE: &str = "zero_based_prior_predictive_draw_order";
 pub(crate) const RHAT_STATISTIC: &str = "split_rhat";
 pub(crate) const ESS_STATISTIC: &str = "effective_sample_size_geyer_initial_monotone_sequence";
 
@@ -17,6 +18,11 @@ pub(crate) struct ArtifactIdentity {
 pub(crate) const POSTERIOR_DRAWS: ArtifactIdentity = ArtifactIdentity {
     kind: "posterior_draws",
     scope: "observed_data_conditioned_parameter_draws",
+};
+
+pub(crate) const PRIOR_PREDICTIVE_DRAWS: ArtifactIdentity = ArtifactIdentity {
+    kind: "prior_predictive_draws",
+    scope: "declared_data_conditioned_site_draws",
 };
 
 pub(crate) fn format_marker_field(name: &str) -> (String, Value) {
@@ -126,6 +132,27 @@ mod tests {
                     Value::Str("observed_data_conditioned_parameter_draws".to_string())
                 ),
             ]
+        );
+        assert_eq!(
+            artifact_identity_entries(PRIOR_PREDICTIVE_DRAWS),
+            vec![
+                (
+                    "artifact_kind".to_string(),
+                    Value::Str("prior_predictive_draws".to_string())
+                ),
+                (
+                    "artifact_scope".to_string(),
+                    Value::Str("declared_data_conditioned_site_draws".to_string())
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn prior_predictive_draw_index_base_names_its_ordering() {
+        assert_eq!(
+            PRIOR_PREDICTIVE_DRAW_INDEX_BASE,
+            "zero_based_prior_predictive_draw_order"
         );
     }
 }

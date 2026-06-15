@@ -6,6 +6,10 @@
 
 use std::collections::HashMap;
 
+use crate::artifact::{
+    artifact_identity_entries, coordinate_order_value, entry_order_value, format_marker_field,
+    shape_value, PRIOR_PREDICTIVE_DRAWS, PRIOR_PREDICTIVE_DRAW_INDEX_BASE,
+};
 use crate::error::{Error, ErrorKind};
 use crate::ir::{
     BinOpKind, Constraint, DataSchema, Dim, Distribution, Expr, IndexSpec, ModelMeta, Size, UnaryFn,
@@ -14,8 +18,6 @@ use crate::json::{self, Value};
 use crate::model::DataValue;
 use crate::rng::Xoshiro256PlusPlus;
 use crate::tensor::{gather_map, IndexAtom, Tensor};
-
-const PRIOR_PREDICTIVE_DRAW_INDEX_BASE: &str = "zero_based_prior_predictive_draw_order";
 
 #[derive(Debug, Clone)]
 pub struct PriorPredictiveSettings {
@@ -914,46 +916,12 @@ fn integer_flags(tensor: &Tensor) -> Vec<bool> {
         .collect()
 }
 
-fn coordinate_order_value(shape: &[usize]) -> Value {
-    if shape.contains(&0) {
-        return Value::Array(Vec::new());
-    }
-    let size = shape.iter().product::<usize>().max(1);
-    Value::Array(
-        (0..size)
-            .map(|flat| {
-                let mut remainder = flat;
-                let mut coordinate = vec![0usize; shape.len()];
-                for axis in (0..shape.len()).rev() {
-                    let dim = shape[axis];
-                    coordinate[axis] = remainder % dim;
-                    remainder /= dim;
-                }
-                Value::Array(
-                    coordinate
-                        .iter()
-                        .map(|&index| Value::Int(index as i64))
-                        .collect(),
-                )
-            })
-            .collect(),
-    )
-}
-
 fn integer_flags_to_value(shape: &[usize], flags: &[bool]) -> Value {
     if shape.is_empty() {
         Value::Bool(flags.first().copied().unwrap_or(false))
     } else {
         Value::Array(flags.iter().copied().map(Value::Bool).collect())
     }
-}
-
-fn data_order_to_value(data: &[(String, DataValue)]) -> Value {
-    Value::Array(
-        data.iter()
-            .map(|(name, _)| Value::Str(name.clone()))
-            .collect(),
-    )
 }
 
 fn site_order_to_value(sites: &[PriorPredictiveSite]) -> Value {
@@ -995,18 +963,7 @@ fn data_values_to_value(data: &[(String, DataValue)]) -> Result<Value, Error> {
 fn data_shapes_to_value(data: &[(String, DataValue)]) -> Value {
     Value::Object(
         data.iter()
-            .map(|(name, value)| {
-                (
-                    name.clone(),
-                    Value::Array(
-                        value
-                            .shape
-                            .iter()
-                            .map(|&dim| Value::Int(dim as i64))
-                            .collect(),
-                    ),
-                )
-            })
+            .map(|(name, value)| (name.clone(), shape_value(&value.shape)))
             .collect(),
     )
 }
@@ -1071,25 +1028,20 @@ fn settings_value(settings: &PriorPredictiveSettings) -> Value {
     )])
 }
 
+fn prior_predictive_artifact_fields() -> Vec<(String, Value)> {
+    let mut entries = vec![format_marker_field("prior_predictive_format")];
+    entries.extend(artifact_identity_entries(PRIOR_PREDICTIVE_DRAWS));
+    entries
+}
+
 fn header_value(
     sites: &[PriorPredictiveSite],
     settings: &PriorPredictiveSettings,
     seed: u64,
     declared_data: &[(String, DataValue)],
 ) -> Result<Value, Error> {
-    Ok(Value::Object(vec![
-        (
-            "prior_predictive_format".to_string(),
-            Value::Str("v0-provisional".to_string()),
-        ),
-        (
-            "artifact_kind".to_string(),
-            Value::Str("prior_predictive_draws".to_string()),
-        ),
-        (
-            "artifact_scope".to_string(),
-            Value::Str("declared_data_conditioned_site_draws".to_string()),
-        ),
+    let mut entries = prior_predictive_artifact_fields();
+    entries.extend([
         ("workflow_phases".to_string(), workflow_phases_value()),
         ("draws".to_string(), Value::Int(settings.num_draws as i64)),
         (
@@ -1110,7 +1062,7 @@ fn header_value(
         ),
         (
             "declared_data_order".to_string(),
-            data_order_to_value(declared_data),
+            entry_order_value(declared_data),
         ),
         (
             "declared_data".to_string(),
@@ -1148,12 +1100,7 @@ fn header_value(
                                 "role".to_string(),
                                 Value::Str(site.role.as_str().to_string()),
                             ),
-                            (
-                                "shape".to_string(),
-                                Value::Array(
-                                    site.shape.iter().map(|&d| Value::Int(d as i64)).collect(),
-                                ),
-                            ),
+                            ("shape".to_string(), shape_value(&site.shape)),
                             ("integer".to_string(), Value::Bool(site.integer)),
                             (
                                 "integer_by_coordinate".to_string(),
@@ -1168,7 +1115,8 @@ fn header_value(
                     .collect(),
             ),
         ),
-    ]))
+    ]);
+    Ok(Value::Object(entries))
 }
 
 /// Simulate a complete prior-predictive run from decoded IR and declared data.
@@ -1323,19 +1271,8 @@ pub fn prior_predictive_ndjson_lines(
                 })
                 .collect::<Result<Vec<_>, Error>>()?,
         );
-        let line = Value::Object(vec![
-            (
-                "prior_predictive_format".to_string(),
-                Value::Str("v0-provisional".to_string()),
-            ),
-            (
-                "artifact_kind".to_string(),
-                Value::Str("prior_predictive_draws".to_string()),
-            ),
-            (
-                "artifact_scope".to_string(),
-                Value::Str("declared_data_conditioned_site_draws".to_string()),
-            ),
+        let mut line_entries = prior_predictive_artifact_fields();
+        line_entries.extend([
             ("draw_index".to_string(), Value::Int(draw_id as i64)),
             (
                 "draw_index_base".to_string(),
@@ -1353,53 +1290,44 @@ pub fn prior_predictive_ndjson_lines(
             ),
             (
                 "declared_data_order".to_string(),
-                data_order_to_value(&declared_data),
+                entry_order_value(&declared_data),
             ),
             ("site_count".to_string(), Value::Int(run.sites.len() as i64)),
             ("site_order".to_string(), site_order_to_value(&run.sites)),
             ("values".to_string(), values),
         ]);
+        let line = Value::Object(line_entries);
         lines.push(json::write(&line)?);
     }
+    let mut trailer_entries = prior_predictive_artifact_fields();
+    trailer_entries.extend([
+        ("workflow_phases".to_string(), workflow_phases_value()),
+        ("draws".to_string(), Value::Int(settings.num_draws as i64)),
+        (
+            "draw_count".to_string(),
+            Value::Int(settings.num_draws as i64),
+        ),
+        (
+            "draw_index_base".to_string(),
+            Value::Str(PRIOR_PREDICTIVE_DRAW_INDEX_BASE.to_string()),
+        ),
+        ("seed".to_string(), Value::Int(seed as i64)),
+        ("settings".to_string(), settings_value(settings)),
+        ("site_count".to_string(), Value::Int(run.sites.len() as i64)),
+        ("site_order".to_string(), site_order_to_value(&run.sites)),
+        (
+            "declared_data_count".to_string(),
+            Value::Int(declared_data.len() as i64),
+        ),
+        (
+            "declared_data_order".to_string(),
+            entry_order_value(&declared_data),
+        ),
+        ("sites".to_string(), Value::Int(run.sites.len() as i64)),
+    ]);
     lines.push(json::write(&Value::Object(vec![(
         "trailer".to_string(),
-        Value::Object(vec![
-            (
-                "prior_predictive_format".to_string(),
-                Value::Str("v0-provisional".to_string()),
-            ),
-            (
-                "artifact_kind".to_string(),
-                Value::Str("prior_predictive_draws".to_string()),
-            ),
-            (
-                "artifact_scope".to_string(),
-                Value::Str("declared_data_conditioned_site_draws".to_string()),
-            ),
-            ("workflow_phases".to_string(), workflow_phases_value()),
-            ("draws".to_string(), Value::Int(settings.num_draws as i64)),
-            (
-                "draw_count".to_string(),
-                Value::Int(settings.num_draws as i64),
-            ),
-            (
-                "draw_index_base".to_string(),
-                Value::Str(PRIOR_PREDICTIVE_DRAW_INDEX_BASE.to_string()),
-            ),
-            ("seed".to_string(), Value::Int(seed as i64)),
-            ("settings".to_string(), settings_value(settings)),
-            ("site_count".to_string(), Value::Int(run.sites.len() as i64)),
-            ("site_order".to_string(), site_order_to_value(&run.sites)),
-            (
-                "declared_data_count".to_string(),
-                Value::Int(declared_data.len() as i64),
-            ),
-            (
-                "declared_data_order".to_string(),
-                data_order_to_value(&declared_data),
-            ),
-            ("sites".to_string(), Value::Int(run.sites.len() as i64)),
-        ]),
+        Value::Object(trailer_entries),
     )]))?);
     Ok(lines)
 }
