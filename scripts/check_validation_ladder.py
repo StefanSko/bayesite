@@ -9,6 +9,7 @@ for the agent execution path.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,67 @@ def _check_zero_dependency_core() -> None:
             "G0 zero-dependency core failed: cargo tree must contain only "
             "the bayesite-core root package"
         )
+
+
+def _check_release_cli_binary() -> None:
+    _run(
+        "G0 release CLI binary build",
+        [
+            "cargo",
+            "build",
+            "--release",
+            "--bin",
+            "bayesite",
+            "--manifest-path",
+            str(CORE_MANIFEST),
+        ],
+    )
+    binary_name = "bayesite.exe" if sys.platform.startswith("win") else "bayesite"
+    binary = REPO_ROOT / "target" / "release" / binary_name
+    command = [str(binary)]
+    print(f"\n== G1 release CLI JSON error smoke\n$ {_command_text(command)}", flush=True)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        sys.exit(f"missing executable for G1 release CLI JSON error smoke: {error.filename}")
+    if result.returncode == 0:
+        sys.exit("G1 release CLI JSON error smoke failed: missing-args run must fail")
+    if result.stdout:
+        sys.exit("G1 release CLI JSON error smoke failed: error path wrote stdout")
+    try:
+        payload = json.loads(result.stderr)
+    except json.JSONDecodeError as error:
+        sys.exit(f"G1 release CLI JSON error smoke failed: stderr is not JSON: {error}")
+    if payload.get("error_format") != "v0-provisional":
+        sys.exit(
+            "G1 release CLI JSON error smoke failed: stderr JSON must include "
+            'error_format "v0-provisional"'
+        )
+    if payload.get("error") != "InvalidSettings":
+        sys.exit(
+            "G1 release CLI JSON error smoke failed: stderr JSON must include "
+            'error "InvalidSettings"'
+        )
+    message = payload.get("message")
+    if not isinstance(message, str):
+        sys.exit("G1 release CLI JSON error smoke failed: stderr JSON needs a message string")
+    if "missing command" not in message:
+        sys.exit(
+            "G1 release CLI JSON error smoke failed: missing-args message must "
+            "name the missing command"
+        )
+    for command_name in ["sample", "diagnose", "prior-predictive", "recover", "sbc"]:
+        if f"bayesite {command_name}" not in message:
+            sys.exit(
+                "G1 release CLI JSON error smoke failed: usage message must list "
+                f"bayesite {command_name}"
+            )
 
 
 def _posterior_command(args: argparse.Namespace) -> list[str]:
@@ -118,6 +180,7 @@ def main() -> None:
             "warnings",
         ],
     )
+    _check_release_cli_binary()
     _run(
         "G1-G5 fixture, log-density, sampler, and protocol tests",
         ["cargo", "test", "--manifest-path", str(CORE_MANIFEST)],
