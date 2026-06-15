@@ -11,6 +11,11 @@
 //! elsewhere, and nothing may grow load-bearing dependencies on this one
 //! unnoticed.
 
+use crate::artifact::{
+    artifact_identity_entries, coordinate_order_value, entry_order_value, format_marker_field,
+    i64_order_value, shape_value, u64_order_value, CHAIN_INDEX_BASE, ESS_STATISTIC,
+    POSTERIOR_DRAWS, POSTERIOR_DRAW_INDEX_BASE, RHAT_STATISTIC, V0_PROVISIONAL,
+};
 use crate::diagnostics;
 use crate::error::{Error, ErrorKind};
 use crate::ir::{decode_model, ModelMeta};
@@ -34,19 +39,12 @@ const SAMPLE_WORKFLOW_PHASES: [&str; 7] = [
     "emit_artifact",
 ];
 
-const SAMPLE_ARTIFACT_KIND: &str = "posterior_draws";
-const SAMPLE_ARTIFACT_SCOPE: &str = "observed_data_conditioned_parameter_draws";
-const CHAIN_INDEX_BASE: &str = "zero_based_chain_id";
-
 const DIAGNOSE_WORKFLOW_PHASES: [&str; 4] = [
     "parse_fit_ndjson",
     "validate_fit_artifact",
     "recompute_diagnostics",
     "emit_report",
 ];
-const RHAT_STATISTIC: &str = "split_rhat";
-const ESS_STATISTIC: &str = "effective_sample_size_geyer_initial_monotone_sequence";
-
 fn tensor_to_value(shape: &[usize], data: &[f64]) -> Value {
     if shape.is_empty() {
         Value::Float(data[0])
@@ -55,57 +53,10 @@ fn tensor_to_value(shape: &[usize], data: &[f64]) -> Value {
     }
 }
 
-fn coordinate_order_value(shape: &[usize]) -> Value {
-    if shape.contains(&0) {
-        return Value::Array(Vec::new());
-    }
-    let size = shape.iter().product::<usize>().max(1);
-    Value::Array(
-        (0..size)
-            .map(|flat| {
-                let mut remainder = flat;
-                let mut coordinate = vec![0usize; shape.len()];
-                for axis in (0..shape.len()).rev() {
-                    let dim = shape[axis];
-                    coordinate[axis] = remainder % dim;
-                    remainder /= dim;
-                }
-                Value::Array(
-                    coordinate
-                        .iter()
-                        .map(|&index| Value::Int(index as i64))
-                        .collect(),
-                )
-            })
-            .collect(),
-    )
-}
-
-fn parameter_order_value(packing: &[(String, Vec<usize>)]) -> Value {
-    Value::Array(
-        packing
-            .iter()
-            .map(|(name, _)| Value::Str(name.clone()))
-            .collect(),
-    )
-}
-
-fn chain_order_value(chain_ids: &[u64]) -> Value {
-    Value::Array(
-        chain_ids
-            .iter()
-            .map(|&chain_id| Value::Int(chain_id as i64))
-            .collect(),
-    )
-}
-
-fn source_chain_order_value(chain_ids: &[i64]) -> Value {
-    Value::Array(
-        chain_ids
-            .iter()
-            .map(|&chain_id| Value::Int(chain_id))
-            .collect(),
-    )
+fn sample_artifact_fields(format_field: &str) -> Vec<(String, Value)> {
+    let mut entries = vec![format_marker_field(format_field)];
+    entries.extend(artifact_identity_entries(POSTERIOR_DRAWS));
+    entries
 }
 
 fn workflow_phases_value() -> Value {
@@ -141,19 +92,8 @@ fn header_value(
     chain_ids: &[u64],
     draw_count: usize,
 ) -> Value {
-    Value::Object(vec![
-        (
-            "draws_format".to_string(),
-            Value::Str("v0-provisional".to_string()),
-        ),
-        (
-            "artifact_kind".to_string(),
-            Value::Str(SAMPLE_ARTIFACT_KIND.to_string()),
-        ),
-        (
-            "artifact_scope".to_string(),
-            Value::Str(SAMPLE_ARTIFACT_SCOPE.to_string()),
-        ),
+    let mut entries = sample_artifact_fields("draws_format");
+    entries.extend([
         ("workflow_phases".to_string(), workflow_phases_value()),
         (
             "params".to_string(),
@@ -163,10 +103,7 @@ fn header_value(
                     .map(|(name, shape)| {
                         Value::Object(vec![
                             ("name".to_string(), Value::Str(name.clone())),
-                            (
-                                "shape".to_string(),
-                                Value::Array(shape.iter().map(|&d| Value::Int(d as i64)).collect()),
-                            ),
+                            ("shape".to_string(), shape_value(shape)),
                             (
                                 "coordinate_order".to_string(),
                                 coordinate_order_value(shape),
@@ -180,19 +117,8 @@ fn header_value(
             "parameter_count".to_string(),
             Value::Int(packing.len() as i64),
         ),
-        (
-            "parameter_order".to_string(),
-            parameter_order_value(packing),
-        ),
-        (
-            "packing".to_string(),
-            Value::Array(
-                packing
-                    .iter()
-                    .map(|(name, _)| Value::Str(name.clone()))
-                    .collect(),
-            ),
-        ),
+        ("parameter_order".to_string(), entry_order_value(packing)),
+        ("packing".to_string(), entry_order_value(packing)),
         (
             "settings".to_string(),
             Value::Object(vec![
@@ -219,10 +145,11 @@ fn header_value(
             "chain_count".to_string(),
             Value::Int(chain_ids.len() as i64),
         ),
-        ("chain_order".to_string(), chain_order_value(chain_ids)),
+        ("chain_order".to_string(), u64_order_value(chain_ids)),
         ("draw_count".to_string(), Value::Int(draw_count as i64)),
         ("chains".to_string(), Value::Int(chain_ids.len() as i64)),
-    ])
+    ]);
+    Value::Object(entries)
 }
 
 /// Render a complete run as NDJSON lines. `chains` pairs a chain id with
@@ -270,23 +197,12 @@ pub fn ndjson_lines(
                     .map(|(name, shape, data)| (name.clone(), tensor_to_value(shape, data)))
                     .collect(),
             );
-            let line = Value::Object(vec![
-                (
-                    "draws_format".to_string(),
-                    Value::Str("v0-provisional".to_string()),
-                ),
-                (
-                    "artifact_kind".to_string(),
-                    Value::Str(SAMPLE_ARTIFACT_KIND.to_string()),
-                ),
-                (
-                    "artifact_scope".to_string(),
-                    Value::Str(SAMPLE_ARTIFACT_SCOPE.to_string()),
-                ),
+            let mut line_entries = sample_artifact_fields("draws_format");
+            line_entries.extend([
                 ("draw_index".to_string(), Value::Int(draw_index as i64)),
                 (
                     "draw_index_base".to_string(),
-                    Value::Str("zero_based_retained_draw_order".to_string()),
+                    Value::Str(POSTERIOR_DRAW_INDEX_BASE.to_string()),
                 ),
                 ("seed".to_string(), Value::Int(seed as i64)),
                 ("draw_count".to_string(), Value::Int(draw_count as i64)),
@@ -294,7 +210,7 @@ pub fn ndjson_lines(
                     "chain_count".to_string(),
                     Value::Int(chain_ids.len() as i64),
                 ),
-                ("chain_order".to_string(), chain_order_value(&chain_ids)),
+                ("chain_order".to_string(), u64_order_value(&chain_ids)),
                 ("chain".to_string(), Value::Int(*chain_id as i64)),
                 (
                     "chain_index_base".to_string(),
@@ -305,12 +221,10 @@ pub fn ndjson_lines(
                     "parameter_count".to_string(),
                     Value::Int(packing.len() as i64),
                 ),
-                (
-                    "parameter_order".to_string(),
-                    parameter_order_value(&packing),
-                ),
+                ("parameter_order".to_string(), entry_order_value(&packing)),
                 ("values".to_string(), values),
             ]);
+            let line = Value::Object(line_entries);
             lines.push(json::write(&line)?);
             draw_index += 1;
         }
@@ -375,43 +289,30 @@ pub fn ndjson_lines(
             })
             .collect(),
     );
+    let mut trailer_entries = sample_artifact_fields("draws_format");
+    trailer_entries.extend([
+        ("workflow_phases".to_string(), workflow_phases_value()),
+        ("seed".to_string(), Value::Int(seed as i64)),
+        (
+            "draws_per_chain".to_string(),
+            Value::Int(settings.num_draws as i64),
+        ),
+        ("chain_count".to_string(), Value::Int(chains.len() as i64)),
+        ("chain_order".to_string(), u64_order_value(&chain_ids)),
+        ("draw_count".to_string(), Value::Int(draw_count as i64)),
+        (
+            "parameter_count".to_string(),
+            Value::Int(packing.len() as i64),
+        ),
+        ("parameter_order".to_string(), entry_order_value(&packing)),
+        ("params".to_string(), Value::Int(packing.len() as i64)),
+        ("chains".to_string(), chain_stats),
+        ("rhat".to_string(), Value::Object(rhat_entries)),
+        ("ess".to_string(), Value::Object(ess_entries)),
+    ]);
     let trailer = Value::Object(vec![(
         "trailer".to_string(),
-        Value::Object(vec![
-            (
-                "draws_format".to_string(),
-                Value::Str("v0-provisional".to_string()),
-            ),
-            (
-                "artifact_kind".to_string(),
-                Value::Str(SAMPLE_ARTIFACT_KIND.to_string()),
-            ),
-            (
-                "artifact_scope".to_string(),
-                Value::Str(SAMPLE_ARTIFACT_SCOPE.to_string()),
-            ),
-            ("workflow_phases".to_string(), workflow_phases_value()),
-            ("seed".to_string(), Value::Int(seed as i64)),
-            (
-                "draws_per_chain".to_string(),
-                Value::Int(settings.num_draws as i64),
-            ),
-            ("chain_count".to_string(), Value::Int(chains.len() as i64)),
-            ("chain_order".to_string(), chain_order_value(&chain_ids)),
-            ("draw_count".to_string(), Value::Int(draw_count as i64)),
-            (
-                "parameter_count".to_string(),
-                Value::Int(packing.len() as i64),
-            ),
-            (
-                "parameter_order".to_string(),
-                parameter_order_value(&packing),
-            ),
-            ("params".to_string(), Value::Int(packing.len() as i64)),
-            ("chains".to_string(), chain_stats),
-            ("rhat".to_string(), Value::Object(rhat_entries)),
-            ("ess".to_string(), Value::Object(ess_entries)),
-        ]),
+        Value::Object(trailer_entries),
     )]);
     lines.push(json::write(&trailer)?);
     Ok(lines)
@@ -545,7 +446,7 @@ fn fit_artifact_draw_count(chains: &[(u64, ChainDraws)]) -> Result<usize, Error>
 }
 
 fn parse_param_specs(header: &Value) -> Result<Vec<ParamSpec>, Error> {
-    if header.get("draws_format").and_then(Value::as_str) != Some("v0-provisional") {
+    if header.get("draws_format").and_then(Value::as_str) != Some(V0_PROVISIONAL) {
         return Err(invalid_fit(
             "fit header needs draws_format \"v0-provisional\"; rerun `bayesite sample`",
         ));
@@ -738,18 +639,18 @@ fn validate_optional_draw_artifact_metadata(
         .get("draws_format")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid_fit("draw line draws_format must be a string when present"))?;
-    if format != "v0-provisional" {
+    if format != V0_PROVISIONAL {
         return Err(invalid_fit(
             "draw line draws_format must be \"v0-provisional\" when present; rerun `bayesite sample` to completion",
         ));
     }
-    parse_sample_artifact_field(line, "draw line", "artifact_kind", SAMPLE_ARTIFACT_KIND)?;
-    parse_sample_artifact_field(line, "draw line", "artifact_scope", SAMPLE_ARTIFACT_SCOPE)?;
+    parse_sample_artifact_field(line, "draw line", "artifact_kind", POSTERIOR_DRAWS.kind)?;
+    parse_sample_artifact_field(line, "draw line", "artifact_scope", POSTERIOR_DRAWS.scope)?;
     let draw_index_base = line
         .get("draw_index_base")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid_fit("draw line draw_index_base must be a string when present"))?;
-    if draw_index_base != "zero_based_retained_draw_order" {
+    if draw_index_base != POSTERIOR_DRAW_INDEX_BASE {
         return Err(invalid_fit(
             "draw line draw_index_base must be \"zero_based_retained_draw_order\" when present; rerun `bayesite sample` to completion",
         ));
@@ -1070,7 +971,7 @@ fn validate_trailer_draws_format(trailer: &Value) -> Result<(), Error> {
     let Some(value) = trailer.get("draws_format") else {
         return Ok(());
     };
-    if value.as_str() == Some("v0-provisional") {
+    if value.as_str() == Some(V0_PROVISIONAL) {
         Ok(())
     } else {
         Err(invalid_fit(
@@ -1213,15 +1114,7 @@ fn param_specs_value(specs: &[ParamSpec]) -> Value {
             .map(|spec| {
                 Value::Object(vec![
                     ("name".to_string(), Value::Str(spec.name.clone())),
-                    (
-                        "shape".to_string(),
-                        Value::Array(
-                            spec.shape
-                                .iter()
-                                .map(|&dim| Value::Int(dim as i64))
-                                .collect(),
-                        ),
-                    ),
+                    ("shape".to_string(), shape_value(&spec.shape)),
                     (
                         "coordinate_order".to_string(),
                         coordinate_order_value(&spec.shape),
@@ -1477,12 +1370,12 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
     let source_settings = parse_header_settings(&header)?;
     let header_workflow_phases = parse_workflow_phases(&header, "fit header")?;
     let header_artifact_kind =
-        parse_sample_artifact_field(&header, "fit header", "artifact_kind", SAMPLE_ARTIFACT_KIND)?;
+        parse_sample_artifact_field(&header, "fit header", "artifact_kind", POSTERIOR_DRAWS.kind)?;
     let header_artifact_scope = parse_sample_artifact_field(
         &header,
         "fit header",
         "artifact_scope",
-        SAMPLE_ARTIFACT_SCOPE,
+        POSTERIOR_DRAWS.scope,
     )?;
 
     let mut draws = Vec::new();
@@ -1614,13 +1507,13 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         &trailer,
         "fit trailer",
         "artifact_kind",
-        SAMPLE_ARTIFACT_KIND,
+        POSTERIOR_DRAWS.kind,
     )?;
     let trailer_artifact_scope = parse_sample_artifact_field(
         &trailer,
         "fit trailer",
         "artifact_scope",
-        SAMPLE_ARTIFACT_SCOPE,
+        POSTERIOR_DRAWS.scope,
     )?;
     if let (Some(header_phases), Some(trailer_phases)) =
         (&header_workflow_phases, &trailer_workflow_phases)
@@ -1730,7 +1623,7 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
     let mut response_entries = vec![
         (
             "diagnostics_format".to_string(),
-            Value::Str("v0-provisional".to_string()),
+            Value::Str(V0_PROVISIONAL.to_string()),
         ),
         (
             "workflow_phases".to_string(),
@@ -1738,7 +1631,7 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         ),
         (
             "source_draws_format".to_string(),
-            Value::Str("v0-provisional".to_string()),
+            Value::Str(V0_PROVISIONAL.to_string()),
         ),
         (
             "rhat_statistic".to_string(),
@@ -1775,7 +1668,7 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         ),
         (
             "source_chain_order".to_string(),
-            source_chain_order_value(&chain_ids),
+            i64_order_value(&chain_ids),
         ),
         (
             "source_draw_count".to_string(),
@@ -1858,7 +1751,7 @@ pub fn handle_request(text: &str) -> String {
             let payload = Value::Object(vec![
                 (
                     "error_format".to_string(),
-                    Value::Str("v0-provisional".to_string()),
+                    Value::Str(V0_PROVISIONAL.to_string()),
                 ),
                 (
                     "error".to_string(),

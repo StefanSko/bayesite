@@ -11,6 +11,7 @@
 #![deny(unsafe_code)]
 
 pub mod adapt;
+pub mod artifact;
 pub mod density;
 pub mod diagnostics;
 pub mod error;
