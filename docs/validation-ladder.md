@@ -32,7 +32,9 @@ and verifies that the resulting fit stream reports workflow phases and can be
 consumed by `diagnose`. The `diagnose --out` path is also pinned, and the report
 echoes source fit metadata before recomputing diagnostics and reports its own
 replay workflow phases. Diagnose reports R-hat/ESS statistic and
-coordinate-reduction labels beside the recomputed diagnostic maps. The fit stream trailer reports the same provisional draw
+coordinate-reduction labels beside the recomputed diagnostic maps. Unavailable
+R-hat/ESS values in v0 artifacts are JSON `null`, not non-JSON floats or late
+serialization failures. The fit stream trailer reports the same provisional draw
 format marker as the header plus completion metadata, and `diagnose` rejects
 mismatched trailer metadata when it is present while reporting which optional
 trailer completion fields were present. Diagnose reports source artifact

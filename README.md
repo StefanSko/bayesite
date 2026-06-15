@@ -159,7 +159,9 @@ a nonzero exit code; messages are written as repair instructions.
 Artifact commands use `--out` uniformly. `diagnose`, `recover`, and `sbc` write
 one JSON object to stdout when `--out` is omitted or `--out -` is used;
 `sample` and `prior-predictive` write NDJSON the same way. Successful artifact
-commands keep stderr empty.
+commands keep stderr empty. R-hat/ESS values that are mathematically unavailable
+for short or degenerate chains are encoded as JSON `null`, never as non-JSON
+`NaN` or infinity values.
 
 For commands with multiple input documents, at most one input path may be `-`;
 Bayesite rejects ambiguous stdin use before reading. `sample` and

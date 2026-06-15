@@ -5,7 +5,8 @@
 //! kind/scope, parameter names/shapes/coordinate order, packing order,
 //! workflow phases, settings, seed, chain count), one object per draw with
 //! constrained values keyed by parameter, and a trailer with per-chain
-//! diagnostics plus cross-chain R-hat/ESS. The marker is mandatory: the real
+//! diagnostics plus cross-chain R-hat/ESS. Unavailable diagnostics are encoded
+//! as JSON null, never as non-JSON floats. The marker is mandatory: the real
 //! fit-artifact format is defined
 //! elsewhere, and nothing may grow load-bearing dependencies on this one
 //! unnoticed.
@@ -123,6 +124,14 @@ fn diagnose_workflow_phases_value() -> Value {
             .map(|phase| Value::Str((*phase).to_string()))
             .collect(),
     )
+}
+
+fn diagnostic_value(value: f64) -> Value {
+    if value.is_finite() {
+        Value::Float(value)
+    } else {
+        Value::Null
+    }
 }
 
 fn header_value(
@@ -328,8 +337,8 @@ pub fn ndjson_lines(
             worst_rhat = worst_rhat.max(diagnostics::split_rhat(&series));
             worst_ess = worst_ess.min(diagnostics::effective_sample_size(&series));
         }
-        rhat_entries.push((name.clone(), Value::Float(worst_rhat)));
-        ess_entries.push((name.clone(), Value::Float(worst_ess)));
+        rhat_entries.push((name.clone(), diagnostic_value(worst_rhat)));
+        ess_entries.push((name.clone(), diagnostic_value(worst_ess)));
     }
 
     let chain_stats = Value::Array(
@@ -1452,7 +1461,7 @@ fn validate_trailer_chains(
 /// `diagnostics_format: "v0-provisional"`, the source format, source artifact
 /// identity when present, source workflow phases when present, draws per chain,
 /// per-chain sampler stats from the fit trailer, and recomputed per-parameter
-/// R-hat/ESS.
+/// R-hat/ESS. Unavailable diagnostic values are reported as JSON null.
 pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
     let mut lines = text.lines();
     let header_line = lines
@@ -1714,8 +1723,8 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
             worst_rhat = worst_rhat.max(diagnostics::split_rhat(coord_series));
             worst_ess = worst_ess.min(diagnostics::effective_sample_size(coord_series));
         }
-        rhat_entries.push((spec.name.clone(), Value::Float(worst_rhat)));
-        ess_entries.push((spec.name.clone(), Value::Float(worst_ess)));
+        rhat_entries.push((spec.name.clone(), diagnostic_value(worst_rhat)));
+        ess_entries.push((spec.name.clone(), diagnostic_value(worst_ess)));
     }
 
     let mut response_entries = vec![
@@ -2345,11 +2354,11 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
             let response = Value::Object(vec![
                 (
                     "rhat".to_string(),
-                    Value::Float(diagnostics::split_rhat(&series)),
+                    diagnostic_value(diagnostics::split_rhat(&series)),
                 ),
                 (
                     "ess".to_string(),
-                    Value::Float(diagnostics::effective_sample_size(&series)),
+                    diagnostic_value(diagnostics::effective_sample_size(&series)),
                 ),
             ]);
             json::write(&response)

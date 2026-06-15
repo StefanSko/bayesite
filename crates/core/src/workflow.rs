@@ -464,6 +464,14 @@ fn tensor_integer_value(tensor: &Tensor) -> Value {
     }
 }
 
+fn diagnostic_value(value: f64) -> Value {
+    if value.is_finite() {
+        Value::Float(value)
+    } else {
+        Value::Null
+    }
+}
+
 fn integer_flags_value(shape: &[usize], flags: &[bool], context: &str) -> Result<Value, Error> {
     let expected = shape.iter().product::<usize>().max(1);
     if flags.len() != expected {
@@ -716,8 +724,8 @@ fn summarize_param(
                 Value::Array(contains_by_coord)
             },
         ),
-        ("rhat".to_string(), Value::Float(worst_rhat)),
-        ("ess".to_string(), Value::Float(worst_ess)),
+        ("rhat".to_string(), diagnostic_value(worst_rhat)),
+        ("ess".to_string(), diagnostic_value(worst_ess)),
         ("name".to_string(), Value::Str(name.to_string())),
     ])
 }
@@ -1214,11 +1222,16 @@ fn int_coord_value(shape: &[usize], values: &[i64]) -> Value {
     }
 }
 
-fn float_coord_value(shape: &[usize], values: &[f64]) -> Value {
+fn diagnostic_coord_value(shape: &[usize], values: &[f64]) -> Value {
     if shape.is_empty() {
-        Value::Float(values[0])
+        diagnostic_value(values[0])
     } else {
-        Value::Array(values.iter().map(|&value| Value::Float(value)).collect())
+        Value::Array(
+            values
+                .iter()
+                .map(|&value| diagnostic_value(value))
+                .collect(),
+        )
     }
 }
 
@@ -1770,8 +1783,8 @@ pub fn sbc_report(
                         Value::Str("per_parameter_coordinate_marginal".to_string()),
                     ),
                     ("tie_count".to_string(), tie_count_value),
-                    ("rhat".to_string(), float_coord_value(shape, &rhats)),
-                    ("ess".to_string(), float_coord_value(shape, &esses)),
+                    ("rhat".to_string(), diagnostic_coord_value(shape, &rhats)),
+                    ("ess".to_string(), diagnostic_coord_value(shape, &esses)),
                 ]),
             ));
         }
