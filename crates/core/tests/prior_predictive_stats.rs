@@ -1,9 +1,12 @@
 //! Self-contained prior-predictive analytic checks.
 
+use bayesite_core::error::ErrorKind;
 use bayesite_core::ir::{
-    Distribution, Expr, ModelMeta, ResolvedFreeValue, ResolvedParam, ResolvedStochasticSite, Size,
+    DataSchema, Dim, Distribution, Expr, ModelMeta, ResolvedData, ResolvedFreeValue, ResolvedParam,
+    ResolvedStochasticSite, Size,
 };
 use bayesite_core::json::{self, Value};
+use bayesite_core::model::DataValue;
 use bayesite_core::predictive::{
     prior_predictive_ndjson_lines, simulate_prior_predictive, PriorPredictiveSettings,
 };
@@ -57,6 +60,43 @@ fn scalar_bernoulli_observed_model(probs: f64) -> ModelMeta {
     }
 }
 
+fn scalar_normal_with_vector_loc_model() -> ModelMeta {
+    let distribution = Distribution::Normal {
+        loc: Expr::Data("loc".to_string()),
+        scale: Expr::Const(1.0),
+    };
+    ModelMeta {
+        params: vec![(
+            "theta".to_string(),
+            ResolvedParam {
+                distribution: distribution.clone(),
+                constraint: None,
+                size: Size::Scalar,
+            },
+        )],
+        data: vec![(
+            "loc".to_string(),
+            ResolvedData {
+                schema: DataSchema::Shape(vec![Dim::Fixed(3)]),
+            },
+        )],
+        observed_nodes: vec![],
+        expressions: vec![],
+        free_values: vec![(
+            "theta".to_string(),
+            ResolvedFreeValue {
+                constraint: None,
+                size: Size::Scalar,
+            },
+        )],
+        stochastic_sites: vec![ResolvedStochasticSite {
+            name: "theta_site".to_string(),
+            distribution,
+            value: Expr::Param("theta".to_string()),
+        }],
+    }
+}
+
 #[test]
 fn scalar_normal_prior_predictive_matches_analytic_moments() {
     let loc = 2.0;
@@ -92,6 +132,28 @@ fn scalar_normal_prior_predictive_matches_analytic_moments() {
         (variance - scale * scale).abs() < 0.6,
         "variance {variance} should be close to {}",
         scale * scale
+    );
+}
+
+#[test]
+fn param_prior_predictive_does_not_expand_beyond_free_value_shape() {
+    let settings = PriorPredictiveSettings { num_draws: 1 };
+    let data = vec![(
+        "loc".to_string(),
+        DataValue {
+            shape: vec![3],
+            values: vec![0.0, 1.0, 2.0],
+            integer: false,
+        },
+    )];
+
+    let err = simulate_prior_predictive(scalar_normal_with_vector_loc_model(), data, &settings, 19)
+        .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::DataShapeMismatch);
+    assert_eq!(
+        err.message,
+        "cannot broadcast Normal loc to simulated shape []"
     );
 }
 

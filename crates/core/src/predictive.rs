@@ -387,7 +387,10 @@ fn wrap_scatter_index(index: i64, len: usize) -> Result<usize, Error> {
 }
 
 fn output_shape(params: &[&Tensor], target: Option<&[usize]>) -> Result<Vec<usize>, Error> {
-    let mut shape = target.map_or_else(Vec::new, |shape| shape.to_vec());
+    if let Some(shape) = target {
+        return Ok(shape.to_vec());
+    }
+    let mut shape = Vec::new();
     for param in params {
         shape = Tensor::broadcast_shapes(&shape, param.shape())?;
     }
