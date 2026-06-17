@@ -8,10 +8,11 @@
 //! tenth of a standard deviation is still caught.
 
 use bayesite_core::ir::{
-    decode_model, Constraint, Distribution, Expr, ModelMeta, ResolvedParam, Size,
+    decode_model, Constraint, DataSchema, Dim, Distribution, Expr, ModelMeta, ResolvedData,
+    ResolvedParam, Size,
 };
 use bayesite_core::json;
-use bayesite_core::model::{data_from_json, Posterior};
+use bayesite_core::model::{data_from_json, DataValue, Posterior};
 use bayesite_core::sampler::{sample, Settings};
 
 fn scalar_normal_model(loc: f64, scale: f64, constraint: Option<Constraint>) -> ModelMeta {
@@ -35,11 +36,131 @@ fn scalar_normal_model(loc: f64, scale: f64, constraint: Option<Constraint>) -> 
     }
 }
 
+fn vector_normal_model(loc: &[f64], scale: &[f64]) -> (ModelMeta, Vec<(String, DataValue)>) {
+    assert_eq!(loc.len(), scale.len());
+    let dim = loc.len() as i64;
+    let model = ModelMeta {
+        params: vec![(
+            "x".to_string(),
+            ResolvedParam {
+                distribution: Distribution::Normal {
+                    loc: Expr::Data("loc".to_string()),
+                    scale: Expr::Data("scale".to_string()),
+                },
+                constraint: None,
+                size: Size::Fixed(dim),
+            },
+        )],
+        data: vec![
+            (
+                "loc".to_string(),
+                ResolvedData {
+                    schema: DataSchema::Shape(vec![Dim::Fixed(dim)]),
+                },
+            ),
+            (
+                "scale".to_string(),
+                ResolvedData {
+                    schema: DataSchema::Shape(vec![Dim::Fixed(dim)]),
+                },
+            ),
+        ],
+        observed_nodes: vec![],
+        expressions: vec![],
+        free_values: vec![],
+        stochastic_sites: vec![],
+    };
+    let data = vec![
+        (
+            "loc".to_string(),
+            DataValue {
+                shape: vec![loc.len()],
+                values: loc.to_vec(),
+                integer: false,
+            },
+        ),
+        (
+            "scale".to_string(),
+            DataValue {
+                shape: vec![scale.len()],
+                values: scale.to_vec(),
+                integer: false,
+            },
+        ),
+    ];
+    (model, data)
+}
+
+fn correlated_mvn_model() -> (ModelMeta, Vec<(String, DataValue)>) {
+    let model = ModelMeta {
+        params: vec![(
+            "x".to_string(),
+            ResolvedParam {
+                distribution: Distribution::MultivariateNormal {
+                    mean: Expr::Data("mean".to_string()),
+                    scale_tril: Expr::Data("scale_tril".to_string()),
+                },
+                constraint: None,
+                size: Size::Fixed(2),
+            },
+        )],
+        data: vec![
+            (
+                "mean".to_string(),
+                ResolvedData {
+                    schema: DataSchema::Shape(vec![Dim::Fixed(2)]),
+                },
+            ),
+            (
+                "scale_tril".to_string(),
+                ResolvedData {
+                    schema: DataSchema::Shape(vec![Dim::Fixed(2), Dim::Fixed(2)]),
+                },
+            ),
+        ],
+        observed_nodes: vec![],
+        expressions: vec![],
+        free_values: vec![],
+        stochastic_sites: vec![],
+    };
+    let data = vec![
+        (
+            "mean".to_string(),
+            DataValue {
+                shape: vec![2],
+                values: vec![1.0, -0.5],
+                integer: false,
+            },
+        ),
+        (
+            "scale_tril".to_string(),
+            DataValue {
+                shape: vec![2, 2],
+                // Covariance is [[1.0, 0.6], [0.6, 1.0]].
+                values: vec![1.0, 0.0, 0.6, 0.8],
+                integer: false,
+            },
+        ),
+    ];
+    (model, data)
+}
+
 fn moments(draws: &[Vec<f64>], dim: usize) -> (f64, f64) {
     let n = draws.len() as f64;
     let mean = draws.iter().map(|q| q[dim]).sum::<f64>() / n;
     let var = draws.iter().map(|q| (q[dim] - mean).powi(2)).sum::<f64>() / (n - 1.0);
     (mean, var)
+}
+
+fn covariance(draws: &[Vec<f64>], i: usize, j: usize) -> f64 {
+    let n = draws.len() as f64;
+    let mean_i = draws.iter().map(|q| q[i]).sum::<f64>() / n;
+    let mean_j = draws.iter().map(|q| q[j]).sum::<f64>() / n;
+    draws
+        .iter()
+        .map(|q| (q[i] - mean_i) * (q[j] - mean_j))
+        .sum::<f64>()
+        / (n - 1.0)
 }
 
 #[test]
@@ -77,6 +198,69 @@ fn shifted_scaled_normal_moments() {
         "inv_mass {:?}",
         chain.inv_mass
     );
+}
+
+#[test]
+fn vector_diagonal_normal_moments() {
+    let loc = [0.0, 2.0, -1.0];
+    let scale = [1.0, 0.5, 2.0];
+    let (model, data) = vector_normal_model(&loc, &scale);
+    let posterior = Posterior::new(model, data).unwrap();
+    let settings = Settings {
+        num_warmup: 700,
+        num_draws: 3000,
+        ..Settings::default()
+    };
+
+    let chain = sample(&posterior, &settings, 20240618, 2).unwrap();
+
+    assert_eq!(chain.draws.len(), settings.num_draws);
+    assert_eq!(chain.divergences, 0);
+    for dim in 0..loc.len() {
+        let (mean, var) = moments(&chain.draws, dim);
+        assert!(
+            (mean - loc[dim]).abs() < 0.25 * scale[dim],
+            "dim {dim} mean {mean} want {}",
+            loc[dim]
+        );
+        assert!(
+            (var.sqrt() - scale[dim]).abs() < 0.25 * scale[dim].max(1.0),
+            "dim {dim} sd {} want {}",
+            var.sqrt(),
+            scale[dim]
+        );
+    }
+    assert!(
+        (0.4..2.0).contains(&chain.inv_mass[0])
+            && (0.05..1.0).contains(&chain.inv_mass[1])
+            && (1.5..8.0).contains(&chain.inv_mass[2]),
+        "adapted diagonal metric {:?}",
+        chain.inv_mass
+    );
+}
+
+#[test]
+fn correlated_mvn_moments() {
+    let (model, data) = correlated_mvn_model();
+    let posterior = Posterior::new(model, data).unwrap();
+    let settings = Settings {
+        num_warmup: 800,
+        num_draws: 4000,
+        ..Settings::default()
+    };
+
+    let chain = sample(&posterior, &settings, 20240619, 0).unwrap();
+
+    assert_eq!(chain.draws.len(), settings.num_draws);
+    assert_eq!(chain.divergences, 0);
+    let (mean0, var0) = moments(&chain.draws, 0);
+    let (mean1, var1) = moments(&chain.draws, 1);
+    let cov01 = covariance(&chain.draws, 0, 1);
+    assert!((mean0 - 1.0).abs() < 0.2, "mean0 {mean0}");
+    assert!((mean1 + 0.5).abs() < 0.2, "mean1 {mean1}");
+    assert!((var0 - 1.0).abs() < 0.25, "var0 {var0}");
+    assert!((var1 - 1.0).abs() < 0.25, "var1 {var1}");
+    assert!((cov01 - 0.6).abs() < 0.25, "cov01 {cov01}");
 }
 
 #[test]
