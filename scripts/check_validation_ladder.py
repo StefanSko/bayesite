@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Run Bayesite's self-contained validation ladder.
+"""Run Bayesite's development validation ladder.
 
-The default path uses only Rust/Cargo tools and committed fixtures. Optional
-oracle-backed gates may use Python/JAX/jaxstanv5, but those are never required
+The default path uses Rust/Cargo tools, committed fixtures, and a pinned
+nuts-rs checkout for independent NUTS statistical validation. Optional
+jaxstanv5 gates may use Python/JAX/BlackJAX, but those are never required
 for the agent execution path.
 """
 
@@ -122,6 +123,23 @@ def _check_release_cli_binary() -> None:
             )
 
 
+def _nuts_rs_command(args: argparse.Namespace) -> list[str]:
+    return [
+        "python3",
+        "scripts/check_nuts_rs_oracle.py",
+        "--nuts-rs-path",
+        str(args.nuts_rs_path),
+        "--draws",
+        str(args.nuts_rs_draws),
+        "--warmup",
+        str(args.nuts_rs_warmup),
+        "--chains",
+        str(args.nuts_rs_chains),
+        "--batches-per-chain",
+        str(args.nuts_rs_batches_per_chain),
+    ]
+
+
 def _posterior_command(args: argparse.Namespace) -> list[str]:
     command = [
         "uv",
@@ -146,6 +164,16 @@ def main() -> None:
         action="store_true",
         help="skip the wasm build gate when the target is not installed",
     )
+    parser.add_argument(
+        "--nuts-rs-path",
+        type=Path,
+        default=Path("/tmp/nuts-rs"),
+        help="path to a pinned nuts-rs checkout for the mandatory NUTS oracle gate",
+    )
+    parser.add_argument("--nuts-rs-draws", type=int, default=1000)
+    parser.add_argument("--nuts-rs-warmup", type=int, default=500)
+    parser.add_argument("--nuts-rs-chains", type=int, default=4)
+    parser.add_argument("--nuts-rs-batches-per-chain", type=int, default=8)
     parser.add_argument(
         "--posterior",
         action="store_true",
@@ -198,10 +226,12 @@ def main() -> None:
             ],
         )
 
+    _run("G6 nuts-rs NUTS statistical oracle", _nuts_rs_command(args))
+
     if args.posterior:
         if shutil.which("uv") is None:
-            sys.exit("G6 posterior oracle requires uv")
-        _run("G6 jaxstanv5/BlackJAX posterior oracle", _posterior_command(args))
+            sys.exit("G7 posterior oracle requires uv")
+        _run("G7 jaxstanv5/BlackJAX posterior oracle", _posterior_command(args))
 
     print("\nvalidation ladder passed")
 
