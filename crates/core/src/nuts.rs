@@ -342,3 +342,149 @@ pub fn transition(
         accept_prob,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{Distribution, Expr, ModelMeta, ResolvedParam, Size};
+
+    fn scalar_normal_model(loc: f64, scale: f64) -> ModelMeta {
+        ModelMeta {
+            params: vec![(
+                "x".to_string(),
+                ResolvedParam {
+                    distribution: Distribution::Normal {
+                        loc: Expr::Const(loc),
+                        scale: Expr::Const(scale),
+                    },
+                    constraint: None,
+                    size: Size::Scalar,
+                },
+            )],
+            data: vec![],
+            observed_nodes: vec![],
+            expressions: vec![],
+            free_values: vec![],
+            stochastic_sites: vec![],
+        }
+    }
+
+    fn scalar_normal_posterior() -> Posterior {
+        Posterior::new(scalar_normal_model(0.0, 1.0), vec![]).unwrap()
+    }
+
+    fn assert_close(actual: f64, expected: f64, tolerance: f64, context: &str) {
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{context}: got {actual}, expected {expected}, tolerance {tolerance}"
+        );
+    }
+
+    fn state_with_momentum(ham: &Hamiltonian<'_>, q: f64, p: f64) -> State {
+        let mut state = ham.init_state(vec![q]).unwrap();
+        state.p[0] = p;
+        state
+    }
+
+    #[test]
+    fn generalized_u_turn_criterion_requires_both_endpoints_to_point_forward() {
+        assert!(criterion(&[1.0], &[2.0], &[3.0]));
+        assert!(!criterion(&[-1.0], &[2.0], &[3.0]));
+        assert!(!criterion(&[1.0], &[-2.0], &[3.0]));
+        assert!(!criterion(&[0.0], &[2.0], &[3.0]));
+    }
+
+    #[test]
+    fn log_sum_exp_handles_negative_infinity_and_large_negative_inputs() {
+        assert_eq!(log_sum_exp(f64::NEG_INFINITY, -2.0), -2.0);
+        assert_eq!(log_sum_exp(-2.0, f64::NEG_INFINITY), -2.0);
+        assert_eq!(
+            log_sum_exp(f64::NEG_INFINITY, f64::NEG_INFINITY),
+            f64::NEG_INFINITY
+        );
+        assert_close(
+            log_sum_exp(-1000.0, -1000.0),
+            -1000.0 + 2.0f64.ln(),
+            1e-12,
+            "stable log_sum_exp",
+        );
+        assert_eq!(log_sum_exp(-7.0, -3.0), log_sum_exp(-3.0, -7.0));
+    }
+
+    #[test]
+    fn leapfrog_forward_then_backward_recovers_state() {
+        let posterior = scalar_normal_posterior();
+        let ham = Hamiltonian::new(&posterior, vec![1.0]);
+        let state = state_with_momentum(&ham, 0.3, 0.7);
+
+        let forward = ham.leapfrog(&state, 0.05).unwrap();
+        let recovered = ham.leapfrog(&forward, -0.05).unwrap();
+
+        assert_close(recovered.q[0], state.q[0], 1e-12, "q reversibility");
+        assert_close(recovered.p[0], state.p[0], 1e-12, "p reversibility");
+        assert_close(recovered.logp, state.logp, 1e-12, "logp reversibility");
+        assert_close(
+            recovered.grad[0],
+            state.grad[0],
+            1e-12,
+            "grad reversibility",
+        );
+    }
+
+    #[test]
+    fn small_leapfrog_step_nearly_conserves_hamiltonian_energy() {
+        let posterior = scalar_normal_posterior();
+        let ham = Hamiltonian::new(&posterior, vec![1.0]);
+        let state = state_with_momentum(&ham, 0.3, 0.7);
+        let before = ham.energy(&state);
+
+        let after_state = ham.leapfrog(&state, 0.01).unwrap();
+        let after = ham.energy(&after_state);
+
+        assert_close(
+            after,
+            before,
+            1e-6,
+            "Hamiltonian energy after one small step",
+        );
+    }
+
+    #[test]
+    fn fixed_seed_transition_is_deterministic() {
+        let posterior = scalar_normal_posterior();
+        let ham = Hamiltonian::new(&posterior, vec![1.0]);
+        let state = ham.init_state(vec![0.1]).unwrap();
+        let mut rng_a = Xoshiro256PlusPlus::for_chain(20240617, 0);
+        let mut rng_b = Xoshiro256PlusPlus::for_chain(20240617, 0);
+
+        let a = transition(&ham, &mut rng_a, state.clone(), 0.25, 5).unwrap();
+        let b = transition(&ham, &mut rng_b, state, 0.25, 5).unwrap();
+
+        assert_eq!(a.q, b.q);
+        assert_eq!(a.logp, b.logp);
+        assert_eq!(a.grad, b.grad);
+        assert_eq!(a.depth, b.depth);
+        assert_eq!(a.n_leapfrog, b.n_leapfrog);
+        assert_eq!(a.divergent, b.divergent);
+        assert_eq!(a.accept_prob, b.accept_prob);
+    }
+
+    #[test]
+    fn too_large_step_reports_divergence() {
+        let posterior = scalar_normal_posterior();
+        let ham = Hamiltonian::new(&posterior, vec![1.0]);
+        let state = ham.init_state(vec![0.1]).unwrap();
+        let mut rng = Xoshiro256PlusPlus::for_chain(20240617, 0);
+
+        let result = transition(&ham, &mut rng, state, 100.0, 5).unwrap();
+
+        assert!(
+            result.divergent,
+            "large step should produce a divergent transition"
+        );
+        assert!(
+            result.n_leapfrog >= 1,
+            "divergent transitions should report attempted leapfrog work"
+        );
+    }
+}
