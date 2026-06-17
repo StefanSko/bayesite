@@ -103,17 +103,7 @@ fn mask_support(tape: &mut Tape, support: Tensor, log_density: Var) -> Var {
 /// Elementwise (or event-wise) log probability of `value` under `dist`.
 pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Error> {
     match dist {
-        DistVars::Normal { loc, scale } => {
-            let delta = tape.sub(value, *loc);
-            let standardized = tape.div(delta, *scale);
-            let sq = tape.mul(standardized, standardized);
-            let half_neg = scalar(tape, -0.5);
-            let term = tape.mul(half_neg, sq);
-            let log_scale = tape.ln(*scale);
-            let term = tape.sub(term, log_scale);
-            let half_log_2pi = scalar(tape, 0.5 * (2.0 * std::f64::consts::PI).ln());
-            Ok(tape.sub(term, half_log_2pi))
-        }
+        DistVars::Normal { loc, scale } => Ok(tape.normal_log_prob(value, *loc, *scale)),
         DistVars::HalfNormal { scale } => {
             let standardized = tape.div(value, *scale);
             let lead = scalar(tape, 0.5 * (2.0 / std::f64::consts::PI).ln());
