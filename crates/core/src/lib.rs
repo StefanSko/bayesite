@@ -11,6 +11,7 @@
 #![deny(unsafe_code)]
 
 pub mod adapt;
+pub mod artifact;
 pub mod density;
 pub mod diagnostics;
 pub mod error;
@@ -19,6 +20,7 @@ pub mod json;
 pub mod linalg;
 pub mod model;
 pub mod nuts;
+pub mod predictive;
 pub mod protocol;
 pub mod rng;
 pub mod sampler;
@@ -28,5 +30,6 @@ pub mod tensor;
 #[cfg(target_arch = "wasm32")]
 #[allow(unsafe_code)]
 pub mod wasm_abi;
+pub mod workflow;
 
 pub use error::Error;

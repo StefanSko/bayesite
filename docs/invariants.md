@@ -38,7 +38,8 @@ Core invariants that should remain true as Bayesite evolves.
   producer or user code.
 - Current v1 compatibility uses the historical envelope
   `{"jaxstanv5_ir": 1, "model": ...}`. Renaming the envelope is a versioned
-  format decision, not a cleanup.
+  format decision, not a cleanup. The two envelope fields each appear exactly
+  once; extra or duplicate envelope fields are malformed.
 - Node tags and field lists are the wire contract. Producer class names are not
   the contract.
 - Entry-array order is semantic everywhere and must never be normalized,

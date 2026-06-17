@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Run Bayesite's self-contained validation ladder.
+"""Run Bayesite's development validation ladder.
 
-The default path uses only Rust/Cargo tools and committed fixtures. Optional
-oracle-backed gates may use Python/JAX/jaxstanv5, but those are never required
+The default path uses Rust/Cargo tools, committed fixtures, and a pinned
+nuts-rs checkout for independent NUTS statistical validation. Optional
+jaxstanv5 gates may use Python/JAX/BlackJAX, but those are never required
 for the agent execution path.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -60,6 +62,84 @@ def _check_zero_dependency_core() -> None:
         )
 
 
+def _check_release_cli_binary() -> None:
+    _run(
+        "G0 release CLI binary build",
+        [
+            "cargo",
+            "build",
+            "--release",
+            "--bin",
+            "bayesite",
+            "--manifest-path",
+            str(CORE_MANIFEST),
+        ],
+    )
+    binary_name = "bayesite.exe" if sys.platform.startswith("win") else "bayesite"
+    binary = REPO_ROOT / "target" / "release" / binary_name
+    command = [str(binary)]
+    print(f"\n== G1 release CLI JSON error smoke\n$ {_command_text(command)}", flush=True)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        sys.exit(f"missing executable for G1 release CLI JSON error smoke: {error.filename}")
+    if result.returncode == 0:
+        sys.exit("G1 release CLI JSON error smoke failed: missing-args run must fail")
+    if result.stdout:
+        sys.exit("G1 release CLI JSON error smoke failed: error path wrote stdout")
+    try:
+        payload = json.loads(result.stderr)
+    except json.JSONDecodeError as error:
+        sys.exit(f"G1 release CLI JSON error smoke failed: stderr is not JSON: {error}")
+    if payload.get("error_format") != "v0-provisional":
+        sys.exit(
+            "G1 release CLI JSON error smoke failed: stderr JSON must include "
+            'error_format "v0-provisional"'
+        )
+    if payload.get("error") != "InvalidSettings":
+        sys.exit(
+            "G1 release CLI JSON error smoke failed: stderr JSON must include "
+            'error "InvalidSettings"'
+        )
+    message = payload.get("message")
+    if not isinstance(message, str):
+        sys.exit("G1 release CLI JSON error smoke failed: stderr JSON needs a message string")
+    if "missing command" not in message:
+        sys.exit(
+            "G1 release CLI JSON error smoke failed: missing-args message must "
+            "name the missing command"
+        )
+    for command_name in ["sample", "diagnose", "prior-predictive", "recover", "sbc"]:
+        if f"bayesite {command_name}" not in message:
+            sys.exit(
+                "G1 release CLI JSON error smoke failed: usage message must list "
+                f"bayesite {command_name}"
+            )
+
+
+def _nuts_rs_command(args: argparse.Namespace) -> list[str]:
+    return [
+        "python3",
+        "scripts/check_nuts_rs_oracle.py",
+        "--nuts-rs-path",
+        str(args.nuts_rs_path),
+        "--draws",
+        str(args.nuts_rs_draws),
+        "--warmup",
+        str(args.nuts_rs_warmup),
+        "--chains",
+        str(args.nuts_rs_chains),
+        "--batches-per-chain",
+        str(args.nuts_rs_batches_per_chain),
+    ]
+
+
 def _posterior_command(args: argparse.Namespace) -> list[str]:
     command = [
         "uv",
@@ -84,6 +164,16 @@ def main() -> None:
         action="store_true",
         help="skip the wasm build gate when the target is not installed",
     )
+    parser.add_argument(
+        "--nuts-rs-path",
+        type=Path,
+        default=Path("/tmp/nuts-rs"),
+        help="path to a pinned nuts-rs checkout for the mandatory NUTS oracle gate",
+    )
+    parser.add_argument("--nuts-rs-draws", type=int, default=1000)
+    parser.add_argument("--nuts-rs-warmup", type=int, default=500)
+    parser.add_argument("--nuts-rs-chains", type=int, default=4)
+    parser.add_argument("--nuts-rs-batches-per-chain", type=int, default=8)
     parser.add_argument(
         "--posterior",
         action="store_true",
@@ -118,6 +208,7 @@ def main() -> None:
             "warnings",
         ],
     )
+    _check_release_cli_binary()
     _run(
         "G1-G5 fixture, log-density, sampler, and protocol tests",
         ["cargo", "test", "--manifest-path", str(CORE_MANIFEST)],
@@ -135,10 +226,12 @@ def main() -> None:
             ],
         )
 
+    _run("G6 nuts-rs NUTS statistical oracle", _nuts_rs_command(args))
+
     if args.posterior:
         if shutil.which("uv") is None:
-            sys.exit("G6 posterior oracle requires uv")
-        _run("G6 jaxstanv5/BlackJAX posterior oracle", _posterior_command(args))
+            sys.exit("G7 posterior oracle requires uv")
+        _run("G7 jaxstanv5/BlackJAX posterior oracle", _posterior_command(args))
 
     print("\nvalidation ladder passed")
 

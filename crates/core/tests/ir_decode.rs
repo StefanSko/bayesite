@@ -83,6 +83,33 @@ fn unknown_version_is_unsupported() {
     assert_eq!(err.kind, ErrorKind::UnsupportedIRVersion);
 }
 
+#[test]
+fn unexpected_envelope_field_is_malformed() {
+    let doc =
+        json::parse(r#"{"jaxstanv5_ir": 1, "producer": "test", "model": {"node": "ModelMeta"}}"#)
+            .unwrap();
+    let err = decode_model(&doc).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err.message.contains("producer"), "message: {}", err.message);
+}
+
+#[test]
+fn duplicate_envelope_version_field_is_malformed() {
+    let text = minimal_model(NORMAL_PARAM).replacen(
+        r#""jaxstanv5_ir": 1"#,
+        r#""jaxstanv5_ir": 1, "jaxstanv5_ir": 1"#,
+        1,
+    );
+    let doc = json::parse(&text).unwrap();
+    let err = decode_model(&doc).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(
+        err.message.contains("duplicate \"jaxstanv5_ir\""),
+        "message: {}",
+        err.message
+    );
+}
+
 fn minimal_model(params_entry: &str) -> String {
     format!(
         r#"{{"jaxstanv5_ir": 1, "model": {{"node": "ModelMeta",
@@ -138,6 +165,22 @@ fn unexpected_field_is_malformed() {
     let doc = json::parse(&minimal_model(&entry)).unwrap();
     let err = decode_model(&doc).unwrap_err();
     assert_eq!(err.kind, ErrorKind::MalformedDocument);
+}
+
+#[test]
+fn duplicate_node_tag_field_is_malformed() {
+    let entry = NORMAL_PARAM.replace(
+        r#""distribution": {"node": "Normal","#,
+        r#""distribution": {"node": "Normal", "node": "HalfNormal","#,
+    );
+    let doc = json::parse(&minimal_model(&entry)).unwrap();
+    let err = decode_model(&doc).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(
+        err.message.contains("duplicate \"node\""),
+        "message: {}",
+        err.message
+    );
 }
 
 #[test]

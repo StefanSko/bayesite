@@ -248,9 +248,17 @@ impl<'a> NodeFields<'a> {
                 "expected a node object {\"node\": <tag>, ...}; got a non-object value",
             ));
         };
-        let tag = value
-            .get("node")
-            .and_then(Value::as_str)
+        let mut node_tags = entries.iter().filter(|(key, _)| key == "node");
+        let Some((_, tag_value)) = node_tags.next() else {
+            return Err(malformed("node objects need a string \"node\" tag field"));
+        };
+        if node_tags.next().is_some() {
+            return Err(malformed(
+                "node objects must have exactly one \"node\" tag field; remove the duplicate \"node\" field",
+            ));
+        }
+        let tag = tag_value
+            .as_str()
             .ok_or_else(|| malformed("node objects need a string \"node\" tag field"))?;
         Ok(NodeFields {
             tag,
@@ -690,10 +698,41 @@ fn decode_tuple<T>(
 
 /// Decode a versioned IR envelope `{"jaxstanv5_ir": 1, "model": {...}}`.
 pub fn decode_model(document: &Value) -> Result<ModelMeta, Error> {
-    if !matches!(document, Value::Object(_)) {
+    let Value::Object(entries) = document else {
         return Err(malformed(
             "the IR document must be a JSON object {\"jaxstanv5_ir\": 1, \"model\": {...}}",
         ));
+    };
+    let mut version_fields = 0usize;
+    let mut model_fields = 0usize;
+    let mut unexpected_field: Option<&str> = None;
+    for (name, _) in entries {
+        match name.as_str() {
+            "jaxstanv5_ir" => version_fields += 1,
+            "model" => model_fields += 1,
+            _ => unexpected_field = Some(name),
+        }
+    }
+    if version_fields == 0 {
+        return Err(Error::new(
+            ErrorKind::UnsupportedIRVersion,
+            "missing \"jaxstanv5_ir\" version field; set it to 1",
+        ));
+    }
+    if version_fields > 1 {
+        return Err(malformed(
+            "IR envelope must have exactly one \"jaxstanv5_ir\" version field; remove the duplicate \"jaxstanv5_ir\" field",
+        ));
+    }
+    if model_fields > 1 {
+        return Err(malformed(
+            "IR envelope must have exactly one \"model\" field; remove the duplicate \"model\" field",
+        ));
+    }
+    if let Some(name) = unexpected_field {
+        return Err(malformed(format!(
+            "IR envelope has unexpected field \"{name}\"; remove it"
+        )));
     }
     match document.get("jaxstanv5_ir") {
         Some(Value::Int(1)) => {}
@@ -703,12 +742,7 @@ pub fn decode_model(document: &Value) -> Result<ModelMeta, Error> {
                 format!("unsupported jaxstanv5_ir version {other:?}; this backend reads version 1"),
             ))
         }
-        None => {
-            return Err(Error::new(
-                ErrorKind::UnsupportedIRVersion,
-                "missing \"jaxstanv5_ir\" version field; set it to 1",
-            ))
-        }
+        None => unreachable!("version field count was checked above"),
     }
     let model = document
         .get("model")

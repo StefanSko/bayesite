@@ -13,6 +13,7 @@ check:
 check-cargo:
     cargo fmt --check --manifest-path crates/core/Cargo.toml
     cargo clippy --all-targets --manifest-path crates/core/Cargo.toml -- -D warnings
+    cargo build --release --bin bayesite --manifest-path crates/core/Cargo.toml
     cargo test --manifest-path crates/core/Cargo.toml
     cargo build --target wasm32-unknown-unknown --manifest-path crates/core/Cargo.toml
 

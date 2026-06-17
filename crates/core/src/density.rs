@@ -103,17 +103,7 @@ fn mask_support(tape: &mut Tape, support: Tensor, log_density: Var) -> Var {
 /// Elementwise (or event-wise) log probability of `value` under `dist`.
 pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Error> {
     match dist {
-        DistVars::Normal { loc, scale } => {
-            let delta = tape.sub(value, *loc);
-            let standardized = tape.div(delta, *scale);
-            let sq = tape.mul(standardized, standardized);
-            let half_neg = scalar(tape, -0.5);
-            let term = tape.mul(half_neg, sq);
-            let log_scale = tape.ln(*scale);
-            let term = tape.sub(term, log_scale);
-            let half_log_2pi = scalar(tape, 0.5 * (2.0 * std::f64::consts::PI).ln());
-            Ok(tape.sub(term, half_log_2pi))
-        }
+        DistVars::Normal { loc, scale } => Ok(tape.normal_log_prob(value, *loc, *scale)),
         DistVars::HalfNormal { scale } => {
             let standardized = tape.div(value, *scale);
             let lead = scalar(tape, 0.5 * (2.0 / std::f64::consts::PI).ln());
@@ -379,31 +369,7 @@ pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Err
                     tape.value(value).shape()[0]
                 )));
             }
-            let delta = tape.sub(value, *mean);
-            let delta = if tape.value(delta).rank() == 0 {
-                tape.reshape(delta, vec![1])
-            } else {
-                delta
-            };
-            let solved = tape.solve_lower(*scale_tril, delta);
-            let solved_sq = tape.mul(solved, solved);
-            let quadratic = tape.sum(solved_sq);
-            // diag(L) gather: indices i*(n+1)
-            let diag_map = GatherMap {
-                out_shape: vec![event_size],
-                map: (0..event_size).map(|i| i * (event_size + 1)).collect(),
-            };
-            let diag = tape.gather(*scale_tril, diag_map);
-            let log_diag = tape.ln(diag);
-            let log_det = tape.sum(log_diag);
-            let neg_half = scalar(tape, -0.5);
-            let term = tape.mul(neg_half, quadratic);
-            let term = tape.sub(term, log_det);
-            let const_term = scalar(
-                tape,
-                0.5 * (event_size as f64) * (2.0 * std::f64::consts::PI).ln(),
-            );
-            Ok(tape.sub(term, const_term))
+            Ok(tape.multivariate_normal_log_prob(value, *mean, *scale_tril))
         }
         DistVars::OrderedLogistic { eta, cutpoints } => {
             ordered_logistic_log_prob(tape, *eta, *cutpoints, value)

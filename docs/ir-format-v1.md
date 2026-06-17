@@ -19,6 +19,9 @@ resolved declarations diffable, and provides a code-free construction path
 ```
 
 Decoders reject a missing or unknown version with `UnsupportedIRVersion`.
+The two envelope fields must each appear exactly once. Fields outside
+`jaxstanv5_ir` and `model` are malformed; the envelope shape is part of the v1
+wire contract.
 
 ## Encoding rules
 
@@ -53,8 +56,9 @@ Decoders reject a missing or unknown version with `UnsupportedIRVersion`.
 The decoder looks up `"node"` tags in the registry, rebuilds field values
 recursively, and calls the constructor. Unknown tags raise `UnknownNodeTag`;
 nodes with missing or unexpected fields, map entries without exactly
-`"name"`/`"value"`, duplicate entry names, and bare arrays outside map or
-tuple fields raise `MalformedIRDocument`.
+one `"node"` tag, map entries without exactly `"name"`/`"value"`, duplicate
+entry names, and bare arrays outside map or tuple fields raise
+`MalformedIRDocument`.
 
 Empty containers are disambiguated by the *field kind* recorded at
 registration time (`map`, `tuple`, or `value`, derived once from the
