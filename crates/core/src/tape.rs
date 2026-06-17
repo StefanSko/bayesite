@@ -54,6 +54,12 @@ enum Op {
         loc: Var,
         scale: Var,
     },
+    /// MultivariateNormal log probability with analytic adjoints.
+    MultivariateNormalLogProb {
+        value: Var,
+        mean: Var,
+        scale_tril: Var,
+    },
     /// Solve L x = b for lower-triangular L (rank-2) and rank-1 b.
     SolveLower(Var, Var),
     /// Concatenate along the last axis (equal leading dims).
@@ -322,6 +328,45 @@ impl Tape {
         self.push(
             Tensor::from_vec(shape, data),
             Op::NormalLogProb { value, loc, scale },
+            grad,
+        )
+    }
+
+    /// MultivariateNormal log probability for a single rank-1 event.
+    pub fn multivariate_normal_log_prob(&mut self, value: Var, mean: Var, scale_tril: Var) -> Var {
+        let l_t = self.value(scale_tril);
+        assert_eq!(l_t.rank(), 2, "scale_tril must be rank-2");
+        let n = l_t.shape()[0];
+        assert_eq!(l_t.shape(), &[n, n], "scale_tril must be square");
+        let value_b = self
+            .value(value)
+            .broadcast_to(&[n])
+            .expect("value broadcasts to event shape");
+        let mean_b = self
+            .value(mean)
+            .broadcast_to(&[n])
+            .expect("mean broadcasts to event shape");
+        let delta: Vec<f64> = value_b
+            .data()
+            .iter()
+            .zip(mean_b.data())
+            .map(|(&x, &m)| x - m)
+            .collect();
+        let solved = linalg::solve_lower(n, l_t.data(), &delta);
+        let quadratic: f64 = solved.iter().map(|z| z * z).sum();
+        let log_det: f64 = (0..n).map(|i| l_t.data()[i * n + i].ln()).sum();
+        let term = -0.5 * quadratic;
+        let term = term - log_det;
+        let logp = term - 0.5 * (n as f64) * (2.0 * std::f64::consts::PI).ln();
+        let grad =
+            self.requires_grad(value) || self.requires_grad(mean) || self.requires_grad(scale_tril);
+        self.push(
+            Tensor::scalar(logp),
+            Op::MultivariateNormalLogProb {
+                value,
+                mean,
+                scale_tril,
+            },
             grad,
         )
     }
@@ -635,6 +680,55 @@ impl Tape {
                     self.accumulate(adjoints, *scale, Tensor::from_vec(shape, data));
                 }
             }
+            Op::MultivariateNormalLogProb {
+                value,
+                mean,
+                scale_tril,
+            } => {
+                let g = adj.data()[0];
+                let l_t = self.value(*scale_tril);
+                let n = l_t.shape()[0];
+                let value_b = self
+                    .value(*value)
+                    .broadcast_to(&[n])
+                    .expect("value broadcasts to event shape");
+                let mean_b = self
+                    .value(*mean)
+                    .broadcast_to(&[n])
+                    .expect("mean broadcasts to event shape");
+                let delta: Vec<f64> = value_b
+                    .data()
+                    .iter()
+                    .zip(mean_b.data())
+                    .map(|(&x, &m)| x - m)
+                    .collect();
+                let z = linalg::solve_lower(n, l_t.data(), &delta);
+                let alpha = linalg::solve_lower_transpose(n, l_t.data(), &z);
+                if self.requires_grad(*value) {
+                    self.accumulate(
+                        adjoints,
+                        *value,
+                        Tensor::from_vec(vec![n], alpha.iter().map(|a| -g * a).collect()),
+                    );
+                }
+                if self.requires_grad(*mean) {
+                    self.accumulate(
+                        adjoints,
+                        *mean,
+                        Tensor::from_vec(vec![n], alpha.iter().map(|a| g * a).collect()),
+                    );
+                }
+                if self.requires_grad(*scale_tril) {
+                    let mut dl = vec![0.0; n * n];
+                    for i in 0..n {
+                        for j in 0..=i {
+                            dl[i * n + j] = g * alpha[i] * z[j];
+                        }
+                        dl[i * n + i] -= g / l_t.data()[i * n + i];
+                    }
+                    self.accumulate(adjoints, *scale_tril, Tensor::from_vec(vec![n, n], dl));
+                }
+            }
             Op::SolveLower(l, b) => {
                 // x = L^{-1} b. db = L^{-T} adj; dL = -db x^T (lower part).
                 let l_t = self.value(*l);
@@ -892,6 +986,35 @@ mod tests {
             },
             &[Tensor::from_vec(vec![4], vec![-0.5, 0.3, -1.0, 0.8])],
             1e-6,
+        );
+    }
+
+    #[test]
+    fn multivariate_normal_log_prob_gradients_match_finite_difference() {
+        grad_check(
+            |t, v| t.multivariate_normal_log_prob(v[0], v[1], v[2]),
+            &[
+                Tensor::from_vec(vec![3], vec![0.7, -1.2, 0.5]),
+                Tensor::from_vec(vec![3], vec![0.2, -0.4, 0.1]),
+                Tensor::from_vec(
+                    vec![3, 3],
+                    vec![2.0, 0.0, 0.0, 0.6, 1.5, 0.0, -0.3, 0.4, 1.1],
+                ),
+            ],
+            1e-5,
+        );
+    }
+
+    #[test]
+    fn multivariate_normal_log_prob_broadcast_mean_gradient_reduces() {
+        grad_check(
+            |t, v| t.multivariate_normal_log_prob(v[0], v[1], v[2]),
+            &[
+                Tensor::from_vec(vec![2], vec![0.7, -1.2]),
+                Tensor::scalar(0.2),
+                Tensor::from_vec(vec![2, 2], vec![1.3, 0.0, 0.4, 1.7]),
+            ],
+            1e-5,
         );
     }
 
