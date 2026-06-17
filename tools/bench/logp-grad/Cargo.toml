@@ -1,0 +1,9 @@
+[workspace]
+
+[package]
+name = "bayesite-logp-grad-bench"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+bayesite-core = { path = "../../../crates/core" }
