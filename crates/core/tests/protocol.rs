@@ -757,6 +757,56 @@ fn posterior_predictive_rejects_partial_observed_site_coverage() {
 }
 
 #[test]
+fn posterior_check_broadcasts_observed_values_to_replicated_shape() {
+    let fixture = json::parse(&fixture_text("varying_intercepts_poisson")).unwrap();
+    let mut data = fixture.get("data").unwrap().clone();
+    if let Value::Object(entries) = &mut data {
+        for (name, value) in entries {
+            if name == "y" {
+                *value = Value::Int(0);
+            }
+        }
+    }
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), data.clone()),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(48)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+    let request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("posterior-check".to_string()),
+        ),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), data),
+        ("fit".to_string(), Value::Str(fit)),
+        ("seed".to_string(), Value::Int(49)),
+    ]);
+    let report = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    let zero_count = report
+        .get("checks")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .find(|check| check.get("statistic").and_then(Value::as_str) == Some("zero_count"))
+        .unwrap();
+    assert_eq!(
+        zero_count
+            .get("summary")
+            .and_then(|summary| summary.get("observed"))
+            .and_then(Value::as_f64),
+        Some(6.0)
+    );
+}
+
+#[test]
 fn posterior_predictive_uses_broadcast_likelihood_shape() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let mut data = fixture.get("data").unwrap().clone();

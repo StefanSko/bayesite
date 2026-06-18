@@ -2274,12 +2274,20 @@ pub fn posterior_check_report(
                 site.name
             ))
         })?;
+        let observed_tensor = Tensor::from_vec(observed.shape.clone(), observed.values.clone())
+            .broadcast_to(&site.shape)
+            .map_err(|_| {
+                mismatch(format!(
+                    "posterior-check observed data value \"{}\" cannot broadcast from shape {:?} to posterior-predictive site shape {:?}",
+                    site.name, observed.shape, site.shape
+                ))
+            })?;
         let mut statistic_names = vec!["mean", "sd", "min", "max"];
         if site.integer {
             statistic_names.push("zero_count");
         }
         for statistic in statistic_names {
-            let observed_stat = statistic_value(statistic, &observed.values);
+            let observed_stat = statistic_value(statistic, observed_tensor.data());
             let replicated_stats = run
                 .draws
                 .iter()
