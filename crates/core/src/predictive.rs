@@ -1938,6 +1938,80 @@ fn distribution_integer_flags(distribution: &Distribution, value: &Tensor) -> Ve
     value.data().iter().map(|_| integer).collect()
 }
 
+fn include_expr_shape(
+    env: &ForwardEnv<'_>,
+    shape: &mut Vec<usize>,
+    expr: &Expr,
+) -> Result<(), Error> {
+    let value = env.evaluate(expr)?;
+    *shape = Tensor::broadcast_shapes(shape, value.shape())?;
+    Ok(())
+}
+
+fn posterior_predictive_target_shape(
+    env: &ForwardEnv<'_>,
+    distribution: &Distribution,
+    observed_shape: &[usize],
+) -> Result<Vec<usize>, Error> {
+    let mut shape = observed_shape.to_vec();
+    match distribution {
+        Distribution::Normal { loc, scale } => {
+            include_expr_shape(env, &mut shape, loc)?;
+            include_expr_shape(env, &mut shape, scale)?;
+        }
+        Distribution::HalfNormal { scale } => include_expr_shape(env, &mut shape, scale)?,
+        Distribution::StudentT { df, loc, scale } => {
+            include_expr_shape(env, &mut shape, df)?;
+            include_expr_shape(env, &mut shape, loc)?;
+            include_expr_shape(env, &mut shape, scale)?;
+        }
+        Distribution::Exponential { rate } => include_expr_shape(env, &mut shape, rate)?,
+        Distribution::Uniform { low, high } => {
+            include_expr_shape(env, &mut shape, low)?;
+            include_expr_shape(env, &mut shape, high)?;
+        }
+        Distribution::Beta { alpha, beta } => {
+            include_expr_shape(env, &mut shape, alpha)?;
+            include_expr_shape(env, &mut shape, beta)?;
+        }
+        Distribution::Bernoulli { probs } => include_expr_shape(env, &mut shape, probs)?,
+        Distribution::Poisson { rate } => include_expr_shape(env, &mut shape, rate)?,
+        Distribution::Binomial { total_count, probs } => {
+            include_expr_shape(env, &mut shape, total_count)?;
+            include_expr_shape(env, &mut shape, probs)?;
+        }
+        Distribution::BetaBinomial {
+            total_count,
+            alpha,
+            beta,
+        } => {
+            include_expr_shape(env, &mut shape, total_count)?;
+            include_expr_shape(env, &mut shape, alpha)?;
+            include_expr_shape(env, &mut shape, beta)?;
+        }
+        Distribution::NegativeBinomial {
+            mean,
+            overdispersion,
+        } => {
+            include_expr_shape(env, &mut shape, mean)?;
+            include_expr_shape(env, &mut shape, overdispersion)?;
+        }
+        Distribution::MultivariateNormal { mean, scale_tril } => {
+            let mean = env.evaluate(mean)?;
+            let scale_tril = env.evaluate(scale_tril)?;
+            if scale_tril.shape().len() == 2 {
+                let event_shape = vec![scale_tril.shape()[0]];
+                shape = Tensor::broadcast_shapes(&shape, &event_shape)?;
+            }
+            shape = Tensor::broadcast_shapes(&shape, mean.shape())?;
+        }
+        Distribution::OrderedLogistic { eta, cutpoints: _ } => {
+            include_expr_shape(env, &mut shape, eta)?;
+        }
+    }
+    Ok(shape)
+}
+
 /// Simulate replicated observed values from retained posterior draws.
 pub fn simulate_posterior_predictive(
     meta: ModelMeta,
@@ -1984,14 +2058,16 @@ pub fn simulate_posterior_predictive(
                     "posterior-predictive missing observed data value \"{name}\""
                 ))
             })?;
+            let target_shape =
+                posterior_predictive_target_shape(&env, &site.distribution, &observed.shape)?;
             let value =
-                sample_distribution(&mut rng, &env, &site.distribution, Some(&observed.shape))?;
+                sample_distribution(&mut rng, &env, &site.distribution, Some(&target_shape))?;
             env.values.insert(name.clone(), value.clone());
             current_sites.push(PriorPredictiveSite {
                 name: name.clone(),
                 stochastic_site: site.name.clone(),
                 role: PriorPredictiveRole::Observed,
-                shape: observed.shape.clone(),
+                shape: value.shape().to_vec(),
                 integer: distribution_has_integer_support(&site.distribution),
                 integer_by_coordinate: distribution_integer_flags(&site.distribution, &value),
             });
