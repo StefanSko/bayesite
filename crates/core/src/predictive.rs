@@ -1637,6 +1637,25 @@ fn observed_data_names(meta: &ModelMeta) -> Vec<String> {
         .collect()
 }
 
+fn directly_assignable_observed_site_indices(
+    observed_names: &[String],
+    sites: &[crate::ir::ResolvedStochasticSite],
+) -> Result<Vec<usize>, Error> {
+    let mut indices = Vec::with_capacity(observed_names.len());
+    for observed_name in observed_names {
+        let Some(index) = sites
+            .iter()
+            .position(|site| matches!(&site.value, Expr::Data(name) if name == observed_name))
+        else {
+            return Err(invalid(format!(
+                "posterior-predictive observed node \"{observed_name}\" is not directly assignable; only DataRef observed stochastic sites are supported"
+            )));
+        };
+        indices.push(index);
+    }
+    Ok(indices)
+}
+
 fn full_data_map(data: &[(String, DataValue)]) -> Result<HashMap<String, DataValue>, Error> {
     let mut map = HashMap::new();
     for (name, value) in data {
@@ -1880,6 +1899,7 @@ pub fn simulate_posterior_predictive(
         ));
     }
     let sites = meta.resolved_stochastic_sites();
+    let observed_site_indices = directly_assignable_observed_site_indices(&observed_names, &sites)?;
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
     let mut draws = Vec::with_capacity(fit.draws.len());
     let mut site_specs: Option<Vec<PriorPredictiveSite>> = None;
@@ -1894,13 +1914,11 @@ pub fn simulate_posterior_predictive(
         }
         let mut current_sites = Vec::new();
         let mut values = Vec::new();
-        for site in &sites {
+        for &site_index in &observed_site_indices {
+            let site = &sites[site_index];
             let Expr::Data(name) = &site.value else {
-                continue;
+                unreachable!("observed_site_indices only contains DataRef sites");
             };
-            if !observed_names.contains(name) {
-                continue;
-            }
             let observed = data_map.get(name).ok_or_else(|| {
                 mismatch(format!(
                     "posterior-predictive missing observed data value \"{name}\""
@@ -2001,57 +2019,86 @@ pub fn posterior_predictive_ndjson_lines(
     Ok(lines)
 }
 
-fn statistic_value(name: &str, values: &[f64]) -> f64 {
+fn statistic_value(name: &str, values: &[f64]) -> Option<f64> {
     match name {
-        "mean" => values.iter().sum::<f64>() / values.len() as f64,
+        "mean" if values.is_empty() => None,
+        "mean" => Some(values.iter().sum::<f64>() / values.len() as f64),
+        "sd" if values.is_empty() => None,
         "sd" => {
-            let mean = statistic_value("mean", values);
-            (values.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / values.len() as f64)
-                .sqrt()
+            let mean = statistic_value("mean", values).expect("non-empty values have a mean");
+            Some(
+                (values.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / values.len() as f64)
+                    .sqrt(),
+            )
         }
-        "min" => values.iter().fold(f64::INFINITY, |a, &b| a.min(b)),
-        "max" => values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b)),
-        "zero_count" => values.iter().filter(|&&v| v == 0.0).count() as f64,
-        _ => f64::NAN,
+        "min" if values.is_empty() => None,
+        "min" => Some(values.iter().fold(f64::INFINITY, |a, &b| a.min(b))),
+        "max" if values.is_empty() => None,
+        "max" => Some(values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b))),
+        "zero_count" => Some(values.iter().filter(|&&v| v == 0.0).count() as f64),
+        _ => None,
     }
 }
 
-fn stat_summary_value(observed: f64, replicated: &[f64]) -> Value {
-    let less_equal = replicated
-        .iter()
-        .filter(|&&value| value <= observed)
-        .count();
-    let greater_equal = replicated
-        .iter()
-        .filter(|&&value| value >= observed)
-        .count();
-    let mut sorted = replicated.to_vec();
+fn optional_float_value(value: Option<f64>) -> Value {
+    match value {
+        Some(value) if value.is_finite() => Value::Float(value),
+        _ => Value::Null,
+    }
+}
+
+fn optional_int_count_value(value: Option<usize>) -> Value {
+    match value {
+        Some(value) => Value::Int(value as i64),
+        None => Value::Null,
+    }
+}
+
+fn stat_summary_value(observed: Option<f64>, replicated: &[Option<f64>]) -> Value {
+    let replicated_values: Vec<f64> = replicated.iter().filter_map(|value| *value).collect();
+    let less_equal = observed.map(|observed| {
+        replicated_values
+            .iter()
+            .filter(|&&value| value <= observed)
+            .count()
+    });
+    let greater_equal = observed.map(|observed| {
+        replicated_values
+            .iter()
+            .filter(|&&value| value >= observed)
+            .count()
+    });
+    let mut sorted = replicated_values.clone();
     sorted.sort_by(|a, b| a.total_cmp(b));
     Value::Object(vec![
-        ("observed".to_string(), Value::Float(observed)),
+        ("observed".to_string(), optional_float_value(observed)),
         (
             "replicated_mean".to_string(),
-            Value::Float(statistic_value("mean", replicated)),
+            optional_float_value(statistic_value("mean", &replicated_values)),
         ),
         (
             "replicated_min".to_string(),
-            Value::Float(sorted.first().copied().unwrap_or(f64::NAN)),
+            optional_float_value(sorted.first().copied()),
         ),
         (
             "replicated_max".to_string(),
-            Value::Float(sorted.last().copied().unwrap_or(f64::NAN)),
+            optional_float_value(sorted.last().copied()),
         ),
         (
             "count_replicated_less_equal_observed".to_string(),
-            Value::Int(less_equal as i64),
+            optional_int_count_value(less_equal),
         ),
         (
             "count_replicated_greater_equal_observed".to_string(),
-            Value::Int(greater_equal as i64),
+            optional_int_count_value(greater_equal),
         ),
         (
             "replicated_draw_count".to_string(),
             Value::Int(replicated.len() as i64),
+        ),
+        (
+            "replicated_finite_stat_count".to_string(),
+            Value::Int(replicated_values.len() as i64),
         ),
     ])
 }
