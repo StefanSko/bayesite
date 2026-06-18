@@ -16,6 +16,8 @@ Every agent-facing workflow artifact or error uses an explicit marker:
 | `sample` fit stream | `draws_format: "v0-provisional"` |
 | `diagnose` report | `diagnostics_format: "v0-provisional"` |
 | `prior-predictive` stream | `prior_predictive_format: "v0-provisional"` |
+| `posterior-predictive` stream | `posterior_predictive_format: "v0-provisional"` |
+| `posterior-check` report | `posterior_check_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
 | `recover` report | `recover_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
 | `sbc` report | `sbc_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
 | CLI/protocol errors | `error_format: "v0-provisional"` |
@@ -133,6 +135,54 @@ predictive supports stochastic sites whose value expression is a parameter or a
 data reference. Non-assignable stochastic-site expressions fail with a typed
 repair error.
 
+## `bayesite posterior-predictive`
+
+`posterior-predictive` reads a complete v0-provisional fit NDJSON stream,
+conditions on each retained constrained posterior parameter draw, and emits a
+v0-provisional NDJSON stream of replicated observed values.
+
+Shape:
+
+1. header object
+2. one replicated-observation draw object per retained posterior draw
+3. trailer object as `{"trailer": {...}}`
+
+Header/trailer facts include:
+
+- `posterior_predictive_format: "v0-provisional"`
+- artifact identity: `posterior_predictive_draws` over
+  `observed_data_conditioned_replicated_observed_data_draws`
+- workflow phases from JSON parse through artifact emission
+- posterior-predictive seed, source fit seed, source draw count/order, declared
+  data metadata, and generated observed-site metadata
+
+Each draw line includes the same format/artifact identity, draw index metadata,
+source fit draw provenance, generated site count/order, and generated replicated
+observed values keyed by observed data name.
+
+Current scope: directly assignable observed stochastic sites only. In practice,
+v0 posterior predictive supports observed stochastic sites whose value
+expression is a data reference.
+
+## `bayesite posterior-check`
+
+`posterior-check` generates posterior-predictive replicates and emits one
+factual JSON report comparing observed data statistics to replicated statistics.
+
+The report includes:
+
+- `posterior_check_format` and `workflow_format`, both `v0-provisional`
+- factual identity: `report_kind: "posterior_predictive_check_facts"` and
+  `report_scope: "observed_data_vs_posterior_predictive_replicates"`
+- posterior-predictive artifact provenance and generated draw count
+- observed site order/count metadata
+- built-in discrepancy summaries for each observed site: mean, standard
+  deviation, minimum, maximum, and zero count for integer-valued observed data
+- tail-count facts for each discrepancy, not pass/fail verdicts
+
+`posterior-check` does not emit an aggregate model-fit verdict, pass/fail result,
+or recommendation.
+
 ## `bayesite recover`
 
 `recover` reads a v0-provisional scenario, simulates one truth/data set through
@@ -223,6 +273,9 @@ verdict. Consumers decide how to interpret the reported facts.
 ## Current limitations
 
 - Prior predictive supports directly assignable stochastic sites only.
+- Posterior predictive supports directly assignable observed stochastic sites only.
+- `posterior-check` has only built-in generic discrepancy summaries; no custom
+  discrepancy language yet.
 - `recover` is a single-scenario factual report, not repeated-scenario coverage
   validation.
 - `sbc` reports ranks and histograms but no uniformity verdict or p-value.

@@ -15,6 +15,8 @@ Implemented command surface:
 bayesite sample
 bayesite diagnose
 bayesite prior-predictive
+bayesite posterior-predictive
+bayesite posterior-check
 bayesite recover
 bayesite sbc
 ```
@@ -26,6 +28,8 @@ Current runtime capabilities:
 - samples posterior draws with NUTS only;
 - recomputes R-hat/ESS diagnostics from fit streams;
 - emits prior-predictive draws for directly assignable stochastic sites;
+- emits posterior-predictive replicated observed draws;
+- emits factual posterior predictive check reports;
 - emits factual single-scenario recovery reports;
 - emits factual SBC rank/histogram reports.
 
@@ -37,6 +41,8 @@ separate `jaxstanv5_ir` v1 format documented in
 ## Current limitations
 
 - Prior predictive supports directly assignable stochastic sites only.
+- Posterior predictive supports directly assignable observed stochastic sites only.
+- `posterior-check` reports built-in generic discrepancies only; no custom discrepancy language yet.
 - `recover` is a single-scenario factual report, not repeated-scenario coverage
   validation.
 - `sbc` reports ranks and histograms but no uniformity verdict or p-value.
@@ -100,6 +106,20 @@ cargo build --release --bin bayesite
   --draws 1000 \
   --out pp.jsonl
 
+./target/release/bayesite posterior-predictive \
+  --model model_ir.json \
+  --data observed_data.json \
+  --fit fit.jsonl \
+  --seed 2 \
+  --out yrep.jsonl
+
+./target/release/bayesite posterior-check \
+  --model model_ir.json \
+  --data observed_data.json \
+  --fit fit.jsonl \
+  --seed 2 \
+  --out ppc.json
+
 ./target/release/bayesite recover \
   --model model_ir.json \
   --scenario recover_scenario.json \
@@ -155,7 +175,7 @@ See [`docs/invariants.md`](docs/invariants.md) and
 | `crates/core/src/tape.rs` | reverse-mode AD |
 | `crates/core/src/density.rs` | distribution log densities |
 | `crates/core/src/nuts.rs`, `adapt.rs`, `sampler.rs` | NUTS and warmup adaptation |
-| `crates/core/src/predictive.rs` | prior-predictive simulation |
+| `crates/core/src/predictive.rs` | prior/posterior-predictive simulation and posterior checks |
 | `crates/core/src/workflow.rs` | recover/SBC factual reports |
 | `crates/core/src/protocol.rs` | v0 artifacts and wasm/native request handler |
 | `crates/core/src/bin/bayesite.rs` | CLI dispatcher |
