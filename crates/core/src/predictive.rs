@@ -1581,8 +1581,17 @@ fn parse_fit_stream(
     if source_seed < 0 {
         return Err(malformed_fit("fit header seed must be non-negative"));
     }
+    let header_draw_count = header
+        .get("draw_count")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            malformed_fit("fit header needs integer draw_count from `bayesite sample`")
+        })?;
+    if header_draw_count < 1 {
+        return Err(malformed_fit("fit header draw_count must be at least 1"));
+    }
     let mut draws = Vec::new();
-    let mut saw_trailer = false;
+    let mut trailer: Option<Value> = None;
     for (line_index, line) in lines.enumerate() {
         if line.trim().is_empty() {
             return Err(malformed_fit(format!(
@@ -1591,19 +1600,14 @@ fn parse_fit_stream(
             )));
         }
         let doc = json::parse(line)?;
-        if let Some(trailer) = doc.get("trailer") {
-            if saw_trailer {
+        if let Some(value) = doc.get("trailer") {
+            if trailer.is_some() {
                 return Err(malformed_fit("fit has more than one trailer"));
             }
-            if trailer.get("draws_format").and_then(Value::as_str) != Some(V0_PROVISIONAL) {
-                return Err(malformed_fit(
-                    "fit trailer draws_format must be \"v0-provisional\"; rerun `bayesite sample`",
-                ));
-            }
-            saw_trailer = true;
+            trailer = Some(value.clone());
             continue;
         }
-        if saw_trailer {
+        if trailer.is_some() {
             return Err(malformed_fit("fit trailer must be the final line"));
         }
         draws.push(parse_fit_draw_line(
@@ -1613,9 +1617,40 @@ fn parse_fit_stream(
             source_seed,
         )?);
     }
-    if !saw_trailer {
+    let trailer = trailer.ok_or_else(|| {
+        malformed_fit("fit is missing a trailer; rerun `bayesite sample` to completion")
+    })?;
+    if trailer.get("draws_format").and_then(Value::as_str) != Some(V0_PROVISIONAL) {
         return Err(malformed_fit(
-            "fit is missing a trailer; rerun `bayesite sample` to completion",
+            "fit trailer draws_format must be \"v0-provisional\"; rerun `bayesite sample`",
+        ));
+    }
+    if trailer.get("artifact_kind").and_then(Value::as_str) != Some(POSTERIOR_DRAWS.kind) {
+        return Err(malformed_fit(
+            "fit trailer artifact_kind must be \"posterior_draws\"; pass output from `bayesite sample`",
+        ));
+    }
+    if trailer.get("artifact_scope").and_then(Value::as_str) != Some(POSTERIOR_DRAWS.scope) {
+        return Err(malformed_fit(
+            "fit trailer artifact_scope must match posterior_draws sample output",
+        ));
+    }
+    if trailer.get("seed").and_then(Value::as_i64) != Some(source_seed) {
+        return Err(malformed_fit(
+            "fit trailer seed must match fit header seed; rerun `bayesite sample`",
+        ));
+    }
+    let trailer_draw_count = trailer
+        .get("draw_count")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            malformed_fit("fit trailer needs integer draw_count from `bayesite sample`")
+        })?;
+    let parsed_draw_count = i64::try_from(draws.len())
+        .map_err(|_| malformed_fit("fit draw_count must be reportable as a JSON integer"))?;
+    if header_draw_count != parsed_draw_count || trailer_draw_count != parsed_draw_count {
+        return Err(malformed_fit(
+            "fit header/trailer draw_count must match parsed draw lines; rerun `bayesite sample` to completion",
         ));
     }
     if draws.is_empty() {
@@ -1642,16 +1677,29 @@ fn directly_assignable_observed_site_indices(
     sites: &[crate::ir::ResolvedStochasticSite],
 ) -> Result<Vec<usize>, Error> {
     let mut indices = Vec::with_capacity(observed_names.len());
-    for observed_name in observed_names {
-        let Some(index) = sites
-            .iter()
-            .position(|site| matches!(&site.value, Expr::Data(name) if name == observed_name))
+    let mut covered = vec![false; observed_names.len()];
+    for (site_index, site) in sites.iter().enumerate() {
+        let Expr::Data(name) = &site.value else {
+            continue;
+        };
+        let Some(observed_index) = observed_names.iter().position(|observed| observed == name)
         else {
+            continue;
+        };
+        if covered[observed_index] {
+            return Err(invalid(format!(
+                "posterior-predictive observed node \"{name}\" has more than one directly assignable stochastic site"
+            )));
+        }
+        covered[observed_index] = true;
+        indices.push(site_index);
+    }
+    for (observed_name, covered) in observed_names.iter().zip(covered) {
+        if !covered {
             return Err(invalid(format!(
                 "posterior-predictive observed node \"{observed_name}\" is not directly assignable; only DataRef observed stochastic sites are supported"
             )));
-        };
-        indices.push(index);
+        }
     }
     Ok(indices)
 }
@@ -1874,8 +1922,7 @@ fn posterior_predictive_trailer_value(
 }
 
 fn observed_integer_flags(observed: &DataValue) -> Vec<bool> {
-    let len = observed.values.len().max(1);
-    (0..len).map(|_| observed.integer).collect()
+    observed.values.iter().map(|_| observed.integer).collect()
 }
 
 /// Simulate replicated observed values from retained posterior draws.

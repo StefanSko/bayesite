@@ -688,7 +688,8 @@ fn posterior_predictive_rejects_partial_fit_streams() {
     ]);
     let fit = handle_request(&json::write(&sample_request).unwrap());
     let mut lines: Vec<&str> = fit.lines().collect();
-    lines.remove(1);
+    let last_draw_line = lines.len() - 2;
+    lines.remove(last_draw_line);
     let partial_fit = lines.join("\n");
     let request = Value::Object(vec![
         (
