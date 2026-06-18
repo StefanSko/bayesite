@@ -631,7 +631,10 @@ fn posterior_check_request_returns_factual_report() {
     ]);
     let fit = handle_request(&json::write(&sample_request).unwrap());
     let request = Value::Object(vec![
-        ("command".to_string(), Value::Str("posterior-check".to_string())),
+        (
+            "command".to_string(),
+            Value::Str("posterior-check".to_string()),
+        ),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
         ("data".to_string(), fixture.get("data").unwrap().clone()),
         ("fit".to_string(), Value::Str(fit)),

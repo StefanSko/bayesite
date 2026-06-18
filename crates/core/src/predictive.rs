@@ -1384,7 +1384,9 @@ fn parse_fit_shape(value: &Value, name: &str) -> Result<Vec<usize>, Error> {
     dims.iter()
         .map(|dim| {
             let dim = dim.as_i64().ok_or_else(|| {
-                malformed_fit(format!("fit parameter {name} shape entries must be integers"))
+                malformed_fit(format!(
+                    "fit parameter {name} shape entries must be integers"
+                ))
             })?;
             if dim < 0 {
                 return Err(malformed_fit(format!(
@@ -1473,7 +1475,10 @@ fn parse_fit_param_value(value: &Value, spec: &FitParamSpec) -> Result<Tensor, E
         .iter()
         .map(|entry| {
             entry.as_f64().ok_or_else(|| {
-                malformed_fit(format!("fit draw value for {} contains a non-number", spec.name))
+                malformed_fit(format!(
+                    "fit draw value for {} contains a non-number",
+                    spec.name
+                ))
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -1549,7 +1554,10 @@ fn parse_fit_draw_line(
     })
 }
 
-fn parse_fit_stream(text: &str, expected_packing: &[(String, Vec<usize>)]) -> Result<FitDrawStream, Error> {
+fn parse_fit_stream(
+    text: &str,
+    expected_packing: &[(String, Vec<usize>)],
+) -> Result<FitDrawStream, Error> {
     let mut lines = text.lines();
     let header_line = lines
         .next()
@@ -1598,7 +1606,12 @@ fn parse_fit_stream(text: &str, expected_packing: &[(String, Vec<usize>)]) -> Re
         if saw_trailer {
             return Err(malformed_fit("fit trailer must be the final line"));
         }
-        draws.push(parse_fit_draw_line(&doc, &params, draws.len(), source_seed)?);
+        draws.push(parse_fit_draw_line(
+            &doc,
+            &params,
+            draws.len(),
+            source_seed,
+        )?);
     }
     if !saw_trailer {
         return Err(malformed_fit(
@@ -1701,7 +1714,10 @@ fn posterior_predictive_header_value(
             Value::Str(POSTERIOR_DRAW_INDEX_BASE.to_string()),
         ),
         ("site_count".to_string(), Value::Int(run.sites.len() as i64)),
-        ("site_order".to_string(), posterior_site_order_to_value(&run.sites)),
+        (
+            "site_order".to_string(),
+            posterior_site_order_to_value(&run.sites),
+        ),
         (
             "declared_data_count".to_string(),
             Value::Int(declared_data.len() as i64),
@@ -1726,7 +1742,10 @@ fn posterior_predictive_header_value(
                                 "stochastic_site".to_string(),
                                 Value::Str(site.stochastic_site.clone()),
                             ),
-                            ("role".to_string(), Value::Str(site.role.as_str().to_string())),
+                            (
+                                "role".to_string(),
+                                Value::Str(site.role.as_str().to_string()),
+                            ),
                             ("shape".to_string(), shape_value(&site.shape)),
                             ("integer".to_string(), Value::Bool(site.integer)),
                             (
@@ -1791,7 +1810,10 @@ fn posterior_predictive_draw_value(
         ("source_chain".to_string(), Value::Int(source.chain)),
         ("source_draw".to_string(), Value::Int(source.draw)),
         ("site_count".to_string(), Value::Int(sites.len() as i64)),
-        ("site_order".to_string(), posterior_site_order_to_value(sites)),
+        (
+            "site_order".to_string(),
+            posterior_site_order_to_value(sites),
+        ),
         ("values".to_string(), values),
     ]);
     Ok(Value::Object(entries))
@@ -1816,7 +1838,10 @@ fn posterior_predictive_trailer_value(
             Value::Str(POSTERIOR_DRAW_INDEX_BASE.to_string()),
         ),
         ("site_count".to_string(), Value::Int(run.sites.len() as i64)),
-        ("site_order".to_string(), posterior_site_order_to_value(&run.sites)),
+        (
+            "site_order".to_string(),
+            posterior_site_order_to_value(&run.sites),
+        ),
         (
             "declared_data_count".to_string(),
             Value::Int(declared_data.len() as i64),
@@ -1881,12 +1906,8 @@ pub fn simulate_posterior_predictive(
                     "posterior-predictive missing observed data value \"{name}\""
                 ))
             })?;
-            let value = sample_distribution(
-                &mut rng,
-                &env,
-                &site.distribution,
-                Some(&observed.shape),
-            )?;
+            let value =
+                sample_distribution(&mut rng, &env, &site.distribution, Some(&observed.shape))?;
             env.values.insert(name.clone(), value.clone());
             current_sites.push(PriorPredictiveSite {
                 name: name.clone(),
@@ -1973,12 +1994,10 @@ pub fn posterior_predictive_ndjson_lines(
             run.draws.len(),
         )?)?);
     }
-    lines.push(json::write(&Value::Object(vec![
-        (
-            "trailer".to_string(),
-            posterior_predictive_trailer_value(&run, seed, &declared_data),
-        ),
-    ]))?);
+    lines.push(json::write(&Value::Object(vec![(
+        "trailer".to_string(),
+        posterior_predictive_trailer_value(&run, seed, &declared_data),
+    )]))?);
     Ok(lines)
 }
 
@@ -1998,8 +2017,14 @@ fn statistic_value(name: &str, values: &[f64]) -> f64 {
 }
 
 fn stat_summary_value(observed: f64, replicated: &[f64]) -> Value {
-    let less_equal = replicated.iter().filter(|&&value| value <= observed).count();
-    let greater_equal = replicated.iter().filter(|&&value| value >= observed).count();
+    let less_equal = replicated
+        .iter()
+        .filter(|&&value| value <= observed)
+        .count();
+    let greater_equal = replicated
+        .iter()
+        .filter(|&&value| value >= observed)
+        .count();
     let mut sorted = replicated.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
     Value::Object(vec![
@@ -2070,7 +2095,10 @@ pub fn posterior_check_report(
                     "coordinate_order".to_string(),
                     coordinate_order_value(&site.shape),
                 ),
-                ("summary".to_string(), stat_summary_value(observed_stat, &replicated_stats)),
+                (
+                    "summary".to_string(),
+                    stat_summary_value(observed_stat, &replicated_stats),
+                ),
             ]));
         }
     }
@@ -2105,7 +2133,10 @@ pub fn posterior_check_report(
             Value::Str(POSTERIOR_PREDICTIVE_DRAWS.scope.to_string()),
         ),
         ("site_count".to_string(), Value::Int(run.sites.len() as i64)),
-        ("site_order".to_string(), posterior_site_order_to_value(&run.sites)),
+        (
+            "site_order".to_string(),
+            posterior_site_order_to_value(&run.sites),
+        ),
         ("checks".to_string(), Value::Array(checks)),
     ]);
     json::write(&report)

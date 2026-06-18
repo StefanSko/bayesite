@@ -2691,10 +2691,7 @@ fn posterior_predictive_simulates_observed_sites_from_sample_fit() {
         header.get("artifact_kind").and_then(Value::as_str),
         Some("posterior_predictive_draws")
     );
-    assert_eq!(
-        string_array(header.get("site_order").unwrap()),
-        ["y"]
-    );
+    assert_eq!(string_array(header.get("site_order").unwrap()), ["y"]);
     assert_eq!(header.get("draw_count").and_then(Value::as_i64), Some(4));
 
     let draw = json::parse(lines[1]).unwrap();
@@ -2768,9 +2765,7 @@ fn posterior_check_reports_factual_summaries_without_verdict() {
     );
     let report = json::parse(&std::fs::read_to_string(&check_path).unwrap()).unwrap();
     assert_eq!(
-        report
-            .get("posterior_check_format")
-            .and_then(Value::as_str),
+        report.get("posterior_check_format").and_then(Value::as_str),
         Some("v0-provisional")
     );
     assert_eq!(
@@ -2780,7 +2775,14 @@ fn posterior_check_reports_factual_summaries_without_verdict() {
     assert!(report.get("verdict").is_none());
     assert!(report.get("pass").is_none());
     assert!(report.get("fail").is_none());
-    assert!(report.get("checks").and_then(Value::as_array).unwrap().len() >= 4);
+    assert!(
+        report
+            .get("checks")
+            .and_then(Value::as_array)
+            .unwrap()
+            .len()
+            >= 4
+    );
 }
 
 #[test]
