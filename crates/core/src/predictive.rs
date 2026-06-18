@@ -1921,8 +1921,21 @@ fn posterior_predictive_trailer_value(
     Value::Object(entries)
 }
 
-fn observed_integer_flags(observed: &DataValue) -> Vec<bool> {
-    observed.values.iter().map(|_| observed.integer).collect()
+fn distribution_has_integer_support(distribution: &Distribution) -> bool {
+    matches!(
+        distribution,
+        Distribution::Bernoulli { .. }
+            | Distribution::Poisson { .. }
+            | Distribution::Binomial { .. }
+            | Distribution::BetaBinomial { .. }
+            | Distribution::NegativeBinomial { .. }
+            | Distribution::OrderedLogistic { .. }
+    )
+}
+
+fn distribution_integer_flags(distribution: &Distribution, value: &Tensor) -> Vec<bool> {
+    let integer = distribution_has_integer_support(distribution);
+    value.data().iter().map(|_| integer).collect()
 }
 
 /// Simulate replicated observed values from retained posterior draws.
@@ -1979,8 +1992,8 @@ pub fn simulate_posterior_predictive(
                 stochastic_site: site.name.clone(),
                 role: PriorPredictiveRole::Observed,
                 shape: observed.shape.clone(),
-                integer: observed.integer,
-                integer_by_coordinate: observed_integer_flags(observed),
+                integer: distribution_has_integer_support(&site.distribution),
+                integer_by_coordinate: distribution_integer_flags(&site.distribution, &value),
             });
             values.push((name.clone(), value));
         }

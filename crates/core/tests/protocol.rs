@@ -673,6 +673,56 @@ fn posterior_predictive_rejects_partial_observed_site_coverage() {
 }
 
 #[test]
+fn posterior_predictive_uses_distribution_integerness_not_observed_json_lexemes() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let mut data = fixture.get("data").unwrap().clone();
+    if let Value::Object(entries) = &mut data {
+        for (name, value) in entries {
+            if name == "y" {
+                *value =
+                    json::parse(r#"{"dtype":"int64","shape":[5],"values":[0,0,0,0,0]}"#).unwrap();
+            }
+        }
+    }
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), data.clone()),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(54)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+    let request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("posterior-predictive".to_string()),
+        ),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), data),
+        ("fit".to_string(), Value::Str(fit)),
+        ("seed".to_string(), Value::Int(55)),
+    ]);
+    let response = handle_request(&json::write(&request).unwrap());
+    let header = json::parse(response.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        header
+            .get("posterior_predictive_format")
+            .and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    let site = header
+        .get("sites")
+        .and_then(Value::as_array)
+        .and_then(|sites| sites.first())
+        .unwrap();
+    assert!(matches!(site.get("integer"), Some(Value::Bool(false))));
+}
+
+#[test]
 fn posterior_predictive_rejects_partial_fit_streams() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
