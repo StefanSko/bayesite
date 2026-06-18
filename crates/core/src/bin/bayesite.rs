@@ -7,6 +7,10 @@
 //!   bayesite diagnose --fit <fit.jsonl|-> [--out <diagnostics.json|->]
 //!   bayesite prior-predictive --model <ir.json|-> --data <data.json|->
 //!       [--seed N] [--draws D] [--out <pp.jsonl|->]
+//!   bayesite posterior-predictive --model <ir.json|-> --data <data.json|->
+//!       --fit <fit.jsonl|-> [--seed N] [--out <yrep.jsonl|->]
+//!   bayesite posterior-check --model <ir.json|-> --data <data.json|->
+//!       --fit <fit.jsonl|-> [--seed N] [--out <ppc.json|->]
 //!   bayesite recover --model <ir.json|-> --scenario <scenario.json|->
 //!       [--out <report.json|->]
 //!   bayesite sbc --model <ir.json|-> --scenario <scenario.json|->
@@ -27,7 +31,10 @@ use bayesite_core::error::{Error, ErrorKind};
 use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, DataValue, Posterior};
-use bayesite_core::predictive::{prior_predictive_ndjson_lines, PriorPredictiveSettings};
+use bayesite_core::predictive::{
+    posterior_check_report, posterior_predictive_ndjson_lines, prior_predictive_ndjson_lines,
+    PriorPredictiveSettings,
+};
 use bayesite_core::protocol;
 use bayesite_core::sampler::{sample, ChainDraws, Settings};
 use bayesite_core::workflow::{recover_report, sbc_report, RecoverSettings, SbcSettings};
@@ -182,6 +189,8 @@ enum Command {
     Sample(SampleArgs),
     Diagnose(DiagnoseArgs),
     PriorPredictive(PriorPredictiveArgs),
+    PosteriorPredictive(PosteriorPredictiveArgs),
+    PosteriorCheck(PosteriorCheckArgs),
     Recover(RecoverArgs),
     Sbc(SbcArgs),
 }
@@ -206,6 +215,22 @@ struct PriorPredictiveArgs {
     out_path: String,
     seed: u64,
     settings: PriorPredictiveSettings,
+}
+
+struct PosteriorPredictiveArgs {
+    model_path: String,
+    data_path: String,
+    fit_path: String,
+    out_path: String,
+    seed: u64,
+}
+
+struct PosteriorCheckArgs {
+    model_path: String,
+    data_path: String,
+    fit_path: String,
+    out_path: String,
+    seed: u64,
 }
 
 struct RecoverArgs {
@@ -240,6 +265,10 @@ fn usage() -> &'static str {
      usage: bayesite diagnose --fit <fit.jsonl|-> [--out <diagnostics.json|->]\n\
      usage: bayesite prior-predictive --model <ir.json|-> --data <data.json|-> \
      [--seed N] [--draws D] [--out <pp.jsonl|->]\n\
+     usage: bayesite posterior-predictive --model <ir.json|-> --data <data.json|-> \
+     --fit <fit.jsonl|-> [--seed N] [--out <yrep.jsonl|->]\n\
+     usage: bayesite posterior-check --model <ir.json|-> --data <data.json|-> \
+     --fit <fit.jsonl|-> [--seed N] [--out <ppc.json|->]\n\
      usage: bayesite recover --model <ir.json|-> --scenario <scenario.json|-> \
      [--out <report.json|->]\n\
      usage: bayesite sbc --model <ir.json|-> --scenario <scenario.json|-> \
@@ -254,6 +283,10 @@ fn parse_args(argv: &[String]) -> Result<Command, Error> {
         "sample" => parse_sample_args(&argv[1..]).map(Command::Sample),
         "diagnose" => parse_diagnose_args(&argv[1..]).map(Command::Diagnose),
         "prior-predictive" => parse_prior_predictive_args(&argv[1..]).map(Command::PriorPredictive),
+        "posterior-predictive" => {
+            parse_posterior_predictive_args(&argv[1..]).map(Command::PosteriorPredictive)
+        }
+        "posterior-check" => parse_posterior_check_args(&argv[1..]).map(Command::PosteriorCheck),
         "recover" => parse_recover_args(&argv[1..]).map(Command::Recover),
         "sbc" => parse_sbc_args(&argv[1..]).map(Command::Sbc),
         other => Err(usage_error(format!(
@@ -488,6 +521,67 @@ fn parse_prior_predictive_args(argv: &[String]) -> Result<PriorPredictiveArgs, E
     })
 }
 
+fn parse_posterior_predictive_args(argv: &[String]) -> Result<PosteriorPredictiveArgs, Error> {
+    reject_duplicate_flags(
+        "posterior-predictive",
+        argv,
+        &["--model", "--data", "--fit", "--out", "--seed"],
+    )?;
+    let mut model_path: Option<String> = None;
+    let mut data_path: Option<String> = None;
+    let mut fit_path: Option<String> = None;
+    let mut out_path = "-".to_string();
+    let mut seed = 0u64;
+
+    let mut iter = argv.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--model" => model_path = Some(value_for_flag(&mut iter, "--model")?.clone()),
+            "--data" => data_path = Some(value_for_flag(&mut iter, "--data")?.clone()),
+            "--fit" => fit_path = Some(value_for_flag(&mut iter, "--fit")?.clone()),
+            "--out" => out_path = value_for_flag(&mut iter, "--out")?.clone(),
+            "--seed" => seed = parse_artifact_seed(value_for_flag(&mut iter, "--seed")?)?,
+            other => {
+                return Err(usage_error(format!(
+                    "unknown flag {other}; see `bayesite posterior-predictive` usage"
+                )))
+            }
+        }
+    }
+    let model_path =
+        model_path.ok_or_else(|| usage_error("--model is required (a path or - for stdin)"))?;
+    let data_path =
+        data_path.ok_or_else(|| usage_error("--data is required (a path or - for stdin)"))?;
+    let fit_path =
+        fit_path.ok_or_else(|| usage_error("--fit is required (a path or - for stdin)"))?;
+    validate_single_stdin_input(
+        "posterior-predictive",
+        &[
+            ("--model", &model_path),
+            ("--data", &data_path),
+            ("--fit", &fit_path),
+        ],
+    )?;
+    Ok(PosteriorPredictiveArgs {
+        model_path,
+        data_path,
+        fit_path,
+        out_path,
+        seed,
+    })
+}
+
+fn parse_posterior_check_args(argv: &[String]) -> Result<PosteriorCheckArgs, Error> {
+    let args = parse_posterior_predictive_args(argv)?;
+    Ok(PosteriorCheckArgs {
+        model_path: args.model_path,
+        data_path: args.data_path,
+        fit_path: args.fit_path,
+        out_path: args.out_path,
+        seed: args.seed,
+    })
+}
+
 fn parse_recover_args(argv: &[String]) -> Result<RecoverArgs, Error> {
     reject_duplicate_flags("recover", argv, &["--model", "--scenario", "--out"])?;
     let mut model_path: Option<String> = None;
@@ -677,6 +771,26 @@ fn run_prior_predictive(args: PriorPredictiveArgs) -> Result<(), Error> {
     let data = cli_data_from_json(&data_doc, "prior-predictive")?;
     let lines = prior_predictive_ndjson_lines(meta, data, &args.settings, args.seed)?;
     write_lines(&args.out_path, lines)
+}
+
+fn run_posterior_predictive(args: PosteriorPredictiveArgs) -> Result<(), Error> {
+    let model_doc = json::parse(&read_input(&args.model_path)?)?;
+    let meta = decode_model(&model_doc)?;
+    let data_doc = json::parse(&read_input(&args.data_path)?)?;
+    let data = cli_data_from_json(&data_doc, "posterior-predictive")?;
+    let fit = read_input(&args.fit_path)?;
+    let lines = posterior_predictive_ndjson_lines(meta, data, &fit, args.seed)?;
+    write_lines(&args.out_path, lines)
+}
+
+fn run_posterior_check(args: PosteriorCheckArgs) -> Result<(), Error> {
+    let model_doc = json::parse(&read_input(&args.model_path)?)?;
+    let meta = decode_model(&model_doc)?;
+    let data_doc = json::parse(&read_input(&args.data_path)?)?;
+    let data = cli_data_from_json(&data_doc, "posterior-check")?;
+    let fit = read_input(&args.fit_path)?;
+    let report = posterior_check_report(meta, data, &fit, args.seed)?;
+    write_text(&args.out_path, &report)
 }
 
 fn scenario_reportable_int(
@@ -959,6 +1073,8 @@ fn run() -> Result<(), Error> {
         Command::Sample(args) => run_sample(args),
         Command::Diagnose(args) => run_diagnose(args),
         Command::PriorPredictive(args) => run_prior_predictive(args),
+        Command::PosteriorPredictive(args) => run_posterior_predictive(args),
+        Command::PosteriorCheck(args) => run_posterior_check(args),
         Command::Recover(args) => run_recover(args),
         Command::Sbc(args) => run_sbc(args),
     }

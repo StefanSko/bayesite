@@ -8,14 +8,15 @@ use std::collections::HashMap;
 
 use crate::artifact::{
     artifact_identity_entries, coordinate_order_value, entry_order_value, format_marker_field,
-    shape_value, PRIOR_PREDICTIVE_DRAWS, PRIOR_PREDICTIVE_DRAW_INDEX_BASE,
+    shape_value, POSTERIOR_DRAWS, POSTERIOR_DRAW_INDEX_BASE, POSTERIOR_PREDICTIVE_DRAWS,
+    PRIOR_PREDICTIVE_DRAWS, PRIOR_PREDICTIVE_DRAW_INDEX_BASE, V0_PROVISIONAL, WORKFLOW_FORMAT,
 };
 use crate::error::{Error, ErrorKind};
 use crate::ir::{
     BinOpKind, Constraint, DataSchema, Dim, Distribution, Expr, IndexSpec, ModelMeta, Size, UnaryFn,
 };
 use crate::json::{self, Value};
-use crate::model::DataValue;
+use crate::model::{DataValue, Posterior};
 use crate::rng::Xoshiro256PlusPlus;
 use crate::tensor::{gather_map, IndexAtom, Tensor};
 
@@ -1333,4 +1334,779 @@ pub fn prior_predictive_ndjson_lines(
         Value::Object(trailer_entries),
     )]))?);
     Ok(lines)
+}
+
+#[derive(Debug, Clone)]
+struct FitParamSpec {
+    name: String,
+    shape: Vec<usize>,
+    size: usize,
+}
+
+#[derive(Debug, Clone)]
+struct FitDraw {
+    draw_index: usize,
+    chain: i64,
+    draw: i64,
+    values: Vec<Tensor>,
+}
+
+#[derive(Debug, Clone)]
+struct FitDrawStream {
+    source_seed: i64,
+    params: Vec<FitParamSpec>,
+    draws: Vec<FitDraw>,
+}
+
+#[derive(Debug, Clone)]
+struct FitSourceDraw {
+    draw_index: usize,
+    chain: i64,
+    draw: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PosteriorPredictiveRun {
+    pub sites: Vec<PriorPredictiveSite>,
+    pub draws: Vec<PriorPredictiveDraw>,
+    source_seed: i64,
+    source_draws: Vec<FitSourceDraw>,
+}
+
+fn malformed_fit(message: impl Into<String>) -> Error {
+    Error::new(ErrorKind::MalformedDocument, message)
+}
+
+fn parse_fit_shape(value: &Value, name: &str) -> Result<Vec<usize>, Error> {
+    let dims = value
+        .as_array()
+        .ok_or_else(|| malformed_fit(format!("fit parameter {name} shape must be an array")))?;
+    dims.iter()
+        .map(|dim| {
+            let dim = dim.as_i64().ok_or_else(|| {
+                malformed_fit(format!("fit parameter {name} shape entries must be integers"))
+            })?;
+            if dim < 0 {
+                return Err(malformed_fit(format!(
+                    "fit parameter {name} shape entries must be non-negative"
+                )));
+            }
+            Ok(dim as usize)
+        })
+        .collect()
+}
+
+fn fit_shape_size(shape: &[usize], name: &str) -> Result<usize, Error> {
+    let mut size = 1usize;
+    for dim in shape {
+        size = size.checked_mul(*dim).ok_or_else(|| {
+            malformed_fit(format!(
+                "fit parameter {name} shape is too large for this build"
+            ))
+        })?;
+    }
+    Ok(size.max(1))
+}
+
+fn parse_fit_params(header: &Value) -> Result<Vec<FitParamSpec>, Error> {
+    if header.get("draws_format").and_then(Value::as_str) != Some(V0_PROVISIONAL) {
+        return Err(malformed_fit(
+            "fit header needs draws_format \"v0-provisional\"; rerun `bayesite sample`",
+        ));
+    }
+    if header.get("artifact_kind").and_then(Value::as_str) != Some(POSTERIOR_DRAWS.kind) {
+        return Err(malformed_fit(
+            "fit header artifact_kind must be \"posterior_draws\"; pass output from `bayesite sample`",
+        ));
+    }
+    let params = header
+        .get("params")
+        .and_then(Value::as_array)
+        .ok_or_else(|| malformed_fit("fit header needs a params array from `bayesite sample`"))?;
+    let mut out = Vec::with_capacity(params.len());
+    for param in params {
+        let name = param
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| malformed_fit("each fit params entry needs a string name"))?
+            .to_string();
+        let shape = parse_fit_shape(
+            param
+                .get("shape")
+                .ok_or_else(|| malformed_fit(format!("fit parameter {name} needs a shape")))?,
+            &name,
+        )?;
+        let size = fit_shape_size(&shape, &name)?;
+        out.push(FitParamSpec { name, shape, size });
+    }
+    if out.is_empty() {
+        return Err(malformed_fit(
+            "fit header has no parameters; posterior-predictive needs a posterior draw stream",
+        ));
+    }
+    Ok(out)
+}
+
+fn parse_fit_param_value(value: &Value, spec: &FitParamSpec) -> Result<Tensor, Error> {
+    if spec.shape.is_empty() {
+        let value = value.as_f64().ok_or_else(|| {
+            malformed_fit(format!("fit draw value for {} must be a number", spec.name))
+        })?;
+        return Ok(Tensor::scalar(value));
+    }
+    let entries = value.as_array().ok_or_else(|| {
+        malformed_fit(format!(
+            "fit draw value for {} must be an array matching shape {:?}",
+            spec.name, spec.shape
+        ))
+    })?;
+    if entries.len() != spec.size {
+        return Err(malformed_fit(format!(
+            "fit draw value for {} has {} entries but shape {:?} needs {}",
+            spec.name,
+            entries.len(),
+            spec.shape,
+            spec.size
+        )));
+    }
+    let data = entries
+        .iter()
+        .map(|entry| {
+            entry.as_f64().ok_or_else(|| {
+                malformed_fit(format!("fit draw value for {} contains a non-number", spec.name))
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    Ok(Tensor::from_vec(spec.shape.clone(), data))
+}
+
+fn parse_fit_draw_line(
+    line: &Value,
+    specs: &[FitParamSpec],
+    expected_draw_index: usize,
+    source_seed: i64,
+) -> Result<FitDraw, Error> {
+    let draw_index = line
+        .get("draw_index")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| malformed_fit("fit draw line needs integer draw_index"))?;
+    if draw_index < 0 || draw_index as usize != expected_draw_index {
+        return Err(malformed_fit(format!(
+            "fit draw_index values must be contiguous from 0; expected {expected_draw_index}, got {draw_index}"
+        )));
+    }
+    if line.get("draws_format").and_then(Value::as_str) != Some(V0_PROVISIONAL) {
+        return Err(malformed_fit(
+            "fit draw line draws_format must be \"v0-provisional\"; rerun `bayesite sample`",
+        ));
+    }
+    if line.get("artifact_kind").and_then(Value::as_str) != Some(POSTERIOR_DRAWS.kind) {
+        return Err(malformed_fit(
+            "fit draw line artifact_kind must be \"posterior_draws\"; pass output from `bayesite sample`",
+        ));
+    }
+    if line.get("draw_index_base").and_then(Value::as_str) != Some(POSTERIOR_DRAW_INDEX_BASE) {
+        return Err(malformed_fit(
+            "fit draw line draw_index_base must be \"zero_based_retained_draw_order\"",
+        ));
+    }
+    if line.get("seed").and_then(Value::as_i64) != Some(source_seed) {
+        return Err(malformed_fit(
+            "fit draw line seed must match fit header seed; rerun `bayesite sample`",
+        ));
+    }
+    let chain = line
+        .get("chain")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| malformed_fit("fit draw line needs integer chain"))?;
+    if chain < 0 {
+        return Err(malformed_fit("fit draw line chain must be non-negative"));
+    }
+    let draw = line
+        .get("draw")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| malformed_fit("fit draw line needs integer draw"))?;
+    if draw < 0 {
+        return Err(malformed_fit("fit draw line draw must be non-negative"));
+    }
+    let values = line
+        .get("values")
+        .ok_or_else(|| malformed_fit("fit draw line needs a values object"))?;
+    let mut parsed = Vec::with_capacity(specs.len());
+    for spec in specs {
+        parsed.push(parse_fit_param_value(
+            values.get(&spec.name).ok_or_else(|| {
+                malformed_fit(format!("fit draw line is missing value for {}", spec.name))
+            })?,
+            spec,
+        )?);
+    }
+    Ok(FitDraw {
+        draw_index: draw_index as usize,
+        chain,
+        draw,
+        values: parsed,
+    })
+}
+
+fn parse_fit_stream(text: &str, expected_packing: &[(String, Vec<usize>)]) -> Result<FitDrawStream, Error> {
+    let mut lines = text.lines();
+    let header_line = lines
+        .next()
+        .ok_or_else(|| malformed_fit("fit is empty; pass NDJSON from `bayesite sample`"))?;
+    let header = json::parse(header_line)?;
+    let params = parse_fit_params(&header)?;
+    if params.len() != expected_packing.len()
+        || params
+            .iter()
+            .zip(expected_packing)
+            .any(|(got, (name, shape))| got.name != *name || got.shape != *shape)
+    {
+        return Err(malformed_fit(
+            "fit parameter order/shapes must match the model and data; rerun `bayesite sample` for this model/data pair",
+        ));
+    }
+    let source_seed = header
+        .get("seed")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| malformed_fit("fit header needs integer seed from `bayesite sample`"))?;
+    if source_seed < 0 {
+        return Err(malformed_fit("fit header seed must be non-negative"));
+    }
+    let mut draws = Vec::new();
+    let mut saw_trailer = false;
+    for (line_index, line) in lines.enumerate() {
+        if line.trim().is_empty() {
+            return Err(malformed_fit(format!(
+                "line {} is blank; v0-provisional fit NDJSON has no blank lines",
+                line_index + 2
+            )));
+        }
+        let doc = json::parse(line)?;
+        if let Some(trailer) = doc.get("trailer") {
+            if saw_trailer {
+                return Err(malformed_fit("fit has more than one trailer"));
+            }
+            if trailer.get("draws_format").and_then(Value::as_str) != Some(V0_PROVISIONAL) {
+                return Err(malformed_fit(
+                    "fit trailer draws_format must be \"v0-provisional\"; rerun `bayesite sample`",
+                ));
+            }
+            saw_trailer = true;
+            continue;
+        }
+        if saw_trailer {
+            return Err(malformed_fit("fit trailer must be the final line"));
+        }
+        draws.push(parse_fit_draw_line(&doc, &params, draws.len(), source_seed)?);
+    }
+    if !saw_trailer {
+        return Err(malformed_fit(
+            "fit is missing a trailer; rerun `bayesite sample` to completion",
+        ));
+    }
+    if draws.is_empty() {
+        return Err(malformed_fit(
+            "fit has no draw lines; rerun `bayesite sample` with retained draws",
+        ));
+    }
+    Ok(FitDrawStream {
+        source_seed,
+        params,
+        draws,
+    })
+}
+
+fn observed_data_names(meta: &ModelMeta) -> Vec<String> {
+    meta.observed_nodes
+        .iter()
+        .map(|observed| observed.name.clone())
+        .collect()
+}
+
+fn full_data_map(data: &[(String, DataValue)]) -> Result<HashMap<String, DataValue>, Error> {
+    let mut map = HashMap::new();
+    for (name, value) in data {
+        if map.insert(name.clone(), value.clone()).is_some() {
+            return Err(mismatch(format!("duplicate data value \"{name}\"")));
+        }
+    }
+    Ok(map)
+}
+
+fn declared_data_from_full(
+    meta: &ModelMeta,
+    data: &HashMap<String, DataValue>,
+) -> Result<Vec<(String, DataValue)>, Error> {
+    meta.data
+        .iter()
+        .map(|(name, _)| {
+            Ok((
+                name.clone(),
+                data.get(name)
+                    .cloned()
+                    .ok_or_else(|| mismatch(format!("missing declared data value \"{name}\"")))?,
+            ))
+        })
+        .collect()
+}
+
+fn posterior_predictive_workflow_phases_value() -> Value {
+    Value::Array(
+        [
+            "parse_json",
+            "decode_ir",
+            "parse_fit_ndjson",
+            "bind_observed_data",
+            "simulate_posterior_predictive",
+            "emit_artifact",
+        ]
+        .iter()
+        .map(|phase| Value::Str((*phase).to_string()))
+        .collect(),
+    )
+}
+
+fn posterior_predictive_artifact_fields() -> Vec<(String, Value)> {
+    let mut entries = vec![format_marker_field("posterior_predictive_format")];
+    entries.extend(artifact_identity_entries(POSTERIOR_PREDICTIVE_DRAWS));
+    entries
+}
+
+fn posterior_site_order_to_value(sites: &[PriorPredictiveSite]) -> Value {
+    Value::Array(
+        sites
+            .iter()
+            .map(|site| Value::Str(site.name.clone()))
+            .collect(),
+    )
+}
+
+fn posterior_predictive_header_value(
+    run: &PosteriorPredictiveRun,
+    seed: u64,
+    declared_data: &[(String, DataValue)],
+) -> Result<Value, Error> {
+    let mut entries = posterior_predictive_artifact_fields();
+    entries.extend([
+        (
+            "workflow_phases".to_string(),
+            posterior_predictive_workflow_phases_value(),
+        ),
+        ("seed".to_string(), Value::Int(seed as i64)),
+        ("source_fit_seed".to_string(), Value::Int(run.source_seed)),
+        ("draw_count".to_string(), Value::Int(run.draws.len() as i64)),
+        (
+            "draw_index_base".to_string(),
+            Value::Str(POSTERIOR_DRAW_INDEX_BASE.to_string()),
+        ),
+        ("site_count".to_string(), Value::Int(run.sites.len() as i64)),
+        ("site_order".to_string(), posterior_site_order_to_value(&run.sites)),
+        (
+            "declared_data_count".to_string(),
+            Value::Int(declared_data.len() as i64),
+        ),
+        (
+            "declared_data_order".to_string(),
+            entry_order_value(declared_data),
+        ),
+        (
+            "declared_data".to_string(),
+            data_values_to_value(declared_data)?,
+        ),
+        (
+            "sites".to_string(),
+            Value::Array(
+                run.sites
+                    .iter()
+                    .map(|site| {
+                        Value::Object(vec![
+                            ("name".to_string(), Value::Str(site.name.clone())),
+                            (
+                                "stochastic_site".to_string(),
+                                Value::Str(site.stochastic_site.clone()),
+                            ),
+                            ("role".to_string(), Value::Str(site.role.as_str().to_string())),
+                            ("shape".to_string(), shape_value(&site.shape)),
+                            ("integer".to_string(), Value::Bool(site.integer)),
+                            (
+                                "integer_by_coordinate".to_string(),
+                                integer_flags_to_value(&site.shape, &site.integer_by_coordinate),
+                            ),
+                            (
+                                "coordinate_order".to_string(),
+                                coordinate_order_value(&site.shape),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ]);
+    Ok(Value::Object(entries))
+}
+
+fn posterior_predictive_draw_value(
+    draw_index: usize,
+    draw: &PriorPredictiveDraw,
+    sites: &[PriorPredictiveSite],
+    seed: u64,
+    source: &FitSourceDraw,
+    draw_count: usize,
+) -> Result<Value, Error> {
+    let values = Value::Object(
+        sites
+            .iter()
+            .zip(&draw.values)
+            .map(|(site, (name, tensor))| {
+                if site.name != *name {
+                    return Err(invalid(
+                        "posterior-predictive site metadata does not match generated values",
+                    ));
+                }
+                Ok((
+                    name.clone(),
+                    tensor_to_value(
+                        tensor,
+                        &site.integer_by_coordinate,
+                        "posterior-predictive artifact",
+                    )?,
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?,
+    );
+    let mut entries = posterior_predictive_artifact_fields();
+    entries.extend([
+        ("draw_index".to_string(), Value::Int(draw_index as i64)),
+        (
+            "draw_index_base".to_string(),
+            Value::Str(POSTERIOR_DRAW_INDEX_BASE.to_string()),
+        ),
+        ("seed".to_string(), Value::Int(seed as i64)),
+        ("draw_count".to_string(), Value::Int(draw_count as i64)),
+        (
+            "source_fit_draw_index".to_string(),
+            Value::Int(source.draw_index as i64),
+        ),
+        ("source_chain".to_string(), Value::Int(source.chain)),
+        ("source_draw".to_string(), Value::Int(source.draw)),
+        ("site_count".to_string(), Value::Int(sites.len() as i64)),
+        ("site_order".to_string(), posterior_site_order_to_value(sites)),
+        ("values".to_string(), values),
+    ]);
+    Ok(Value::Object(entries))
+}
+
+fn posterior_predictive_trailer_value(
+    run: &PosteriorPredictiveRun,
+    seed: u64,
+    declared_data: &[(String, DataValue)],
+) -> Value {
+    let mut entries = posterior_predictive_artifact_fields();
+    entries.extend([
+        (
+            "workflow_phases".to_string(),
+            posterior_predictive_workflow_phases_value(),
+        ),
+        ("seed".to_string(), Value::Int(seed as i64)),
+        ("source_fit_seed".to_string(), Value::Int(run.source_seed)),
+        ("draw_count".to_string(), Value::Int(run.draws.len() as i64)),
+        (
+            "draw_index_base".to_string(),
+            Value::Str(POSTERIOR_DRAW_INDEX_BASE.to_string()),
+        ),
+        ("site_count".to_string(), Value::Int(run.sites.len() as i64)),
+        ("site_order".to_string(), posterior_site_order_to_value(&run.sites)),
+        (
+            "declared_data_count".to_string(),
+            Value::Int(declared_data.len() as i64),
+        ),
+        (
+            "declared_data_order".to_string(),
+            entry_order_value(declared_data),
+        ),
+    ]);
+    Value::Object(entries)
+}
+
+fn observed_integer_flags(observed: &DataValue) -> Vec<bool> {
+    let len = observed.values.len().max(1);
+    (0..len).map(|_| observed.integer).collect()
+}
+
+/// Simulate replicated observed values from retained posterior draws.
+pub fn simulate_posterior_predictive(
+    meta: ModelMeta,
+    data: Vec<(String, DataValue)>,
+    fit_ndjson: &str,
+    seed: u64,
+) -> Result<PosteriorPredictiveRun, Error> {
+    validate_reportable_seed(seed, "posterior-predictive artifact")?;
+    let posterior = Posterior::new(meta.clone(), data.clone())?;
+    let packing = posterior.packing();
+    let fit = parse_fit_stream(fit_ndjson, &packing)?;
+    let data_map = full_data_map(&data)?;
+    let declared_data = declared_data_from_full(&meta, &data_map)?;
+    let declared_map = bind_declared_data(&meta, declared_data)?;
+    let observed_names = observed_data_names(&meta);
+    if observed_names.is_empty() {
+        return Err(invalid(
+            "posterior-predictive needs at least one observed node to simulate",
+        ));
+    }
+    let sites = meta.resolved_stochastic_sites();
+    let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
+    let mut draws = Vec::with_capacity(fit.draws.len());
+    let mut site_specs: Option<Vec<PriorPredictiveSite>> = None;
+
+    for fit_draw in &fit.draws {
+        let mut env = ForwardEnv {
+            values: HashMap::new(),
+            data: &declared_map,
+        };
+        for (spec, value) in fit.params.iter().zip(&fit_draw.values) {
+            env.values.insert(spec.name.clone(), value.clone());
+        }
+        let mut current_sites = Vec::new();
+        let mut values = Vec::new();
+        for site in &sites {
+            let Expr::Data(name) = &site.value else {
+                continue;
+            };
+            if !observed_names.contains(name) {
+                continue;
+            }
+            let observed = data_map.get(name).ok_or_else(|| {
+                mismatch(format!(
+                    "posterior-predictive missing observed data value \"{name}\""
+                ))
+            })?;
+            let value = sample_distribution(
+                &mut rng,
+                &env,
+                &site.distribution,
+                Some(&observed.shape),
+            )?;
+            env.values.insert(name.clone(), value.clone());
+            current_sites.push(PriorPredictiveSite {
+                name: name.clone(),
+                stochastic_site: site.name.clone(),
+                role: PriorPredictiveRole::Observed,
+                shape: observed.shape.clone(),
+                integer: observed.integer,
+                integer_by_coordinate: observed_integer_flags(observed),
+            });
+            values.push((name.clone(), value));
+        }
+        if current_sites.is_empty() {
+            return Err(invalid(
+                "posterior-predictive currently supports directly assignable observed stochastic sites only",
+            ));
+        }
+        match &site_specs {
+            None => site_specs = Some(current_sites),
+            Some(expected) if expected.len() == current_sites.len() => {
+                for (expected, got) in expected.iter().zip(&current_sites) {
+                    if expected.name != got.name
+                        || expected.stochastic_site != got.stochastic_site
+                        || expected.shape != got.shape
+                        || expected.integer != got.integer
+                        || expected.integer_by_coordinate != got.integer_by_coordinate
+                    {
+                        return Err(mismatch(
+                            "posterior-predictive site metadata changed across draws; dynamic-shape streams are not supported",
+                        ));
+                    }
+                }
+            }
+            Some(_) => {
+                return Err(mismatch(
+                    "posterior-predictive site count changed across draws; dynamic stochastic structure is not supported",
+                ))
+            }
+        }
+        draws.push(PriorPredictiveDraw { values });
+    }
+
+    let source_draws = fit
+        .draws
+        .iter()
+        .map(|draw| FitSourceDraw {
+            draw_index: draw.draw_index,
+            chain: draw.chain,
+            draw: draw.draw,
+        })
+        .collect();
+    Ok(PosteriorPredictiveRun {
+        sites: site_specs.unwrap_or_default(),
+        draws,
+        source_seed: fit.source_seed,
+        source_draws,
+    })
+}
+
+pub fn posterior_predictive_ndjson_lines(
+    meta: ModelMeta,
+    data: Vec<(String, DataValue)>,
+    fit_ndjson: &str,
+    seed: u64,
+) -> Result<Vec<String>, Error> {
+    let data_map = full_data_map(&data)?;
+    let declared_data = declared_data_from_full(&meta, &data_map)?;
+    let run = simulate_posterior_predictive(meta, data, fit_ndjson, seed)?;
+    let mut lines = Vec::with_capacity(run.draws.len() + 2);
+    lines.push(json::write(&posterior_predictive_header_value(
+        &run,
+        seed,
+        &declared_data,
+    )?)?);
+    for (draw_index, draw) in run.draws.iter().enumerate() {
+        let source = run.source_draws.get(draw_index).ok_or_else(|| {
+            malformed_fit("posterior-predictive source fit draw metadata is missing")
+        })?;
+        lines.push(json::write(&posterior_predictive_draw_value(
+            draw_index,
+            draw,
+            &run.sites,
+            seed,
+            source,
+            run.draws.len(),
+        )?)?);
+    }
+    lines.push(json::write(&Value::Object(vec![
+        (
+            "trailer".to_string(),
+            posterior_predictive_trailer_value(&run, seed, &declared_data),
+        ),
+    ]))?);
+    Ok(lines)
+}
+
+fn statistic_value(name: &str, values: &[f64]) -> f64 {
+    match name {
+        "mean" => values.iter().sum::<f64>() / values.len() as f64,
+        "sd" => {
+            let mean = statistic_value("mean", values);
+            (values.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / values.len() as f64)
+                .sqrt()
+        }
+        "min" => values.iter().fold(f64::INFINITY, |a, &b| a.min(b)),
+        "max" => values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b)),
+        "zero_count" => values.iter().filter(|&&v| v == 0.0).count() as f64,
+        _ => f64::NAN,
+    }
+}
+
+fn stat_summary_value(observed: f64, replicated: &[f64]) -> Value {
+    let less_equal = replicated.iter().filter(|&&value| value <= observed).count();
+    let greater_equal = replicated.iter().filter(|&&value| value >= observed).count();
+    let mut sorted = replicated.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    Value::Object(vec![
+        ("observed".to_string(), Value::Float(observed)),
+        (
+            "replicated_mean".to_string(),
+            Value::Float(statistic_value("mean", replicated)),
+        ),
+        (
+            "replicated_min".to_string(),
+            Value::Float(sorted.first().copied().unwrap_or(f64::NAN)),
+        ),
+        (
+            "replicated_max".to_string(),
+            Value::Float(sorted.last().copied().unwrap_or(f64::NAN)),
+        ),
+        (
+            "count_replicated_less_equal_observed".to_string(),
+            Value::Int(less_equal as i64),
+        ),
+        (
+            "count_replicated_greater_equal_observed".to_string(),
+            Value::Int(greater_equal as i64),
+        ),
+        (
+            "replicated_draw_count".to_string(),
+            Value::Int(replicated.len() as i64),
+        ),
+    ])
+}
+
+pub fn posterior_check_report(
+    meta: ModelMeta,
+    data: Vec<(String, DataValue)>,
+    fit_ndjson: &str,
+    seed: u64,
+) -> Result<String, Error> {
+    let data_map = full_data_map(&data)?;
+    let run = simulate_posterior_predictive(meta, data, fit_ndjson, seed)?;
+    let mut checks = Vec::new();
+    for (site_idx, site) in run.sites.iter().enumerate() {
+        let observed = data_map.get(&site.name).ok_or_else(|| {
+            mismatch(format!(
+                "posterior-check missing observed data value \"{}\"",
+                site.name
+            ))
+        })?;
+        let mut statistic_names = vec!["mean", "sd", "min", "max"];
+        if observed.integer {
+            statistic_names.push("zero_count");
+        }
+        for statistic in statistic_names {
+            let observed_stat = statistic_value(statistic, &observed.values);
+            let replicated_stats = run
+                .draws
+                .iter()
+                .map(|draw| statistic_value(statistic, draw.values[site_idx].1.data()))
+                .collect::<Vec<_>>();
+            checks.push(Value::Object(vec![
+                ("site".to_string(), Value::Str(site.name.clone())),
+                (
+                    "stochastic_site".to_string(),
+                    Value::Str(site.stochastic_site.clone()),
+                ),
+                ("statistic".to_string(), Value::Str(statistic.to_string())),
+                ("shape".to_string(), shape_value(&site.shape)),
+                (
+                    "coordinate_order".to_string(),
+                    coordinate_order_value(&site.shape),
+                ),
+                ("summary".to_string(), stat_summary_value(observed_stat, &replicated_stats)),
+            ]));
+        }
+    }
+    let report = Value::Object(vec![
+        (
+            "posterior_check_format".to_string(),
+            Value::Str(V0_PROVISIONAL.to_string()),
+        ),
+        (
+            "workflow_format".to_string(),
+            Value::Str(WORKFLOW_FORMAT.to_string()),
+        ),
+        (
+            "report_kind".to_string(),
+            Value::Str("posterior_predictive_check_facts".to_string()),
+        ),
+        (
+            "report_scope".to_string(),
+            Value::Str("observed_data_vs_posterior_predictive_replicates".to_string()),
+        ),
+        ("seed".to_string(), Value::Int(seed as i64)),
+        (
+            "posterior_predictive_draws".to_string(),
+            Value::Int(run.draws.len() as i64),
+        ),
+        (
+            "posterior_predictive_draws_artifact_kind".to_string(),
+            Value::Str(POSTERIOR_PREDICTIVE_DRAWS.kind.to_string()),
+        ),
+        (
+            "posterior_predictive_draws_artifact_scope".to_string(),
+            Value::Str(POSTERIOR_PREDICTIVE_DRAWS.scope.to_string()),
+        ),
+        ("site_count".to_string(), Value::Int(run.sites.len() as i64)),
+        ("site_order".to_string(), posterior_site_order_to_value(&run.sites)),
+        ("checks".to_string(), Value::Array(checks)),
+    ]);
+    json::write(&report)
 }
