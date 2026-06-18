@@ -673,6 +673,46 @@ fn posterior_predictive_rejects_partial_observed_site_coverage() {
 }
 
 #[test]
+fn posterior_predictive_rejects_partial_fit_streams() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), fixture.get("data").unwrap().clone()),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(57)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+    let mut lines: Vec<&str> = fit.lines().collect();
+    lines.remove(1);
+    let partial_fit = lines.join("\n");
+    let request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("posterior-predictive".to_string()),
+        ),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), fixture.get("data").unwrap().clone()),
+        ("fit".to_string(), Value::Str(partial_fit)),
+        ("seed".to_string(), Value::Int(58)),
+    ]);
+    let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        response.get("error").and_then(Value::as_str),
+        Some("MalformedDocument")
+    );
+    assert!(response
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap()
+        .contains("draw_count"));
+}
+
+#[test]
 fn posterior_check_handles_empty_observed_tensors() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let mut data = fixture.get("data").unwrap().clone();
@@ -701,10 +741,29 @@ fn posterior_check_handles_empty_observed_tensors() {
             Value::Str("posterior-check".to_string()),
         ),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
-        ("data".to_string(), data),
-        ("fit".to_string(), Value::Str(fit)),
+        ("data".to_string(), data.clone()),
+        ("fit".to_string(), Value::Str(fit.clone())),
         ("seed".to_string(), Value::Int(61)),
     ]);
+    let yrep_request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("posterior-predictive".to_string()),
+        ),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), data),
+        ("fit".to_string(), Value::Str(fit)),
+        ("seed".to_string(), Value::Int(60)),
+    ]);
+    let yrep = handle_request(&json::write(&yrep_request).unwrap());
+    let first_draw = json::parse(yrep.lines().nth(1).unwrap()).unwrap();
+    assert!(matches!(
+        first_draw
+            .get("values")
+            .and_then(|values| values.get("y")),
+        Some(Value::Array(values)) if values.is_empty()
+    ));
+
     let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
     assert_eq!(
         response
