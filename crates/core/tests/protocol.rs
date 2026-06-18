@@ -575,6 +575,83 @@ fn sample_command_returns_single_chain_ndjson() {
 }
 
 #[test]
+fn posterior_predictive_request_returns_ndjson() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), fixture.get("data").unwrap().clone()),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(31)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+    let request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("posterior-predictive".to_string()),
+        ),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), fixture.get("data").unwrap().clone()),
+        ("fit".to_string(), Value::Str(fit)),
+        ("seed".to_string(), Value::Int(37)),
+    ]);
+    let response = handle_request(&json::write(&request).unwrap());
+    let lines: Vec<&str> = response.lines().collect();
+    assert_eq!(lines.len(), 1 + 4 + 1);
+    let header = json::parse(lines[0]).unwrap();
+    assert_eq!(
+        header
+            .get("posterior_predictive_format")
+            .and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    assert_eq!(
+        header.get("artifact_kind").and_then(Value::as_str),
+        Some("posterior_predictive_draws")
+    );
+}
+
+#[test]
+fn posterior_check_request_returns_factual_report() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), fixture.get("data").unwrap().clone()),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(41)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+    let request = Value::Object(vec![
+        ("command".to_string(), Value::Str("posterior-check".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), fixture.get("data").unwrap().clone()),
+        ("fit".to_string(), Value::Str(fit)),
+        ("seed".to_string(), Value::Int(43)),
+    ]);
+    let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        response
+            .get("posterior_check_format")
+            .and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    assert_eq!(
+        response.get("report_kind").and_then(Value::as_str),
+        Some("posterior_predictive_check_facts")
+    );
+    assert!(response.get("verdict").is_none());
+}
+
+#[test]
 fn diagnose_command_consumes_fit_ndjson() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
