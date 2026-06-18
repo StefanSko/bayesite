@@ -616,6 +616,115 @@ fn posterior_predictive_request_returns_ndjson() {
 }
 
 #[test]
+fn posterior_predictive_rejects_partial_observed_site_coverage() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), fixture.get("data").unwrap().clone()),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(47)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+
+    let mut model = fixture.get("ir").unwrap().clone();
+    let model_meta = object_entry_mut(&mut model, "model");
+    match object_entry_mut(model_meta, "observed_nodes") {
+        Value::Array(observed) => observed.push(json::parse(
+            r#"{"node":"ResolvedObserved","name":"z","distribution":{"node":"Normal","loc":0.0,"scale":1.0}}"#,
+        ).unwrap()),
+        _ => panic!("observed_nodes must be an array"),
+    }
+    match object_entry_mut(model_meta, "stochastic_sites") {
+        Value::Array(sites) => sites.push(json::parse(
+            r#"{"node":"ResolvedStochasticSite","name":"z","distribution":{"node":"Normal","loc":0.0,"scale":1.0},"value":0.0}"#,
+        ).unwrap()),
+        _ => panic!("stochastic_sites must be an array"),
+    }
+    let mut data = fixture.get("data").unwrap().clone();
+    match &mut data {
+        Value::Object(entries) => entries.push(("z".to_string(), Value::Float(0.0))),
+        _ => panic!("fixture data must be an object"),
+    }
+    let request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("posterior-predictive".to_string()),
+        ),
+        ("model".to_string(), model),
+        ("data".to_string(), data),
+        ("fit".to_string(), Value::Str(fit)),
+        ("seed".to_string(), Value::Int(53)),
+    ]);
+    let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        response.get("error").and_then(Value::as_str),
+        Some("InvalidSettings")
+    );
+    assert!(response
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap()
+        .contains("observed node \"z\" is not directly assignable"));
+}
+
+#[test]
+fn posterior_check_handles_empty_observed_tensors() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let mut data = fixture.get("data").unwrap().clone();
+    if let Value::Object(entries) = &mut data {
+        for (name, value) in entries {
+            if name == "x" || name == "y" {
+                *value = json::parse(r#"{"dtype":"float64","shape":[0],"values":[]}"#).unwrap();
+            }
+        }
+    }
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), data.clone()),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(59)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+    let request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("posterior-check".to_string()),
+        ),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), data),
+        ("fit".to_string(), Value::Str(fit)),
+        ("seed".to_string(), Value::Int(61)),
+    ]);
+    let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        response
+            .get("posterior_check_format")
+            .and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    let checks = response.get("checks").and_then(Value::as_array).unwrap();
+    let mean = checks
+        .iter()
+        .find(|check| check.get("statistic").and_then(Value::as_str) == Some("mean"))
+        .unwrap();
+    assert!(matches!(
+        mean.get("summary")
+            .and_then(|summary| summary.get("observed")),
+        Some(Value::Null)
+    ));
+}
+
+#[test]
 fn posterior_check_request_returns_factual_report() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
