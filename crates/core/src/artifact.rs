@@ -30,6 +30,11 @@ pub(crate) const PRIOR_PREDICTIVE_DRAWS: ArtifactIdentity = ArtifactIdentity {
     scope: "declared_data_conditioned_site_draws",
 };
 
+pub(crate) const POSTERIOR_PREDICTIVE_DRAWS: ArtifactIdentity = ArtifactIdentity {
+    kind: "posterior_predictive_draws",
+    scope: "observed_data_conditioned_replicated_observed_data_draws",
+};
+
 pub(crate) fn format_marker_field(name: &str) -> (String, Value) {
     (name.to_string(), Value::Str(V0_PROVISIONAL.to_string()))
 }

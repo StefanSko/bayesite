@@ -34,7 +34,7 @@ maps, and unsupported versions.
 The CLI and wasm/native protocol must expose the intended command set:
 
 ```text
-sample | diagnose | prior-predictive | recover | sbc
+sample | diagnose | prior-predictive | posterior-predictive | posterior-check | recover | sbc
 ```
 
 G1 pins the common artifact contract:
@@ -213,6 +213,32 @@ G11 pins:
 Current limitation: SBC reports ranks and histograms but no uniformity verdict or
 p-value. Broader SBC conformance over larger replicate counts remains future G11
 work.
+
+### G12 — Posterior predictive checks
+
+`bayesite posterior-predictive` runs the pure runtime path:
+
+```text
+posterior draw theta_s -> simulate replicated observed data y_rep_s
+```
+
+`bayesite posterior-check` builds factual discrepancy summaries on top of that
+stream.
+
+G12 pins:
+
+- CLI and wasm/native protocol request paths;
+- fit-stream parsing and source posterior draw provenance;
+- generated observed-site order, shape, coordinate order, source stochastic-site
+  names, integer flags, and per-draw values;
+- posterior-check report markers, report identity, posterior-predictive artifact
+  provenance, built-in discrepancy names, observed values, replicated summaries,
+  and tail-count facts;
+- absence of posterior-check pass/fail/model-quality verdicts.
+
+Current limitations: posterior predictive supports directly assignable observed
+stochastic sites only, and posterior-check supports built-in generic discrepancy
+statistics only.
 
 ## Default command
 

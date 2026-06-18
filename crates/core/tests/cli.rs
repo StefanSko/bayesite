@@ -2624,6 +2624,168 @@ fn samples_linear_regression_over_the_subprocess_protocol() {
 }
 
 #[test]
+fn posterior_predictive_simulates_observed_sites_from_sample_fit() {
+    let (model_path, data_path) = write_fixture_inputs("linear_regression");
+    let fit_path = model_path.with_file_name("fit.jsonl");
+    let yrep_path = model_path.with_file_name("yrep.jsonl");
+    let sample = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "sample",
+            "--model",
+            model_path.to_str().unwrap(),
+            "--data",
+            data_path.to_str().unwrap(),
+            "--seed",
+            "17",
+            "--chains",
+            "1",
+            "--warmup",
+            "10",
+            "--draws",
+            "4",
+            "--out",
+            fit_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite sample runs");
+    assert!(
+        sample.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&sample.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "posterior-predictive",
+            "--model",
+            model_path.to_str().unwrap(),
+            "--data",
+            data_path.to_str().unwrap(),
+            "--fit",
+            fit_path.to_str().unwrap(),
+            "--seed",
+            "23",
+            "--out",
+            yrep_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite posterior-predictive runs");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+
+    let text = std::fs::read_to_string(&yrep_path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1 + 4 + 1);
+    let header = json::parse(lines[0]).unwrap();
+    assert_eq!(
+        header
+            .get("posterior_predictive_format")
+            .and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    assert_eq!(
+        header.get("artifact_kind").and_then(Value::as_str),
+        Some("posterior_predictive_draws")
+    );
+    assert_eq!(string_array(header.get("site_order").unwrap()), ["y"]);
+    assert_eq!(header.get("draw_count").and_then(Value::as_i64), Some(4));
+
+    let draw = json::parse(lines[1]).unwrap();
+    assert_eq!(
+        draw.get("posterior_predictive_format")
+            .and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    assert!(draw.get("values").unwrap().get("y").is_some());
+    let trailer = json::parse(lines[lines.len() - 1]).unwrap();
+    let trailer = trailer.get("trailer").expect("trailer object");
+    assert_eq!(
+        trailer
+            .get("posterior_predictive_format")
+            .and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+}
+
+#[test]
+fn posterior_check_reports_factual_summaries_without_verdict() {
+    let (model_path, data_path) = write_fixture_inputs("linear_regression");
+    let fit_path = model_path.with_file_name("fit.jsonl");
+    let check_path = model_path.with_file_name("ppc.json");
+    let sample = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "sample",
+            "--model",
+            model_path.to_str().unwrap(),
+            "--data",
+            data_path.to_str().unwrap(),
+            "--seed",
+            "19",
+            "--chains",
+            "1",
+            "--warmup",
+            "10",
+            "--draws",
+            "4",
+            "--out",
+            fit_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite sample runs");
+    assert!(
+        sample.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&sample.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "posterior-check",
+            "--model",
+            model_path.to_str().unwrap(),
+            "--data",
+            data_path.to_str().unwrap(),
+            "--fit",
+            fit_path.to_str().unwrap(),
+            "--seed",
+            "29",
+            "--out",
+            check_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite posterior-check runs");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json::parse(&std::fs::read_to_string(&check_path).unwrap()).unwrap();
+    assert_eq!(
+        report.get("posterior_check_format").and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    assert_eq!(
+        report.get("report_kind").and_then(Value::as_str),
+        Some("posterior_predictive_check_facts")
+    );
+    assert!(report.get("verdict").is_none());
+    assert!(report.get("pass").is_none());
+    assert!(report.get("fail").is_none());
+    assert!(
+        report
+            .get("checks")
+            .and_then(Value::as_array)
+            .unwrap()
+            .len()
+            >= 4
+    );
+}
+
+#[test]
 fn sample_writes_fit_artifact_to_out_path() {
     let (model_path, data_path) = write_fixture_inputs("linear_regression");
     let out_path = model_path.with_file_name("fit.jsonl");

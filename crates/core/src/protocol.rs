@@ -21,7 +21,10 @@ use crate::error::{Error, ErrorKind};
 use crate::ir::{decode_model, ModelMeta};
 use crate::json::{self, Value};
 use crate::model::{data_from_json, DataValue, Posterior};
-use crate::predictive::{prior_predictive_ndjson_lines, PriorPredictiveSettings};
+use crate::predictive::{
+    posterior_check_report, posterior_predictive_ndjson_lines, prior_predictive_ndjson_lines,
+    PriorPredictiveSettings,
+};
 use crate::sampler::{sample, ChainDraws, Settings};
 use crate::workflow::{recover_report, sbc_report, RecoverSettings, SbcSettings};
 
@@ -86,6 +89,7 @@ fn diagnostic_value(value: f64) -> Value {
 }
 
 fn header_value(
+    posterior_identity_hash: &str,
     packing: &[(String, Vec<usize>)],
     settings: &Settings,
     seed: u64,
@@ -95,6 +99,10 @@ fn header_value(
     let mut entries = sample_artifact_fields("draws_format");
     entries.extend([
         ("workflow_phases".to_string(), workflow_phases_value()),
+        (
+            "posterior_identity_hash".to_string(),
+            Value::Str(posterior_identity_hash.to_string()),
+        ),
         (
             "params".to_string(),
             Value::Array(
@@ -170,7 +178,12 @@ pub fn ndjson_lines(
     let mut lines =
         Vec::with_capacity(2 + chains.iter().map(|(_, c)| c.draws.len()).sum::<usize>());
     lines.push(json::write(&header_value(
-        &packing, settings, seed, &chain_ids, draw_count,
+        posterior.identity_hash(),
+        &packing,
+        settings,
+        seed,
+        &chain_ids,
+        draw_count,
     ))?);
 
     let mut constrained_chains: Vec<Vec<ConstrainedDraw>> = Vec::with_capacity(chains.len());
@@ -292,6 +305,10 @@ pub fn ndjson_lines(
     let mut trailer_entries = sample_artifact_fields("draws_format");
     trailer_entries.extend([
         ("workflow_phases".to_string(), workflow_phases_value()),
+        (
+            "posterior_identity_hash".to_string(),
+            Value::Str(posterior.identity_hash().to_string()),
+        ),
         ("seed".to_string(), Value::Int(seed as i64)),
         (
             "draws_per_chain".to_string(),
@@ -2151,6 +2168,43 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
             let lines = prior_predictive_ndjson_lines(meta, data, &settings, seed)?;
             Ok(lines.join("\n"))
         }
+        Some("posterior-predictive") => {
+            reject_unknown_fields(
+                &request,
+                "posterior-predictive request",
+                &["command", "model", "data", "fit", "seed"],
+            )?;
+            let (meta, data) = request_model_data(&request, "posterior-predictive")?;
+            let fit = request
+                .get("fit")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    invalid_request(
+                        "posterior-predictive request needs \"fit\": a v0-provisional NDJSON string",
+                    )
+                })?;
+            let seed = request_seed(&request, "posterior-predictive")?;
+            let lines = posterior_predictive_ndjson_lines(meta, data, fit, seed)?;
+            Ok(lines.join("\n"))
+        }
+        Some("posterior-check") => {
+            reject_unknown_fields(
+                &request,
+                "posterior-check request",
+                &["command", "model", "data", "fit", "seed"],
+            )?;
+            let (meta, data) = request_model_data(&request, "posterior-check")?;
+            let fit = request
+                .get("fit")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    invalid_request(
+                        "posterior-check request needs \"fit\": a v0-provisional NDJSON string",
+                    )
+                })?;
+            let seed = request_seed(&request, "posterior-check")?;
+            posterior_check_report(meta, data, fit, seed)
+        }
         Some("recover") => {
             reject_unknown_fields(
                 &request,
@@ -2257,10 +2311,10 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
             json::write(&response)
         }
         Some(command) => Err(invalid_request(format!(
-            "unknown command \"{command}\"; supported commands are \"sample\", \"diagnose\", \"diagnostics\", \"prior-predictive\", \"recover\", and \"sbc\""
+            "unknown command \"{command}\"; supported commands are \"sample\", \"diagnose\", \"diagnostics\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"recover\", and \"sbc\""
         ))),
         None => Err(invalid_request(
-            "request needs \"command\": \"sample\", \"diagnose\", \"diagnostics\", \"prior-predictive\", \"recover\", or \"sbc\"",
+            "request needs \"command\": \"sample\", \"diagnose\", \"diagnostics\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"recover\", or \"sbc\"",
         )),
     }
 }
