@@ -616,7 +616,7 @@ fn posterior_predictive_request_returns_ndjson() {
 }
 
 #[test]
-fn posterior_predictive_rejects_partial_observed_site_coverage() {
+fn posterior_predictive_rejects_stale_fit_for_different_data() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
@@ -626,11 +626,44 @@ fn posterior_predictive_rejects_partial_observed_site_coverage() {
             "settings".to_string(),
             json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
         ),
-        ("seed".to_string(), Value::Int(47)),
+        ("seed".to_string(), Value::Int(44)),
         ("chain_id".to_string(), Value::Int(0)),
     ]);
     let fit = handle_request(&json::write(&sample_request).unwrap());
+    let mut stale_data = fixture.get("data").unwrap().clone();
+    if let Value::Object(entries) = &mut stale_data {
+        for (name, value) in entries {
+            if name == "y" {
+                *value =
+                    json::parse(r#"{"dtype":"float64","shape":[5],"values":[9,9,9,9,9]}"#).unwrap();
+            }
+        }
+    }
+    let request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("posterior-predictive".to_string()),
+        ),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), stale_data),
+        ("fit".to_string(), Value::Str(fit)),
+        ("seed".to_string(), Value::Int(45)),
+    ]);
+    let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        response.get("error").and_then(Value::as_str),
+        Some("MalformedDocument")
+    );
+    assert!(response
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap()
+        .contains("posterior_identity_hash"));
+}
 
+#[test]
+fn posterior_predictive_rejects_partial_observed_site_coverage() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let mut model = fixture.get("ir").unwrap().clone();
     let model_meta = object_entry_mut(&mut model, "model");
     match object_entry_mut(model_meta, "observed_nodes") {
@@ -650,6 +683,18 @@ fn posterior_predictive_rejects_partial_observed_site_coverage() {
         Value::Object(entries) => entries.push(("z".to_string(), Value::Float(0.0))),
         _ => panic!("fixture data must be an object"),
     }
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), model.clone()),
+        ("data".to_string(), data.clone()),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(47)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
     let request = Value::Object(vec![
         (
             "command".to_string(),

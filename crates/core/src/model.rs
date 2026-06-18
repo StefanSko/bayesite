@@ -6,6 +6,7 @@
 //! log-Jacobians, and stochastic sites accumulate in document order.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use crate::density::{self, DistVars};
 use crate::error::{Error, ErrorKind};
@@ -190,6 +191,33 @@ struct FreeSlot {
     size: usize,
 }
 
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn posterior_identity_hash(meta: &ModelMeta, data: &[(String, DataValue)]) -> String {
+    let mut text = String::new();
+    let _ = write!(&mut text, "model={meta:?};data=[");
+    for (name, value) in data {
+        let _ = write!(
+            &mut text,
+            "{name}:shape={:?}:integer={}:values=",
+            value.shape, value.integer
+        );
+        for entry in &value.values {
+            let _ = write!(&mut text, "{:016x},", entry.to_bits());
+        }
+        text.push(';');
+    }
+    text.push(']');
+    format!("fnv1a64:{:016x}", fnv1a64(text.as_bytes()))
+}
+
 /// A model bound to concrete data; evaluates `logp` and its gradient at
 /// unconstrained points. Pure: no interior mutability, no I/O.
 #[derive(Debug)]
@@ -198,10 +226,12 @@ pub struct Posterior {
     sites: Vec<ResolvedStochasticSite>,
     data: HashMap<String, DataValue>,
     n_params: usize,
+    identity_hash: String,
 }
 
 impl Posterior {
     pub fn new(meta: ModelMeta, data: Vec<(String, DataValue)>) -> Result<Posterior, Error> {
+        let identity_hash = posterior_identity_hash(&meta, &data);
         let mut data_map: HashMap<String, DataValue> = HashMap::new();
         for (name, value) in data {
             if data_map.insert(name.clone(), value).is_some() {
@@ -312,11 +342,16 @@ impl Posterior {
             sites: meta.resolved_stochastic_sites(),
             data: data_map,
             n_params: offset,
+            identity_hash,
         })
     }
 
     pub fn n_params(&self) -> usize {
         self.n_params
+    }
+
+    pub fn identity_hash(&self) -> &str {
+        &self.identity_hash
     }
 
     /// Packing order: name and shape per free value.

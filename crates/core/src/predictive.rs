@@ -1557,6 +1557,7 @@ fn parse_fit_draw_line(
 fn parse_fit_stream(
     text: &str,
     expected_packing: &[(String, Vec<usize>)],
+    expected_posterior_identity_hash: &str,
 ) -> Result<FitDrawStream, Error> {
     let mut lines = text.lines();
     let header_line = lines
@@ -1572,6 +1573,15 @@ fn parse_fit_stream(
     {
         return Err(malformed_fit(
             "fit parameter order/shapes must match the model and data; rerun `bayesite sample` for this model/data pair",
+        ));
+    }
+    if header
+        .get("posterior_identity_hash")
+        .and_then(Value::as_str)
+        != Some(expected_posterior_identity_hash)
+    {
+        return Err(malformed_fit(
+            "fit posterior_identity_hash must match the supplied model and data; rerun `bayesite sample` for these inputs",
         ));
     }
     let source_seed = header
@@ -1633,6 +1643,15 @@ fn parse_fit_stream(
     if trailer.get("artifact_scope").and_then(Value::as_str) != Some(POSTERIOR_DRAWS.scope) {
         return Err(malformed_fit(
             "fit trailer artifact_scope must match posterior_draws sample output",
+        ));
+    }
+    if trailer
+        .get("posterior_identity_hash")
+        .and_then(Value::as_str)
+        != Some(expected_posterior_identity_hash)
+    {
+        return Err(malformed_fit(
+            "fit trailer posterior_identity_hash must match the supplied model and data; rerun `bayesite sample` for these inputs",
         ));
     }
     if trailer.get("seed").and_then(Value::as_i64) != Some(source_seed) {
@@ -2022,7 +2041,7 @@ pub fn simulate_posterior_predictive(
     validate_reportable_seed(seed, "posterior-predictive artifact")?;
     let posterior = Posterior::new(meta.clone(), data.clone())?;
     let packing = posterior.packing();
-    let fit = parse_fit_stream(fit_ndjson, &packing)?;
+    let fit = parse_fit_stream(fit_ndjson, &packing, posterior.identity_hash())?;
     let data_map = full_data_map(&data)?;
     let declared_data = declared_data_from_full(&meta, &data_map)?;
     let declared_map = bind_declared_data(&meta, declared_data)?;

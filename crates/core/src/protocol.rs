@@ -89,6 +89,7 @@ fn diagnostic_value(value: f64) -> Value {
 }
 
 fn header_value(
+    posterior_identity_hash: &str,
     packing: &[(String, Vec<usize>)],
     settings: &Settings,
     seed: u64,
@@ -98,6 +99,10 @@ fn header_value(
     let mut entries = sample_artifact_fields("draws_format");
     entries.extend([
         ("workflow_phases".to_string(), workflow_phases_value()),
+        (
+            "posterior_identity_hash".to_string(),
+            Value::Str(posterior_identity_hash.to_string()),
+        ),
         (
             "params".to_string(),
             Value::Array(
@@ -173,7 +178,12 @@ pub fn ndjson_lines(
     let mut lines =
         Vec::with_capacity(2 + chains.iter().map(|(_, c)| c.draws.len()).sum::<usize>());
     lines.push(json::write(&header_value(
-        &packing, settings, seed, &chain_ids, draw_count,
+        posterior.identity_hash(),
+        &packing,
+        settings,
+        seed,
+        &chain_ids,
+        draw_count,
     ))?);
 
     let mut constrained_chains: Vec<Vec<ConstrainedDraw>> = Vec::with_capacity(chains.len());
@@ -295,6 +305,10 @@ pub fn ndjson_lines(
     let mut trailer_entries = sample_artifact_fields("draws_format");
     trailer_entries.extend([
         ("workflow_phases".to_string(), workflow_phases_value()),
+        (
+            "posterior_identity_hash".to_string(),
+            Value::Str(posterior.identity_hash().to_string()),
+        ),
         ("seed".to_string(), Value::Int(seed as i64)),
         (
             "draws_per_chain".to_string(),
