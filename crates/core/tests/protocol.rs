@@ -755,8 +755,8 @@ fn posterior_predictive_uses_distribution_integerness_not_observed_json_lexemes(
             Value::Str("posterior-predictive".to_string()),
         ),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
-        ("data".to_string(), data),
-        ("fit".to_string(), Value::Str(fit)),
+        ("data".to_string(), data.clone()),
+        ("fit".to_string(), Value::Str(fit.clone())),
         ("seed".to_string(), Value::Int(55)),
     ]);
     let response = handle_request(&json::write(&request).unwrap());
@@ -773,6 +773,25 @@ fn posterior_predictive_uses_distribution_integerness_not_observed_json_lexemes(
         .and_then(|sites| sites.first())
         .unwrap();
     assert!(matches!(site.get("integer"), Some(Value::Bool(false))));
+
+    let check_request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("posterior-check".to_string()),
+        ),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), data),
+        ("fit".to_string(), Value::Str(fit)),
+        ("seed".to_string(), Value::Int(56)),
+    ]);
+    let report = json::parse(&handle_request(&json::write(&check_request).unwrap())).unwrap();
+    let has_zero_count = report
+        .get("checks")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .any(|check| check.get("statistic").and_then(Value::as_str) == Some("zero_count"));
+    assert!(!has_zero_count);
 }
 
 #[test]

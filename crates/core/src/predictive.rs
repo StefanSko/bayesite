@@ -2256,7 +2256,7 @@ pub fn posterior_check_report(
             ))
         })?;
         let mut statistic_names = vec!["mean", "sd", "min", "max"];
-        if observed.integer {
+        if site.integer {
             statistic_names.push("zero_count");
         }
         for statistic in statistic_names {
