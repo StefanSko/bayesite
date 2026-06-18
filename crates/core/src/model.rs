@@ -203,7 +203,9 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 fn posterior_identity_hash(meta: &ModelMeta, data: &[(String, DataValue)]) -> String {
     let mut text = String::new();
     let _ = write!(&mut text, "model={meta:?};data=[");
-    for (name, value) in data {
+    let mut data_entries = data.iter().collect::<Vec<_>>();
+    data_entries.sort_by(|(left_name, _), (right_name, _)| left_name.cmp(right_name));
+    for (name, value) in data_entries {
         let _ = write!(
             &mut text,
             "{name}:shape={:?}:integer={}:values=",
