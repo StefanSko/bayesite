@@ -49,6 +49,12 @@ const DIAGNOSE_WORKFLOW_PHASES: [&str; 4] = [
     "recompute_diagnostics",
     "emit_report",
 ];
+
+/// Header flag value announcing that each draw line carries per-draw sampler
+/// statistics (`diverging`, `tree_depth`, `tree_accept`). Older v0 streams
+/// without this header field are still accepted by `diagnose`; when the field
+/// is absent, per-draw stats are unavailable.
+const SAMPLE_STATS_MODE_PER_DRAW: &str = "per_draw_v1";
 fn tensor_to_value(shape: &[usize], data: &[f64]) -> Value {
     if shape.is_empty() {
         Value::Float(data[0])
@@ -157,6 +163,10 @@ fn header_value(
         ("chain_order".to_string(), u64_order_value(chain_ids)),
         ("draw_count".to_string(), Value::Int(draw_count as i64)),
         ("chains".to_string(), Value::Int(chain_ids.len() as i64)),
+        (
+            "sample_stats_mode".to_string(),
+            Value::Str(SAMPLE_STATS_MODE_PER_DRAW.to_string()),
+        ),
     ]);
     Value::Object(entries)
 }
@@ -172,7 +182,7 @@ pub fn ndjson_lines(
 ) -> Result<Vec<String>, Error> {
     validate_reportable_seed(seed, "sample artifact")?;
     validate_reportable_settings(settings)?;
-    validate_fit_artifact_draws(chains)?;
+    validate_fit_artifact_draws(chains, settings.max_treedepth)?;
     let draw_count = fit_artifact_draw_count(chains)?;
     let packing = posterior.packing();
     let chain_ids: Vec<u64> = chains.iter().map(|(chain_id, _)| *chain_id).collect();
@@ -203,7 +213,7 @@ pub fn ndjson_lines(
     }
 
     let mut draw_index = 0usize;
-    for ((chain_id, _), draws) in chains.iter().zip(&constrained_chains) {
+    for ((chain_id, chain), draws) in chains.iter().zip(&constrained_chains) {
         for (draw_id, constrained) in draws.iter().enumerate() {
             let values = Value::Object(
                 constrained
@@ -237,6 +247,22 @@ pub fn ndjson_lines(
                 ),
                 ("parameter_order".to_string(), entry_order_value(&packing)),
                 ("values".to_string(), values),
+                (
+                    "sample_stats_mode".to_string(),
+                    Value::Str(SAMPLE_STATS_MODE_PER_DRAW.to_string()),
+                ),
+                (
+                    "diverging".to_string(),
+                    Value::Bool(chain.diverging[draw_id]),
+                ),
+                (
+                    "tree_depth".to_string(),
+                    Value::Int(chain.tree_depth[draw_id] as i64),
+                ),
+                (
+                    "tree_accept".to_string(),
+                    Value::Float(chain.tree_accept[draw_id]),
+                ),
             ]);
             let line = Value::Object(line_entries);
             lines.push(json::write(&line)?);
@@ -355,6 +381,98 @@ struct ParsedDraw {
     chain: i64,
     draw: usize,
     values: Vec<Vec<f64>>,
+    sample_stats: Option<PerDrawSampleStats>,
+}
+
+/// Per-draw sampler statistics parsed from a draw line when
+/// `sample_stats_mode` is `per_draw_v1`.
+#[derive(Debug, Clone)]
+struct PerDrawSampleStats {
+    diverging: bool,
+    tree_depth: i64,
+    tree_accept: f64,
+}
+
+fn parse_sample_stats_mode(doc: &Value, context: &str) -> Result<Option<String>, Error> {
+    let Some(value) = doc.get("sample_stats_mode") else {
+        return Ok(None);
+    };
+    let parsed = value.as_str().ok_or_else(|| {
+        invalid_fit(format!(
+            "{context} sample_stats_mode must be a string when present"
+        ))
+    })?;
+    if parsed == SAMPLE_STATS_MODE_PER_DRAW {
+        Ok(Some(parsed.to_string()))
+    } else {
+        Err(invalid_fit(format!(
+            "{context} sample_stats_mode must be \"{SAMPLE_STATS_MODE_PER_DRAW}\" when present; rerun `bayesite sample` to completion"
+        )))
+    }
+}
+
+fn parse_draw_sample_stats(line: &Value) -> Result<Option<PerDrawSampleStats>, Error> {
+    let has_diverging = line.get("diverging").is_some();
+    let has_tree_depth = line.get("tree_depth").is_some();
+    let has_tree_accept = line.get("tree_accept").is_some();
+    let has_mode = line.get("sample_stats_mode").is_some();
+    let has_any_stat = has_diverging || has_tree_depth || has_tree_accept;
+    // The draw-line sample_stats_mode marker and the three per-draw stat fields
+    // form one metadata block: present together or omitted together. This keeps
+    // the draw line's self-description consistent with what the parser reads.
+    if has_mode != has_any_stat {
+        return Err(invalid_fit(
+            "draw line sample_stats_mode must accompany diverging, tree_depth, and tree_accept; rerun `bayesite sample` to completion",
+        ));
+    }
+    if !has_any_stat {
+        return Ok(None);
+    }
+    if !(has_diverging && has_tree_depth && has_tree_accept) {
+        return Err(invalid_fit(
+            "draw line per-draw sample stats must include diverging, tree_depth, and tree_accept when present; rerun `bayesite sample` to completion",
+        ));
+    }
+    let mode = line
+        .get("sample_stats_mode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_fit("draw line sample_stats_mode must be a string when present"))?;
+    if mode != SAMPLE_STATS_MODE_PER_DRAW {
+        return Err(invalid_fit(format!(
+            "draw line sample_stats_mode must be \"{SAMPLE_STATS_MODE_PER_DRAW}\" when present; rerun `bayesite sample` to completion"
+        )));
+    }
+    let diverging = match line.get("diverging") {
+        Some(Value::Bool(b)) => *b,
+        _ => {
+            return Err(invalid_fit(
+                "draw line diverging must be a boolean when present",
+            ))
+        }
+    };
+    let tree_depth = line
+        .get("tree_depth")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_fit("draw line tree_depth must be an integer when present"))?;
+    if !(0..=20).contains(&tree_depth) {
+        return Err(invalid_fit(
+            "draw line tree_depth must be in 0..=20 when present; rerun `bayesite sample` to completion",
+        ));
+    }
+    let tree_accept = line
+        .get("tree_accept")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| invalid_fit("draw line tree_accept must be a number when present"))?;
+    if !(0.0..=1.0).contains(&tree_accept) {
+        return Err(invalid_fit(
+            "draw line tree_accept must be in [0, 1] when present",
+        ));
+    }
+    Ok(Some(PerDrawSampleStats {
+        diverging,
+        tree_depth,
+        tree_accept,
+    }))
 }
 
 fn invalid_fit(message: impl Into<String>) -> Error {
@@ -399,7 +517,10 @@ fn validate_reportable_settings(settings: &Settings) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_reportable_chain_diagnostics(chain: &ChainDraws) -> Result<(), Error> {
+fn validate_reportable_chain_diagnostics(
+    chain: &ChainDraws,
+    max_treedepth: usize,
+) -> Result<(), Error> {
     if chain.divergences > i64::MAX as usize {
         return Err(invalid_artifact(
             "sample artifact chain divergences must be in 0..=9223372036854775807 because artifacts report divergences as JSON integers",
@@ -414,10 +535,78 @@ fn validate_reportable_chain_diagnostics(chain: &ChainDraws) -> Result<(), Error
             "sample artifact treedepth histogram counts must be in 0..=9223372036854775807 because artifacts report treedepth counts as JSON integers",
         ));
     }
+    // Per-draw sampler statistics must be aligned with the retained draws so
+    // emission can index them without panicking. A library or wasm caller that
+    // constructs `ChainDraws` directly with mismatched lengths is rejected here
+    // with a typed error rather than panicking inside the emission loop.
+    let draw_count = chain.draws.len();
+    if chain.diverging.len() != draw_count
+        || chain.tree_depth.len() != draw_count
+        || chain.tree_accept.len() != draw_count
+    {
+        return Err(invalid_artifact(
+            "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion",
+        ));
+    }
+    // Enforce the same per-draw bounds the parser checks, so a caller cannot
+    // construct a `ChainDraws` that serializes a per_draw_v1 artifact which
+    // `diagnose` would then reject.
+    for &depth in &chain.tree_depth {
+        if depth as usize > max_treedepth {
+            return Err(invalid_artifact(format!(
+                "sample artifact per-draw tree_depth {depth} must be in 0..={max_treedepth}; rerun `bayesite sample` to completion",
+            )));
+        }
+    }
+    for &accept in &chain.tree_accept {
+        if !(0.0..=1.0).contains(&accept) {
+            return Err(invalid_artifact(
+                "sample artifact per-draw tree_accept must be in [0, 1]; rerun `bayesite sample` to completion",
+            ));
+        }
+    }
+    // The per-draw arrays must agree with the chain-level aggregates so a
+    // caller cannot construct a `ChainDraws` that emits a self-contradictory
+    // artifact (which `diagnose` would then reject). This mirrors the
+    // `validate_per_draw_stats_match_trailer` cross-check on the parse side.
+    let diverging_count = chain.diverging.iter().filter(|&&d| d).count();
+    if diverging_count != chain.divergences {
+        return Err(invalid_artifact(format!(
+            "sample artifact per-draw diverging count {diverging_count} must match chain divergences {}; rerun `bayesite sample` to completion",
+            chain.divergences
+        )));
+    }
+    let mut recomputed_hist = vec![0usize; chain.treedepth_histogram.len()];
+    for &depth in &chain.tree_depth {
+        if depth as usize >= recomputed_hist.len() {
+            return Err(invalid_artifact(format!(
+                "sample artifact per-draw tree_depth {depth} exceeds treedepth_histogram length {}; rerun `bayesite sample` to completion",
+                recomputed_hist.len()
+            )));
+        }
+        recomputed_hist[depth as usize] += 1;
+    }
+    if recomputed_hist != chain.treedepth_histogram {
+        return Err(invalid_artifact(
+            "sample artifact per-draw tree-depth histogram must match treedepth_histogram; rerun `bayesite sample` to completion",
+        ));
+    }
+    if draw_count > 0 {
+        let mean_accept = chain.tree_accept.iter().sum::<f64>() / draw_count as f64;
+        if (mean_accept - chain.mean_accept).abs() > 1e-9 {
+            return Err(invalid_artifact(format!(
+                "sample artifact per-draw mean tree_accept {mean_accept} must match chain mean_accept {}; rerun `bayesite sample` to completion",
+                chain.mean_accept
+            )));
+        }
+    }
     Ok(())
 }
 
-fn validate_fit_artifact_draws(chains: &[(u64, ChainDraws)]) -> Result<(), Error> {
+fn validate_fit_artifact_draws(
+    chains: &[(u64, ChainDraws)],
+    max_treedepth: usize,
+) -> Result<(), Error> {
     let Some((_, first)) = chains.first() else {
         return Err(invalid_artifact(
             "sample artifacts need at least one chain because they include diagnostics",
@@ -425,7 +614,7 @@ fn validate_fit_artifact_draws(chains: &[(u64, ChainDraws)]) -> Result<(), Error
     };
     for (chain_id, chain) in chains {
         validate_reportable_chain_id(*chain_id)?;
-        validate_reportable_chain_diagnostics(chain)?;
+        validate_reportable_chain_diagnostics(chain, max_treedepth)?;
     }
     let draws_per_chain = first.draws.len();
     if draws_per_chain < 4 {
@@ -1239,6 +1428,7 @@ fn parse_draw(line: &Value, specs: &[ParamSpec], source_seed: i64) -> Result<Par
         })?;
         parsed.push(parse_param_value(value, spec)?);
     }
+    let sample_stats = parse_draw_sample_stats(line)?;
     Ok(ParsedDraw {
         draw_index,
         parameter_metadata,
@@ -1250,6 +1440,7 @@ fn parse_draw(line: &Value, specs: &[ParamSpec], source_seed: i64) -> Result<Par
         chain,
         draw,
         values: parsed,
+        sample_stats,
     })
 }
 
@@ -1364,6 +1555,100 @@ fn validate_trailer_chains(
     Ok(())
 }
 
+/// When per-draw sample stats are available, cross-check the draw-level
+/// `diverging`/`tree_depth`/`tree_accept` aggregates against the trailer chain
+/// aggregates so a corrupted stream cannot produce contradictory diagnostics
+/// for downstream consumers.
+fn validate_per_draw_stats_match_trailer(
+    draws: &[ParsedDraw],
+    chain_ids: &[i64],
+    chain_stats: &[Value],
+) -> Result<(), Error> {
+    let trailer_for = |chain: i64| -> Option<&Value> {
+        chain_stats
+            .iter()
+            .find(|stats| stats.get("chain").and_then(Value::as_i64) == Some(chain))
+    };
+    for &chain_id in chain_ids {
+        let Some(stats) = trailer_for(chain_id) else {
+            // validate_trailer_chains already ensured coverage.
+            continue;
+        };
+        let chain_draws: Vec<&ParsedDraw> = draws.iter().filter(|d| d.chain == chain_id).collect();
+        let per_chain: Vec<&PerDrawSampleStats> = chain_draws
+            .iter()
+            .map(|d| d.sample_stats.as_ref())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                invalid_fit(
+                    "fit draw per-draw sample stats must be present on every draw line when sample_stats_mode is set; rerun `bayesite sample` to completion",
+                )
+            })?;
+        if per_chain.len() != chain_draws.len() {
+            return Err(invalid_fit(
+                "fit draw per-draw sample stats must be present on every draw line when sample_stats_mode is set; rerun `bayesite sample` to completion",
+            ));
+        }
+        let diverging_count = per_chain.iter().filter(|s| s.diverging).count() as i64;
+        let trailer_divergences = stats
+            .get("divergences")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| invalid_fit("fit trailer chain entry needs an integer divergences"))?;
+        if diverging_count != trailer_divergences {
+            return Err(invalid_fit(format!(
+                "per-draw diverging count for chain {chain_id} is {diverging_count} but fit trailer divergences is {trailer_divergences}; rerun `bayesite sample` to completion",
+            )));
+        }
+        let max_depth = stats
+            .get("treedepth_histogram")
+            .and_then(Value::as_array)
+            .map(|hist| hist.len())
+            .unwrap_or(0);
+        let mut recomputed_hist = vec![0i64; max_depth];
+        for s in &per_chain {
+            if (s.tree_depth as usize) >= max_depth {
+                return Err(invalid_fit(format!(
+                    "per-draw tree_depth {} for chain {chain_id} exceeds fit trailer treedepth_histogram length {}; rerun `bayesite sample` to completion",
+                    s.tree_depth, max_depth
+                )));
+            }
+            recomputed_hist[s.tree_depth as usize] += 1;
+        }
+        let trailer_hist: Vec<i64> = stats
+            .get("treedepth_histogram")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                invalid_fit("each fit trailer chain entry needs a treedepth_histogram array")
+            })?
+            .iter()
+            .map(|v| {
+                v.as_i64().ok_or_else(|| {
+                    invalid_fit("fit trailer treedepth_histogram counts must be integers")
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        if recomputed_hist != trailer_hist {
+            return Err(invalid_fit(format!(
+                "per-draw tree-depth histogram for chain {chain_id} disagrees with fit trailer treedepth_histogram; rerun `bayesite sample` to completion",
+            )));
+        }
+        let mean_accept =
+            per_chain.iter().map(|s| s.tree_accept).sum::<f64>() / per_chain.len() as f64;
+        let trailer_mean_accept = stats
+            .get("mean_accept")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| {
+                invalid_fit("each fit trailer chain entry needs a numeric mean_accept")
+            })?;
+        if (mean_accept - trailer_mean_accept).abs() > 1e-9 {
+            return Err(invalid_fit(format!(
+                "per-draw mean tree_accept for chain {chain_id} is {mean_accept} but fit trailer mean_accept is {trailer_mean_accept}; rerun `bayesite sample` to completion",
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Diagnose a complete v0-provisional fit NDJSON stream produced by
 /// `bayesite sample`.
 ///
@@ -1395,6 +1680,12 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         "artifact_scope",
         POSTERIOR_DRAWS.scope,
     )?;
+    let header_sample_stats_mode = parse_sample_stats_mode(&header, "fit header")?;
+    let per_draw_sample_stats_expected = header_sample_stats_mode.is_some();
+    let header_max_treedepth = source_settings
+        .get("max_treedepth")
+        .and_then(Value::as_i64)
+        .unwrap_or(0) as usize;
 
     let mut draws = Vec::new();
     let mut trailer: Option<Value> = None;
@@ -1404,6 +1695,7 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
     let mut draw_parameter_metadata: Option<bool> = None;
     let mut draw_artifact_metadata: Option<bool> = None;
     let mut draw_chain_metadata: Option<bool> = None;
+    let mut draw_sample_stats_metadata: Option<bool> = None;
     for (line_index, line) in lines.enumerate() {
         if line.trim().is_empty() {
             return Err(invalid_fit(format!(
@@ -1463,6 +1755,34 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
             }
             Some(_) => {}
             None => draw_chain_metadata = Some(draw.chain_metadata),
+        }
+        let has_sample_stats = draw.sample_stats.is_some();
+        match draw_sample_stats_metadata {
+            Some(expected) if expected != has_sample_stats => {
+                return Err(invalid_fit(
+                    "fit draw per-draw sample stats must be present on every draw line or omitted from every draw line; rerun `bayesite sample` to completion",
+                ));
+            }
+            Some(_) => {}
+            None => draw_sample_stats_metadata = Some(has_sample_stats),
+        }
+        if per_draw_sample_stats_expected && !has_sample_stats {
+            return Err(invalid_fit(
+                "fit header sample_stats_mode is per_draw_v1 but a draw line is missing per-draw sample stats; rerun `bayesite sample` to completion",
+            ));
+        }
+        if has_sample_stats && !per_draw_sample_stats_expected {
+            return Err(invalid_fit(
+                "draw line carries per-draw sample stats but fit header has no sample_stats_mode; rerun `bayesite sample` to completion",
+            ));
+        }
+        if let Some(stats) = &draw.sample_stats {
+            if stats.tree_depth > header_max_treedepth as i64 {
+                return Err(invalid_fit(format!(
+                    "draw line tree_depth {} exceeds fit header settings.max_treedepth {}; rerun `bayesite sample` to completion",
+                    stats.tree_depth, header_max_treedepth
+                )));
+            }
         }
         let expected_draw_index = draws.len();
         if let Some(draw_index) = draw.draw_index {
@@ -1588,6 +1908,9 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         }
     }
     validate_trailer_chains(chain_stats, &chain_ids, header_draw_count)?;
+    if draw_sample_stats_metadata.unwrap_or(false) {
+        validate_per_draw_stats_match_trailer(&draws, &chain_ids, chain_stats)?;
+    }
 
     let mut series_by_param: Vec<Vec<Vec<Vec<f64>>>> = specs
         .iter()
@@ -1637,6 +1960,49 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         rhat_entries.push((spec.name.clone(), diagnostic_value(worst_rhat)));
         ess_entries.push((spec.name.clone(), diagnostic_value(worst_ess)));
     }
+
+    // Per-draw sample stats, grouped by chain in draw order. Available only
+    // when the source stream carried `sample_stats_mode: per_draw_v1`.
+    let per_draw_sample_stats_available = draw_sample_stats_metadata.unwrap_or(false);
+    let sample_stats_value = if per_draw_sample_stats_available {
+        let mut by_chain: Vec<(i64, Vec<Value>)> = chain_ids
+            .iter()
+            .map(|&id| (id, Vec::with_capacity(draws_per_chain)))
+            .collect();
+        for draw in &draws {
+            let chain = chain_ids
+                .iter()
+                .position(|&id| id == draw.chain)
+                .expect("chain id was registered");
+            let stats = draw
+                .sample_stats
+                .as_ref()
+                .expect("per-draw sample stats presence was validated");
+            by_chain[chain].1.push(Value::Object(vec![
+                ("diverging".to_string(), Value::Bool(stats.diverging)),
+                ("tree_depth".to_string(), Value::Int(stats.tree_depth)),
+                ("tree_accept".to_string(), Value::Float(stats.tree_accept)),
+            ]));
+        }
+        Value::Array(
+            by_chain
+                .into_iter()
+                .map(|(chain_id, entries)| {
+                    Value::Object(vec![
+                        ("chain".to_string(), Value::Int(chain_id)),
+                        (
+                            "chain_index_base".to_string(),
+                            Value::Str(CHAIN_INDEX_BASE.to_string()),
+                        ),
+                        ("draw_count".to_string(), Value::Int(entries.len() as i64)),
+                        ("draws".to_string(), Value::Array(entries)),
+                    ])
+                })
+                .collect(),
+        )
+    } else {
+        Value::Null
+    };
 
     let mut response_entries = vec![
         (
@@ -1708,6 +2074,15 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
             "source_draw_chain_metadata".to_string(),
             Value::Bool(draw_chain_metadata.unwrap_or(false)),
         ),
+    ]);
+    if let Some(mode) = header_sample_stats_mode.clone() {
+        response_entries.push(("source_sample_stats_mode".to_string(), Value::Str(mode)));
+    }
+    response_entries.push((
+        "source_draw_sample_stats_metadata".to_string(),
+        Value::Bool(per_draw_sample_stats_available),
+    ));
+    response_entries.extend([
         (
             "source_parameter_count".to_string(),
             Value::Int(specs.len() as i64),
@@ -1734,6 +2109,7 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         ("chains".to_string(), Value::Array(chain_stats.to_vec())),
         ("rhat".to_string(), Value::Object(rhat_entries)),
         ("ess".to_string(), Value::Object(ess_entries)),
+        ("sample_stats".to_string(), sample_stats_value),
     ]);
     let response = Value::Object(response_entries);
     json::write(&response)

@@ -1448,6 +1448,16 @@ fn diagnose_command_consumes_fit_ndjson() {
     ));
     assert_eq!(
         response
+            .get("source_sample_stats_mode")
+            .and_then(Value::as_str),
+        Some("per_draw_v1")
+    );
+    assert!(matches!(
+        response.get("source_draw_sample_stats_metadata"),
+        Some(Value::Bool(true))
+    ));
+    assert_eq!(
+        response
             .get("source_parameter_count")
             .and_then(Value::as_i64),
         Some(3)
@@ -1491,6 +1501,42 @@ fn diagnose_command_consumes_fit_ndjson() {
         chains[0].get("draw_count").and_then(Value::as_i64),
         Some(100)
     );
+    // Per-draw sample stats are present and grouped by chain in draw order.
+    let sample_stats = response
+        .get("sample_stats")
+        .and_then(Value::as_array)
+        .expect("diagnose sample_stats group");
+    assert_eq!(sample_stats.len(), 1);
+    assert_eq!(
+        sample_stats[0].get("chain").and_then(Value::as_i64),
+        Some(0)
+    );
+    assert_eq!(
+        sample_stats[0].get("draw_count").and_then(Value::as_i64),
+        Some(100)
+    );
+    let ss_draws = sample_stats[0]
+        .get("draws")
+        .and_then(Value::as_array)
+        .expect("sample_stats draws array");
+    assert_eq!(ss_draws.len(), 100);
+    for entry in ss_draws {
+        assert!(matches!(entry.get("diverging"), Some(Value::Bool(_))));
+        let depth = entry.get("tree_depth").and_then(Value::as_i64).unwrap();
+        assert!((0..=10).contains(&depth));
+        let accept = entry.get("tree_accept").and_then(Value::as_f64).unwrap();
+        assert!((0.0..=1.0).contains(&accept));
+    }
+    // The per-draw divergence total must match the trailer chain total.
+    let trailer_divergences = chains[0]
+        .get("divergences")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let ss_divergences = ss_draws
+        .iter()
+        .filter(|e| matches!(e.get("diverging"), Some(Value::Bool(true))))
+        .count() as i64;
+    assert_eq!(ss_divergences, trailer_divergences);
     let trailer_completion = response
         .get("source_trailer_completion_metadata")
         .expect("source trailer completion metadata");
@@ -4852,6 +4898,97 @@ fn ndjson_lines_rejects_unreportable_chain_diagnostics() {
 }
 
 #[test]
+fn ndjson_lines_rejects_mismatched_per_draw_sample_stats_lengths() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
+    let data = data_from_json(fixture.get("data").unwrap()).unwrap();
+    let posterior = Posterior::new(meta, data).unwrap();
+    let settings = Settings {
+        num_warmup: 0,
+        num_draws: 4,
+        max_treedepth: 4,
+        ..Settings::default()
+    };
+    let chain = sample(&posterior, &settings, 5, 0).unwrap();
+
+    let mut short_diverging = chain.clone();
+    short_diverging.diverging.pop();
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, short_diverging)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert_eq!(
+        err.message,
+        "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion"
+    );
+
+    let mut short_tree_depth = chain.clone();
+    short_tree_depth.tree_depth.clear();
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, short_tree_depth)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert_eq!(
+        err.message,
+        "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion"
+    );
+
+    let mut short_tree_accept = chain.clone();
+    short_tree_accept.tree_accept = vec![0.5];
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, short_tree_accept)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert_eq!(
+        err.message,
+        "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion"
+    );
+}
+
+#[test]
+fn ndjson_lines_rejects_per_draw_stats_disagreeing_with_aggregates() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
+    let data = data_from_json(fixture.get("data").unwrap()).unwrap();
+    let posterior = Posterior::new(meta, data).unwrap();
+    let settings = Settings {
+        num_warmup: 0,
+        num_draws: 4,
+        max_treedepth: 4,
+        ..Settings::default()
+    };
+    let chain = sample(&posterior, &settings, 5, 0).unwrap();
+
+    // diverging count disagrees with divergences aggregate.
+    let mut bad = chain.clone();
+    bad.diverging[0] = !bad.diverging[0];
+    // divergences aggregate left as-is from the real sample, so it now disagrees.
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err.message.contains("per-draw diverging count"));
+    assert!(err.message.contains("must match chain divergences"));
+
+    // tree_depth disagrees with treedepth_histogram.
+    let mut bad_hist = chain.clone();
+    // force a depth that the histogram does not record for draw 0
+    let original_depth = bad_hist.tree_depth[0];
+    let new_depth = if original_depth == 0 { 1 } else { 0 };
+    bad_hist.tree_depth[0] = new_depth;
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad_hist)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err
+        .message
+        .contains("per-draw tree-depth histogram must match treedepth_histogram"));
+
+    // tree_accept mean disagrees with mean_accept.
+    let mut bad_mean = chain.clone();
+    // Move draw 0's acceptance to the opposite end of [0,1] so the mean always shifts.
+    bad_mean.tree_accept[0] = if bad_mean.tree_accept[0] > 0.5 {
+        0.0
+    } else {
+        1.0
+    };
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad_mean)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err.message.contains("per-draw mean tree_accept"));
+    assert!(err.message.contains("must match chain mean_accept"));
+}
+
+#[test]
 fn prior_predictive_ndjson_rejects_unreportable_draw_count() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
@@ -4957,4 +5094,321 @@ fn unknown_protocol_command_error_names_command_and_supported_commands() {
             "{command} missing from {message}"
         );
     }
+}
+
+#[test]
+fn diagnose_accepts_legacy_stream_without_per_draw_sample_stats() {
+    // A stream produced by an older binary: no sample_stats_mode header field
+    // and no per-draw fields on draw lines. diagnose must still succeed and
+    // report sample_stats as null.
+    let fit = [
+        r#"{"draws_format":"v0-provisional","artifact_kind":"posterior_draws","artifact_scope":"observed_data_conditioned_parameter_draws","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"parameter_order":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"chain_count":1,"chain_order":[0],"draw_count":4}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0}}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0}}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0}}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0}}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let response = json::parse(&diagnose_ndjson(&fit).unwrap()).unwrap();
+    assert!(response.get("error").is_none(), "{response:?}");
+    assert!(response.get("source_sample_stats_mode").is_none());
+    assert!(matches!(
+        response.get("source_draw_sample_stats_metadata"),
+        Some(Value::Bool(false))
+    ));
+    assert!(matches!(response.get("sample_stats"), Some(Value::Null)));
+}
+
+#[test]
+fn diagnose_reports_per_draw_sample_stats_grouped_by_chain() {
+    let fit = [
+        r#"{"draws_format":"v0-provisional","artifact_kind":"posterior_draws","artifact_scope":"observed_data_conditioned_parameter_draws","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"parameter_order":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"chain_count":1,"chain_order":[0],"draw_count":4,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":true,"tree_depth":2,"tree_accept":0.4}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.95}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":3,"tree_accept":0.8}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":1,"treedepth_histogram":[0,2,1,1],"step_size":1.0,"mean_accept":0.7625}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let response = json::parse(&diagnose_ndjson(&fit).unwrap()).unwrap();
+    assert!(response.get("error").is_none(), "{response:?}");
+    assert_eq!(
+        response
+            .get("source_sample_stats_mode")
+            .and_then(Value::as_str),
+        Some("per_draw_v1")
+    );
+    let sample_stats = response
+        .get("sample_stats")
+        .and_then(Value::as_array)
+        .expect("sample_stats group");
+    assert_eq!(sample_stats.len(), 1);
+    assert_eq!(
+        sample_stats[0].get("chain").and_then(Value::as_i64),
+        Some(0)
+    );
+    let draws = sample_stats[0]
+        .get("draws")
+        .and_then(Value::as_array)
+        .unwrap();
+    assert_eq!(draws.len(), 4);
+    assert_eq!(draws[1].get("diverging"), Some(&Value::Bool(true)));
+    assert_eq!(draws[1].get("tree_depth").and_then(Value::as_i64), Some(2));
+    // diverging total matches trailer chain divergences
+    let total: i64 = draws
+        .iter()
+        .filter(|d| matches!(d.get("diverging"), Some(Value::Bool(true))))
+        .count() as i64;
+    assert_eq!(total, 1);
+}
+
+#[test]
+fn diagnose_rejects_per_draw_stats_on_some_draws_only() {
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0}}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err
+        .message
+        .contains("per-draw sample stats must be present on every draw line"));
+}
+
+#[test]
+fn diagnose_rejects_draw_stats_without_header_mode() {
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err.message.contains(
+        "draw line carries per-draw sample stats but fit header has no sample_stats_mode"
+    ));
+}
+
+#[test]
+fn diagnose_rejects_header_mode_without_draw_stats() {
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0}}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0}}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0}}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0}}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err
+        .message
+        .contains("fit header sample_stats_mode is per_draw_v1 but a draw line is missing"));
+}
+
+#[test]
+fn diagnose_rejects_tree_depth_exceeding_max_treedepth() {
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":5,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err
+        .message
+        .contains("tree_depth 5 exceeds fit header settings.max_treedepth 4"));
+}
+
+#[test]
+fn diagnose_rejects_partial_per_draw_fields() {
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err
+        .message
+        .contains("diverging, tree_depth, and tree_accept when present"));
+}
+
+#[test]
+fn diagnose_rejects_unknown_sample_stats_mode() {
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v2"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0}}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0}}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0}}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0}}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err
+        .message
+        .contains("sample_stats_mode must be \"per_draw_v1\""));
+}
+
+#[test]
+fn diagnose_rejects_per_draw_diverging_count_mismatch_with_trailer() {
+    // Per-draw diverging count is 1 but trailer divergences is 0.
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":true,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[0,4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err
+        .message
+        .contains("per-draw diverging count for chain 0 is 1 but fit trailer divergences is 0"));
+}
+
+#[test]
+fn diagnose_rejects_per_draw_treedepth_histogram_mismatch_with_trailer() {
+    // Per-draw depths 1,1,1,1 -> histogram [0,4], but trailer says [4,0].
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4,0],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err.message.contains(
+        "per-draw tree-depth histogram for chain 0 disagrees with fit trailer treedepth_histogram"
+    ));
+}
+
+#[test]
+fn diagnose_rejects_per_draw_mean_accept_mismatch_with_trailer() {
+    // Per-draw mean accept = 0.9, trailer says 0.5 (beyond 1e-9 tolerance).
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[0,4],"step_size":1.0,"mean_accept":0.5}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err.message.contains(
+        "per-draw mean tree_accept for chain 0 is 0.9 but fit trailer mean_accept is 0.5"
+    ));
+}
+
+#[test]
+fn diagnose_rejects_draw_line_with_wrong_sample_stats_mode() {
+    // Header says per_draw_v1, draw line carries v1-shaped stats but marks
+    // itself per_draw_v2. The draw-line marker must match.
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[0,4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err
+        .message
+        .contains("draw line sample_stats_mode must be \"per_draw_v1\" when present"));
+}
+
+#[test]
+fn diagnose_rejects_draw_line_stats_without_sample_stats_mode_marker() {
+    // Draw line carries the three stat fields but omits the draw-line
+    // sample_stats_mode marker. The marker must accompany the stat fields.
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[0,4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err.message.contains(
+        "draw line sample_stats_mode must accompany diverging, tree_depth, and tree_accept"
+    ));
+}
+
+#[test]
+fn ndjson_lines_rejects_per_draw_stats_out_of_parser_bounds() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
+    let data = data_from_json(fixture.get("data").unwrap()).unwrap();
+    let posterior = Posterior::new(meta, data).unwrap();
+    let settings = Settings {
+        num_warmup: 0,
+        num_draws: 4,
+        max_treedepth: 4,
+        ..Settings::default()
+    };
+    let chain = sample(&posterior, &settings, 5, 0).unwrap();
+
+    // tree_depth exceeds max_treedepth, with a matching-length histogram so
+    // only the bounds check rejects it.
+    let mut bad_depth = chain.clone();
+    bad_depth.tree_depth[0] = 5; // > max_treedepth (4)
+    bad_depth.treedepth_histogram = vec![0usize; 6];
+    bad_depth.treedepth_histogram[5] = 1;
+    bad_depth.treedepth_histogram[bad_depth.tree_depth[1] as usize] += 1;
+    bad_depth.treedepth_histogram[bad_depth.tree_depth[2] as usize] += 1;
+    bad_depth.treedepth_histogram[bad_depth.tree_depth[3] as usize] += 1;
+    // divergences/mean_accept stay consistent so the bounds check is what fires.
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad_depth)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err
+        .message
+        .contains("per-draw tree_depth 5 must be in 0..=4"));
+
+    // tree_accept out of [0,1], but its mean matches mean_accept so only the
+    // bounds check rejects it.
+    let mut bad_accept = chain.clone();
+    // Set two draws to -1 and 2 so the mean is unchanged relative to originals? Just force a bounds violation.
+    bad_accept.tree_accept[0] = -1.0;
+    // Adjust mean_accept to match the new mean so only the bounds check fires.
+    let new_sum: f64 = bad_accept.tree_accept.iter().sum::<f64>();
+    bad_accept.mean_accept = new_sum / bad_accept.tree_accept.len() as f64;
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad_accept)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err
+        .message
+        .contains("per-draw tree_accept must be in [0, 1]"));
 }

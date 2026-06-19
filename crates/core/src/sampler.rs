@@ -62,6 +62,12 @@ impl Settings {
 }
 
 /// Post-warmup draws and per-chain diagnostics.
+///
+/// Per-draw sampler statistics (`diverging`, `tree_depth`, `tree_accept`) are
+/// retained alongside the chain-level aggregates (`divergences`,
+/// `treedepth_histogram`, `mean_accept`). The aggregates are kept for backward
+/// compatibility with the v0 trailer and are consistent with the per-draw
+/// arrays by construction (they are accumulated in the same loop).
 #[derive(Debug, Clone)]
 pub struct ChainDraws {
     /// Unconstrained draws, one `q` per kept iteration.
@@ -76,6 +82,13 @@ pub struct ChainDraws {
     pub inv_mass: Vec<f64>,
     /// Mean trajectory acceptance over kept draws.
     pub mean_accept: f64,
+    /// Per-draw divergence flag, one entry per kept draw.
+    pub diverging: Vec<bool>,
+    /// Per-draw NUTS tree depth, one entry per kept draw.
+    pub tree_depth: Vec<u8>,
+    /// Per-draw average Metropolis acceptance over the trajectory, one entry
+    /// per kept draw (the dual-averaging statistic).
+    pub tree_accept: Vec<f64>,
 }
 
 /// Stan-style coarse step-size search: double or halve until the one-step
@@ -206,6 +219,9 @@ pub fn sample(
     let mut divergences = 0usize;
     let mut treedepth_histogram = vec![0usize; settings.max_treedepth + 1];
     let mut accept_sum = 0.0;
+    let mut diverging = Vec::with_capacity(settings.num_draws);
+    let mut tree_depth = Vec::with_capacity(settings.num_draws);
+    let mut tree_accept = Vec::with_capacity(settings.num_draws);
     for _ in 0..settings.num_draws {
         let result = transition(
             &ham,
@@ -222,6 +238,11 @@ pub fn sample(
         }
         treedepth_histogram[result.depth] += 1;
         accept_sum += result.accept_prob;
+        diverging.push(result.divergent);
+        // `result.depth` is bounded by `max_treedepth <= 20`, so the cast to
+        // u8 cannot overflow.
+        tree_depth.push(result.depth as u8);
+        tree_accept.push(result.accept_prob);
         draws.push(result.q);
         logp.push(result.logp);
     }
@@ -234,5 +255,8 @@ pub fn sample(
         step_size: frozen_step_size,
         inv_mass,
         mean_accept: accept_sum / settings.num_draws as f64,
+        diverging,
+        tree_depth,
+        tree_accept,
     })
 }
