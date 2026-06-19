@@ -1479,6 +1479,100 @@ fn validate_trailer_chains(
     Ok(())
 }
 
+/// When per-draw sample stats are available, cross-check the draw-level
+/// `diverging`/`tree_depth`/`tree_accept` aggregates against the trailer chain
+/// aggregates so a corrupted stream cannot produce contradictory diagnostics
+/// for downstream consumers.
+fn validate_per_draw_stats_match_trailer(
+    draws: &[ParsedDraw],
+    chain_ids: &[i64],
+    chain_stats: &[Value],
+) -> Result<(), Error> {
+    let trailer_for = |chain: i64| -> Option<&Value> {
+        chain_stats
+            .iter()
+            .find(|stats| stats.get("chain").and_then(Value::as_i64) == Some(chain))
+    };
+    for &chain_id in chain_ids {
+        let Some(stats) = trailer_for(chain_id) else {
+            // validate_trailer_chains already ensured coverage.
+            continue;
+        };
+        let chain_draws: Vec<&ParsedDraw> = draws.iter().filter(|d| d.chain == chain_id).collect();
+        let per_chain: Vec<&PerDrawSampleStats> = chain_draws
+            .iter()
+            .map(|d| d.sample_stats.as_ref())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                invalid_fit(
+                    "fit draw per-draw sample stats must be present on every draw line when sample_stats_mode is set; rerun `bayesite sample` to completion",
+                )
+            })?;
+        if per_chain.len() != chain_draws.len() {
+            return Err(invalid_fit(
+                "fit draw per-draw sample stats must be present on every draw line when sample_stats_mode is set; rerun `bayesite sample` to completion",
+            ));
+        }
+        let diverging_count = per_chain.iter().filter(|s| s.diverging).count() as i64;
+        let trailer_divergences = stats
+            .get("divergences")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| invalid_fit("fit trailer chain entry needs an integer divergences"))?;
+        if diverging_count != trailer_divergences {
+            return Err(invalid_fit(format!(
+                "per-draw diverging count for chain {chain_id} is {diverging_count} but fit trailer divergences is {trailer_divergences}; rerun `bayesite sample` to completion",
+            )));
+        }
+        let max_depth = stats
+            .get("treedepth_histogram")
+            .and_then(Value::as_array)
+            .map(|hist| hist.len())
+            .unwrap_or(0);
+        let mut recomputed_hist = vec![0i64; max_depth];
+        for s in &per_chain {
+            if (s.tree_depth as usize) >= max_depth {
+                return Err(invalid_fit(format!(
+                    "per-draw tree_depth {} for chain {chain_id} exceeds fit trailer treedepth_histogram length {}; rerun `bayesite sample` to completion",
+                    s.tree_depth, max_depth
+                )));
+            }
+            recomputed_hist[s.tree_depth as usize] += 1;
+        }
+        let trailer_hist: Vec<i64> = stats
+            .get("treedepth_histogram")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                invalid_fit("each fit trailer chain entry needs a treedepth_histogram array")
+            })?
+            .iter()
+            .map(|v| {
+                v.as_i64().ok_or_else(|| {
+                    invalid_fit("fit trailer treedepth_histogram counts must be integers")
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        if recomputed_hist != trailer_hist {
+            return Err(invalid_fit(format!(
+                "per-draw tree-depth histogram for chain {chain_id} disagrees with fit trailer treedepth_histogram; rerun `bayesite sample` to completion",
+            )));
+        }
+        let mean_accept =
+            per_chain.iter().map(|s| s.tree_accept).sum::<f64>() / per_chain.len() as f64;
+        let trailer_mean_accept = stats
+            .get("mean_accept")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| {
+                invalid_fit("each fit trailer chain entry needs a numeric mean_accept")
+            })?;
+        if (mean_accept - trailer_mean_accept).abs() > 1e-9 {
+            return Err(invalid_fit(format!(
+                "per-draw mean tree_accept for chain {chain_id} is {mean_accept} but fit trailer mean_accept is {trailer_mean_accept}; rerun `bayesite sample` to completion",
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Diagnose a complete v0-provisional fit NDJSON stream produced by
 /// `bayesite sample`.
 ///
@@ -1738,6 +1832,9 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         }
     }
     validate_trailer_chains(chain_stats, &chain_ids, header_draw_count)?;
+    if draw_sample_stats_metadata.unwrap_or(false) {
+        validate_per_draw_stats_match_trailer(&draws, &chain_ids, chain_stats)?;
+    }
 
     let mut series_by_param: Vec<Vec<Vec<Vec<f64>>>> = specs
         .iter()

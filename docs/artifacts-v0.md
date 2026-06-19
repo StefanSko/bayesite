@@ -121,7 +121,11 @@ The report includes:
 metadata when it is present. It rejects mismatched counts, non-contiguous draw
 indexes, malformed chain/order metadata, lines after the trailer, and
 inconsistent per-draw sample stats (present on some draw lines but not others,
-or present on draw lines without the header `sample_stats_mode`).
+or present on draw lines without the header `sample_stats_mode`). When per-draw
+sample stats are present, it also cross-checks them against the trailer chain
+aggregates: the per-draw diverging count must match `divergences`, the
+recomputed tree-depth histogram must match `treedepth_histogram`, and the mean
+of `tree_accept` must match `mean_accept` (within 1e-9).
 
 ## `bayesite prior-predictive`
 
