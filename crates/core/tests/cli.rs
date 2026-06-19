@@ -2624,6 +2624,113 @@ fn samples_linear_regression_over_the_subprocess_protocol() {
 }
 
 #[test]
+fn simulate_sample_recover_check_pipeline_uses_plain_data() {
+    let (model_path, data_path, generated_path) =
+        write_prior_predictive_inputs("linear_regression", &["x"]);
+    let truth_path = model_path.with_file_name("truth.json");
+    let fit_path = model_path.with_file_name("fit.jsonl");
+    let report_path = model_path.with_file_name("recover-check.json");
+    std::fs::write(&truth_path, r#"{"alpha": 1.5, "beta": 0.2, "sigma": 0.8}"#).unwrap();
+
+    let simulate = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "simulate",
+            "--model",
+            model_path.to_str().unwrap(),
+            "--data",
+            data_path.to_str().unwrap(),
+            "--truth",
+            truth_path.to_str().unwrap(),
+            "--seed",
+            "11",
+            "--out",
+            generated_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite simulate runs");
+    assert!(
+        simulate.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&simulate.stderr)
+    );
+    let generated = json::parse(&std::fs::read_to_string(&generated_path).unwrap()).unwrap();
+    assert!(
+        generated.get("simulate_format").is_none(),
+        "simulate should write a plain data document"
+    );
+    assert!(generated.get("x").is_some());
+    assert_eq!(
+        generated
+            .get("y")
+            .and_then(|y| y.get("dtype"))
+            .and_then(Value::as_str),
+        Some("float64")
+    );
+
+    let sample = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "sample",
+            "--model",
+            model_path.to_str().unwrap(),
+            "--data",
+            generated_path.to_str().unwrap(),
+            "--seed",
+            "12",
+            "--chains",
+            "1",
+            "--warmup",
+            "10",
+            "--draws",
+            "4",
+            "--out",
+            fit_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite sample runs");
+    assert!(
+        sample.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&sample.stderr)
+    );
+
+    let recover_check = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "recover-check",
+            "--fit",
+            fit_path.to_str().unwrap(),
+            "--truth",
+            truth_path.to_str().unwrap(),
+            "--interval",
+            "0.8",
+            "--out",
+            report_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite recover-check runs");
+    assert!(
+        recover_check.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&recover_check.stderr)
+    );
+    let report = json::parse(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    assert_eq!(
+        report.get("recover_check_format").and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    assert!(report.get("verdict").is_none());
+    assert_eq!(
+        string_array(report.get("target_order").unwrap()),
+        ["alpha", "beta", "sigma"]
+    );
+    let alpha = report
+        .get("targets")
+        .and_then(|targets| targets.get("alpha"))
+        .expect("alpha target");
+    assert_eq!(alpha.get("truth").and_then(Value::as_f64), Some(1.5));
+    assert_count_support(alpha, "rank", 4);
+}
+
+#[test]
 fn posterior_predictive_simulates_observed_sites_from_sample_fit() {
     let (model_path, data_path) = write_fixture_inputs("linear_regression");
     let fit_path = model_path.with_file_name("fit.jsonl");

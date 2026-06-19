@@ -20,7 +20,8 @@ Core invariants that should remain true as Bayesite evolves.
 ## Workflow surface
 
 - The intended command set is `sample`, `diagnose`, `prior-predictive`,
-  `posterior-predictive`, `posterior-check`, `recover`, and `sbc`.
+  `posterior-predictive`, `posterior-check`, `simulate`, `recover-check`,
+  `recover`, and `sbc`.
 - CLI stdout/stderr are machine-readable. Errors are JSON objects with typed
   error names and repair-oriented messages.
 - Workflow commands may orchestrate artifacts, files, and multiple runtime calls;
