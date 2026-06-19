@@ -1235,6 +1235,178 @@ pub fn simulate_prior_predictive(
     Ok(PriorPredictiveRun { sites, draws })
 }
 
+fn index_spec_contains_data_ref(index: &IndexSpec) -> bool {
+    match index {
+        IndexSpec::Scalar(expr) => expr_contains_data_ref(expr),
+        IndexSpec::Full => false,
+        IndexSpec::Tuple(items) => items.iter().any(index_spec_contains_data_ref),
+    }
+}
+
+fn expr_contains_data_ref(expr: &Expr) -> bool {
+    match expr {
+        Expr::Data(_) => true,
+        Expr::Param(_) | Expr::Const(_) => false,
+        Expr::Bin { left, right, .. } => {
+            expr_contains_data_ref(left) || expr_contains_data_ref(right)
+        }
+        Expr::Unary { operand, .. } => expr_contains_data_ref(operand),
+        Expr::Index { base, index } => {
+            expr_contains_data_ref(base) || index_spec_contains_data_ref(index)
+        }
+        Expr::VectorScatter {
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        } => {
+            expr_contains_data_ref(length)
+                || expr_contains_data_ref(observed_idx)
+                || expr_contains_data_ref(observed_values)
+                || expr_contains_data_ref(missing_idx)
+                || expr_contains_data_ref(missing_values)
+        }
+    }
+}
+
+fn validate_fixed_truth(
+    free_specs: &HashMap<String, FreeSpec>,
+    truth: Vec<(String, DataValue)>,
+    context: &str,
+) -> Result<HashMap<String, Tensor>, Error> {
+    let mut truth_map = HashMap::new();
+    for (name, value) in truth {
+        if truth_map
+            .insert(name.clone(), (value.shape, value.values))
+            .is_some()
+        {
+            return Err(mismatch(format!(
+                "{context} truth has duplicate free value \"{name}\""
+            )));
+        }
+    }
+    let mut missing = free_specs
+        .keys()
+        .filter(|name| !truth_map.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    missing.sort();
+    if missing.len() == 1 {
+        return Err(mismatch(format!(
+            "{context} truth is missing free value \"{}\"",
+            missing[0]
+        )));
+    }
+    if !missing.is_empty() {
+        return Err(mismatch(format!(
+            "{context} truth is missing free values {missing:?}"
+        )));
+    }
+    let mut unknown = truth_map
+        .keys()
+        .filter(|name| !free_specs.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    unknown.sort();
+    if unknown.len() == 1 {
+        return Err(mismatch(format!(
+            "{context} truth has unknown free value \"{}\"",
+            unknown[0]
+        )));
+    }
+    if !unknown.is_empty() {
+        return Err(mismatch(format!(
+            "{context} truth has unknown free values {unknown:?}"
+        )));
+    }
+
+    let mut tensors = HashMap::new();
+    for (name, spec) in free_specs {
+        let (shape, values) = truth_map.remove(name).expect("truth was validated");
+        if shape != spec.shape {
+            return Err(mismatch(format!(
+                "{context} truth for free value \"{name}\" has shape {shape:?}, expected {:?}",
+                spec.shape
+            )));
+        }
+        let tensor = Tensor::from_vec(shape, values);
+        if !satisfies_constraint(&tensor, &spec.constraint) {
+            return Err(mismatch(format!(
+                "{context} truth for free value \"{name}\" violates constraint {:?}",
+                spec.constraint
+            )));
+        }
+        tensors.insert(name.clone(), tensor);
+    }
+    Ok(tensors)
+}
+
+/// Simulate observed data from a decoded model with user-supplied constrained
+/// free-value truth. The returned value is a normal data document payload:
+/// declared inputs first, then generated observed DataRef sites in stochastic
+/// site order. It carries no simulation marker so `sample` remains provenance
+/// agnostic.
+pub fn simulate_data_from_truth(
+    meta: ModelMeta,
+    declared_data: Vec<(String, DataValue)>,
+    truth: Vec<(String, DataValue)>,
+    seed: u64,
+) -> Result<Vec<(String, DataValue)>, Error> {
+    validate_reportable_seed(seed, "simulate")?;
+    let output_declared_data = declared_data.clone();
+    let data = bind_declared_data(&meta, declared_data)?;
+    let free_specs = free_specs(&meta, &data)?;
+    let truth_values = validate_fixed_truth(&free_specs, truth, "simulate")?;
+    let mut env = ForwardEnv {
+        values: truth_values,
+        data: &data,
+    };
+    let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
+    let mut output = output_declared_data;
+    let mut generated_names = Vec::<String>::new();
+    for site in meta.resolved_stochastic_sites() {
+        match &site.value {
+            Expr::Param(_) => {}
+            Expr::Data(name) => {
+                if data.contains_key(name) {
+                    return Err(mismatch(format!(
+                        "simulate stochastic site \"{}\" writes data value \"{name}\", but it is already bound as declared data",
+                        site.name
+                    )));
+                }
+                if generated_names.iter().any(|existing| existing == name) {
+                    return Err(mismatch(format!(
+                        "simulate stochastic site \"{}\" writes duplicate generated data value \"{name}\"",
+                        site.name
+                    )));
+                }
+                let value = sample_distribution(&mut rng, &env, &site.distribution, None)?;
+                let integer = distribution_has_integer_support(&site.distribution);
+                env.values.insert(name.clone(), value.clone());
+                generated_names.push(name.clone());
+                output.push((
+                    name.clone(),
+                    DataValue {
+                        shape: value.shape().to_vec(),
+                        values: value.data().to_vec(),
+                        integer,
+                    },
+                ));
+            }
+            other => {
+                if expr_contains_data_ref(other) {
+                    return Err(invalid(format!(
+                        "simulate stochastic site \"{}\" has a non-assignable observed value expression; only direct DataRef observed sites are supported in v0-provisional simulation",
+                        site.name
+                    )));
+                }
+            }
+        }
+    }
+    Ok(output)
+}
+
 /// Render a complete prior-predictive run as v0-provisional NDJSON lines.
 pub fn prior_predictive_ndjson_lines(
     meta: ModelMeta,

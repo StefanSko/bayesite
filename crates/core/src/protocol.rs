@@ -20,10 +20,10 @@ use crate::diagnostics;
 use crate::error::{Error, ErrorKind};
 use crate::ir::{decode_model, ModelMeta};
 use crate::json::{self, Value};
-use crate::model::{data_from_json, DataValue, Posterior};
+use crate::model::{data_from_json, data_to_json, DataValue, Posterior};
 use crate::predictive::{
     posterior_check_report, posterior_predictive_ndjson_lines, prior_predictive_ndjson_lines,
-    PriorPredictiveSettings,
+    simulate_data_from_truth, PriorPredictiveSettings,
 };
 use crate::sampler::{sample, ChainDraws, Settings};
 use crate::workflow::{recover_report, sbc_report, RecoverSettings, SbcSettings};
@@ -31,6 +31,7 @@ use crate::workflow::{recover_report, sbc_report, RecoverSettings, SbcSettings};
 /// One constrained draw: (name, shape, values) per parameter.
 type ConstrainedDraw = Vec<(String, Vec<usize>, Vec<f64>)>;
 type DrawChainMetadata = (bool, Option<i64>, Option<Vec<i64>>);
+type RecoverySeries = Vec<Vec<Vec<Vec<f64>>>>;
 
 const SAMPLE_WORKFLOW_PHASES: [&str; 7] = [
     "parse_json",
@@ -1738,6 +1739,546 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
     json::write(&response)
 }
 
+#[derive(Debug, Clone)]
+struct RecoveryTarget {
+    name: String,
+    truth: String,
+    posterior: String,
+}
+
+fn recover_check_workflow_phases_value() -> Value {
+    Value::Array(
+        [
+            "parse_fit_ndjson",
+            "parse_truth",
+            "map_targets",
+            "compute_recovery_facts",
+            "emit_report",
+        ]
+        .iter()
+        .map(|phase| Value::Str((*phase).to_string()))
+        .collect(),
+    )
+}
+
+fn recovery_fit_series(text: &str) -> Result<(Vec<ParamSpec>, Vec<i64>, RecoverySeries), Error> {
+    diagnose_ndjson(text)?;
+    let mut lines = text.lines();
+    let header_line = lines
+        .next()
+        .ok_or_else(|| invalid_fit("fit is empty; pass NDJSON from `bayesite sample`"))?;
+    let header = json::parse(header_line)?;
+    let specs = parse_param_specs(&header)?;
+    let source_seed = parse_header_seed(&header)?;
+    let mut draws = Vec::new();
+    let mut chain_ids = Vec::new();
+    for line in lines {
+        let doc = json::parse(line)?;
+        if doc.get("trailer").is_some() {
+            break;
+        }
+        let draw = parse_draw(&doc, &specs, source_seed)?;
+        chain_index(&mut chain_ids, draw.chain);
+        draws.push(draw);
+    }
+    let mut series_by_param: Vec<Vec<Vec<Vec<f64>>>> = specs
+        .iter()
+        .map(|spec| vec![vec![Vec::new(); chain_ids.len()]; spec.size])
+        .collect();
+    for draw in &draws {
+        let chain = chain_ids
+            .iter()
+            .position(|&id| id == draw.chain)
+            .expect("chain id was registered");
+        for (param_idx, values) in draw.values.iter().enumerate() {
+            for (coord, &value) in values.iter().enumerate() {
+                series_by_param[param_idx][coord][chain].push(value);
+            }
+        }
+    }
+    Ok((specs, chain_ids, series_by_param))
+}
+
+fn parse_recovery_targets(
+    targets_doc: Option<&Value>,
+    truth: &[(String, DataValue)],
+    specs: &[ParamSpec],
+) -> Result<Vec<RecoveryTarget>, Error> {
+    let posterior_names = specs
+        .iter()
+        .map(|spec| spec.name.as_str())
+        .collect::<Vec<_>>();
+    if let Some(targets_doc) = targets_doc {
+        reject_unknown_fields(targets_doc, "recover-check targets", &["targets"])?;
+        let targets = targets_doc
+            .get("targets")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid_request("recover-check targets needs a targets array"))?;
+        if targets.is_empty() {
+            return Err(invalid_request(
+                "recover-check targets must include at least one target",
+            ));
+        }
+        let truth_names = truth
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>();
+        let mut parsed = Vec::with_capacity(targets.len());
+        for target in targets {
+            reject_unknown_fields(
+                target,
+                "recover-check target",
+                &["name", "truth", "posterior"],
+            )?;
+            let name = target
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_request("recover-check target needs a string name"))?
+                .to_string();
+            let truth_name = target
+                .get("truth")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_request("recover-check target needs a string truth"))?
+                .to_string();
+            let posterior = target
+                .get("posterior")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_request("recover-check target needs a string posterior"))?
+                .to_string();
+            if parsed
+                .iter()
+                .any(|existing: &RecoveryTarget| existing.name == name)
+            {
+                return Err(invalid_request(format!(
+                    "recover-check targets has duplicate target name \"{name}\""
+                )));
+            }
+            if !truth_names.contains(&truth_name.as_str()) {
+                return Err(invalid_request(format!(
+                    "recover-check target \"{name}\" references unknown truth \"{truth_name}\""
+                )));
+            }
+            if !posterior_names.contains(&posterior.as_str()) {
+                return Err(invalid_request(format!(
+                    "recover-check target \"{name}\" references unknown posterior parameter \"{posterior}\""
+                )));
+            }
+            parsed.push(RecoveryTarget {
+                name,
+                truth: truth_name,
+                posterior,
+            });
+        }
+        return Ok(parsed);
+    }
+
+    let mut targets = Vec::with_capacity(truth.len());
+    for (truth_name, _) in truth {
+        if !posterior_names.contains(&truth_name.as_str()) {
+            return Err(invalid_request(format!(
+                "recover-check truth \"{truth_name}\" has no matching posterior parameter; pass explicit targets to map differently named values"
+            )));
+        }
+        targets.push(RecoveryTarget {
+            name: truth_name.clone(),
+            truth: truth_name.clone(),
+            posterior: truth_name.clone(),
+        });
+    }
+    if targets.is_empty() {
+        return Err(invalid_request(
+            "recover-check truth must include at least one value",
+        ));
+    }
+    Ok(targets)
+}
+
+fn quantile(sorted: &[f64], p: f64) -> f64 {
+    debug_assert!(!sorted.is_empty());
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+    let pos = p.clamp(0.0, 1.0) * (sorted.len() - 1) as f64;
+    let lo = pos.floor() as usize;
+    let hi = pos.ceil() as usize;
+    if lo == hi {
+        sorted[lo]
+    } else {
+        let weight = pos - lo as f64;
+        sorted[lo] * (1.0 - weight) + sorted[hi] * weight
+    }
+}
+
+fn quantile_index_value(p: f64, draw_count: usize) -> Value {
+    let position = if draw_count == 1 {
+        0.0
+    } else {
+        p.clamp(0.0, 1.0) * (draw_count - 1) as f64
+    };
+    Value::Object(vec![
+        ("position".to_string(), Value::Float(position)),
+        ("floor".to_string(), Value::Int(position.floor() as i64)),
+        ("ceil".to_string(), Value::Int(position.ceil() as i64)),
+    ])
+}
+
+fn interval_bounds_value(interval: f64, draw_count: usize) -> Value {
+    let lower = (1.0 - interval) / 2.0;
+    Value::Object(vec![
+        ("interval_probability".to_string(), Value::Float(interval)),
+        ("lower_tail_probability".to_string(), Value::Float(lower)),
+        ("upper_tail_probability".to_string(), Value::Float(lower)),
+        ("lower_quantile".to_string(), Value::Float(lower)),
+        ("upper_quantile".to_string(), Value::Float(1.0 - lower)),
+        (
+            "quantile_index_base".to_string(),
+            Value::Str("zero_based_sorted_ascending_posterior_draws".to_string()),
+        ),
+        (
+            "sorted_draw_count".to_string(),
+            Value::Int(draw_count as i64),
+        ),
+        (
+            "lower_quantile_index".to_string(),
+            quantile_index_value(lower, draw_count),
+        ),
+        (
+            "upper_quantile_index".to_string(),
+            quantile_index_value(1.0 - lower, draw_count),
+        ),
+    ])
+}
+
+fn count_bounds_value(draws: usize) -> Value {
+    Value::Object(vec![
+        ("min".to_string(), Value::Int(0)),
+        ("max".to_string(), Value::Int(draws as i64)),
+    ])
+}
+
+fn count_bin_order_value(draws: usize) -> Value {
+    Value::Array((0..=draws).map(|draw| Value::Int(draw as i64)).collect())
+}
+
+fn int_coord_value(shape: &[usize], values: &[i64]) -> Value {
+    if shape.is_empty() {
+        Value::Int(values[0])
+    } else {
+        Value::Array(values.iter().map(|&value| Value::Int(value)).collect())
+    }
+}
+
+fn bool_coord_value(shape: &[usize], values: &[bool]) -> Value {
+    if shape.is_empty() {
+        Value::Bool(values[0])
+    } else {
+        Value::Array(values.iter().copied().map(Value::Bool).collect())
+    }
+}
+
+fn truth_integer_value(shape: &[usize], values: &[f64]) -> Value {
+    let flags = values
+        .iter()
+        .map(|value| value.fract() == 0.0)
+        .collect::<Vec<_>>();
+    bool_coord_value(shape, &flags)
+}
+
+fn recover_check_target_value(
+    target: &RecoveryTarget,
+    spec: &ParamSpec,
+    truth: &DataValue,
+    series_by_coord: &[Vec<Vec<f64>>],
+    interval: f64,
+    total_draws: usize,
+) -> Value {
+    let lower_p = (1.0 - interval) / 2.0;
+    let upper_p = 1.0 - lower_p;
+    let mut means = vec![0.0; spec.size];
+    let mut lowers = vec![0.0; spec.size];
+    let mut uppers = vec![0.0; spec.size];
+    let mut ranks = Vec::with_capacity(spec.size);
+    let mut tie_counts = Vec::with_capacity(spec.size);
+    let mut contains = Vec::with_capacity(spec.size);
+    let mut worst_rhat = f64::NEG_INFINITY;
+    let mut worst_ess = f64::INFINITY;
+    for coord in 0..spec.size {
+        let mut pooled = Vec::new();
+        for chain in &series_by_coord[coord] {
+            pooled.extend(chain.iter().copied());
+        }
+        let mean = pooled.iter().sum::<f64>() / pooled.len() as f64;
+        let truth_value = truth.values[coord];
+        let mut rank = 0i64;
+        let mut ties = 0i64;
+        for &draw in &pooled {
+            if draw < truth_value {
+                rank += 1;
+            } else if draw == truth_value {
+                ties += 1;
+            }
+        }
+        pooled.sort_by(|left, right| left.total_cmp(right));
+        let lower = quantile(&pooled, lower_p);
+        let upper = quantile(&pooled, upper_p);
+        means[coord] = mean;
+        lowers[coord] = lower;
+        uppers[coord] = upper;
+        ranks.push(rank);
+        tie_counts.push(ties);
+        contains.push(truth_value >= lower && truth_value <= upper);
+        worst_rhat = worst_rhat.max(diagnostics::split_rhat(&series_by_coord[coord]));
+        worst_ess = worst_ess.min(diagnostics::effective_sample_size(&series_by_coord[coord]));
+    }
+    let interval_contains_truth = contains.iter().all(|value| *value);
+    Value::Object(vec![
+        ("name".to_string(), Value::Str(target.name.clone())),
+        ("truth_name".to_string(), Value::Str(target.truth.clone())),
+        (
+            "posterior_name".to_string(),
+            Value::Str(target.posterior.clone()),
+        ),
+        ("shape".to_string(), shape_value(&spec.shape)),
+        (
+            "coordinate_order".to_string(),
+            coordinate_order_value(&spec.shape),
+        ),
+        (
+            "truth".to_string(),
+            tensor_to_value(&spec.shape, &truth.values),
+        ),
+        (
+            "truth_integer".to_string(),
+            truth_integer_value(&spec.shape, &truth.values),
+        ),
+        (
+            "truth_source".to_string(),
+            Value::Str("supplied_truth".to_string()),
+        ),
+        (
+            "truth_artifact_kind".to_string(),
+            Value::Str("reference_values".to_string()),
+        ),
+        (
+            "truth_artifact_scope".to_string(),
+            Value::Str("user_supplied_parameter_values".to_string()),
+        ),
+        (
+            "posterior_draws".to_string(),
+            Value::Int(total_draws as i64),
+        ),
+        ("rank_draws".to_string(), Value::Int(total_draws as i64)),
+        (
+            "posterior_draws_artifact_kind".to_string(),
+            Value::Str(POSTERIOR_DRAWS.kind.to_string()),
+        ),
+        (
+            "posterior_draws_artifact_scope".to_string(),
+            Value::Str(POSTERIOR_DRAWS.scope.to_string()),
+        ),
+        ("rank_bounds".to_string(), count_bounds_value(total_draws)),
+        (
+            "rank_bin_order".to_string(),
+            count_bin_order_value(total_draws),
+        ),
+        (
+            "rank_bin_count".to_string(),
+            Value::Int(total_draws as i64 + 1),
+        ),
+        ("rank".to_string(), int_coord_value(&spec.shape, &ranks)),
+        (
+            "rank_statistic".to_string(),
+            Value::Str("count_posterior_draws_less_than_truth".to_string()),
+        ),
+        (
+            "rank_scope".to_string(),
+            Value::Str("per_parameter_coordinate_marginal".to_string()),
+        ),
+        (
+            "tie_count_bounds".to_string(),
+            count_bounds_value(total_draws),
+        ),
+        (
+            "tie_count_bin_order".to_string(),
+            count_bin_order_value(total_draws),
+        ),
+        (
+            "tie_count_bin_count".to_string(),
+            Value::Int(total_draws as i64 + 1),
+        ),
+        (
+            "tie_count".to_string(),
+            int_coord_value(&spec.shape, &tie_counts),
+        ),
+        (
+            "tie_statistic".to_string(),
+            Value::Str("count_posterior_draws_equal_to_truth".to_string()),
+        ),
+        ("mean".to_string(), tensor_to_value(&spec.shape, &means)),
+        (
+            "interval_method".to_string(),
+            Value::Str("equal_tailed_linear_quantile".to_string()),
+        ),
+        (
+            "interval_scope".to_string(),
+            Value::Str("per_parameter_coordinate_marginal".to_string()),
+        ),
+        (
+            "interval_bounds".to_string(),
+            interval_bounds_value(interval, total_draws),
+        ),
+        ("lower".to_string(), tensor_to_value(&spec.shape, &lowers)),
+        ("upper".to_string(), tensor_to_value(&spec.shape, &uppers)),
+        (
+            "interval_contains_truth_statistic".to_string(),
+            Value::Str("truth_within_closed_interval_all_coordinates".to_string()),
+        ),
+        (
+            "interval_contains_truth".to_string(),
+            Value::Bool(interval_contains_truth),
+        ),
+        (
+            "interval_contains_truth_by_coordinate".to_string(),
+            bool_coord_value(&spec.shape, &contains),
+        ),
+        (
+            "summary_scale".to_string(),
+            Value::Str("constrained_parameter_value".to_string()),
+        ),
+        (
+            "rhat_statistic".to_string(),
+            Value::Str(RHAT_STATISTIC.to_string()),
+        ),
+        (
+            "rhat_scope".to_string(),
+            Value::Str("max_over_parameter_coordinate_marginals".to_string()),
+        ),
+        ("rhat".to_string(), diagnostic_value(worst_rhat)),
+        (
+            "ess_statistic".to_string(),
+            Value::Str(ESS_STATISTIC.to_string()),
+        ),
+        (
+            "ess_scope".to_string(),
+            Value::Str("min_over_parameter_coordinate_marginals".to_string()),
+        ),
+        ("ess".to_string(), diagnostic_value(worst_ess)),
+    ])
+}
+
+/// Compare posterior draws from a complete v0-provisional fit stream to
+/// supplied reference truth values. The report is factual: no pass/fail/verdict
+/// field is emitted, and no data provenance is required.
+pub fn recover_check_report(
+    fit: &str,
+    truth_doc: &Value,
+    targets_doc: Option<&Value>,
+    interval: f64,
+) -> Result<String, Error> {
+    if !(0.0..1.0).contains(&interval) {
+        return Err(invalid_request(
+            "recover-check settings.interval must be in (0, 1)",
+        ));
+    }
+    let truth = data_from_json(truth_doc)?;
+    let (specs, chain_ids, series_by_param) = recovery_fit_series(fit)?;
+    let targets = parse_recovery_targets(targets_doc, &truth, &specs)?;
+    let total_draws = series_by_param[0][0].iter().map(Vec::len).sum::<usize>();
+    let mut target_entries = Vec::with_capacity(targets.len());
+    let mut interval_contains_truth_by_target = Vec::with_capacity(targets.len());
+    for target in &targets {
+        let spec_idx = specs
+            .iter()
+            .position(|spec| spec.name == target.posterior)
+            .expect("target posterior was validated");
+        let spec = &specs[spec_idx];
+        let truth_value = truth
+            .iter()
+            .find(|(name, _)| *name == target.truth)
+            .map(|(_, value)| value)
+            .expect("target truth was validated");
+        if truth_value.shape != spec.shape {
+            return Err(invalid_request(format!(
+                "recover-check target \"{}\" truth \"{}\" has shape {:?}, but posterior parameter \"{}\" has shape {:?}",
+                target.name, target.truth, truth_value.shape, target.posterior, spec.shape
+            )));
+        }
+        let summary = recover_check_target_value(
+            target,
+            spec,
+            truth_value,
+            &series_by_param[spec_idx],
+            interval,
+            total_draws,
+        );
+        let contains = summary
+            .get("interval_contains_truth")
+            .expect("summary includes containment")
+            .clone();
+        interval_contains_truth_by_target.push((target.name.clone(), contains));
+        target_entries.push((target.name.clone(), summary));
+    }
+    let target_order = entry_order_value(&target_entries);
+    let response = Value::Object(vec![
+        (
+            "recover_check_format".to_string(),
+            Value::Str(V0_PROVISIONAL.to_string()),
+        ),
+        (
+            "workflow_phases".to_string(),
+            recover_check_workflow_phases_value(),
+        ),
+        (
+            "source_draws_format".to_string(),
+            Value::Str(V0_PROVISIONAL.to_string()),
+        ),
+        (
+            "source_artifact_kind".to_string(),
+            Value::Str(POSTERIOR_DRAWS.kind.to_string()),
+        ),
+        (
+            "source_artifact_scope".to_string(),
+            Value::Str(POSTERIOR_DRAWS.scope.to_string()),
+        ),
+        (
+            "source_chain_count".to_string(),
+            Value::Int(chain_ids.len() as i64),
+        ),
+        (
+            "source_chain_order".to_string(),
+            i64_order_value(&chain_ids),
+        ),
+        (
+            "source_draw_count".to_string(),
+            Value::Int(total_draws as i64),
+        ),
+        ("interval".to_string(), Value::Float(interval)),
+        (
+            "target_count".to_string(),
+            Value::Int(target_entries.len() as i64),
+        ),
+        ("target_order".to_string(), target_order),
+        (
+            "interval_contains_truth_statistic".to_string(),
+            Value::Str("truth_within_closed_interval_all_coordinates".to_string()),
+        ),
+        (
+            "interval_contains_truth_by_target".to_string(),
+            Value::Object(interval_contains_truth_by_target),
+        ),
+        (
+            "rank_statistic".to_string(),
+            Value::Str("count_posterior_draws_less_than_truth".to_string()),
+        ),
+        (
+            "tie_statistic".to_string(),
+            Value::Str("count_posterior_draws_equal_to_truth".to_string()),
+        ),
+        ("targets".to_string(), Value::Object(target_entries)),
+    ]);
+    json::write(&response)
+}
+
 /// Handle one wasm-boundary request (a JSON document) and render the
 /// response text. Pure string-to-string so it is natively testable; the
 /// unsafe pointer shims in `wasm_abi.rs` only move bytes.
@@ -1749,6 +2290,10 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
 ///   -> v0-provisional JSON diagnostics.
 /// - `{"command":"prior-predictive","model":<ir>,"data":<data>,
 ///    "settings":{"num_draws":N},"seed":N}` -> v0-provisional NDJSON.
+/// - `{"command":"simulate","model":<ir>,"data":<data>,"truth":<truth>,
+///    "seed":N}` -> plain data JSON.
+/// - `{"command":"recover-check","fit":"<v0-provisional NDJSON>",
+///    "truth":<truth>,"targets":<optional targets>}` -> recovery facts.
 /// - `{"command":"recover","model":<ir>,"data":<data>,"settings":{...},
 ///    "seed":N}` -> v0-provisional JSON report.
 /// - `{"command":"sbc","model":<ir>,"data":<data>,"settings":{...},
@@ -2205,6 +2750,51 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
             let seed = request_seed(&request, "posterior-check")?;
             posterior_check_report(meta, data, fit, seed)
         }
+        Some("simulate") => {
+            reject_unknown_fields(
+                &request,
+                "simulate request",
+                &["command", "model", "data", "truth", "seed"],
+            )?;
+            let (meta, data) = request_model_data(&request, "simulate")?;
+            let truth_doc = request
+                .get("truth")
+                .ok_or_else(|| invalid_request("simulate request needs a truth object"))?;
+            if !matches!(truth_doc, Value::Object(_)) {
+                return Err(invalid_request("simulate request truth must be an object"));
+            }
+            let truth = data_from_json(truth_doc)?;
+            let seed = request_seed(&request, "simulate")?;
+            let generated = simulate_data_from_truth(meta, data, truth, seed)?;
+            json::write(&data_to_json(&generated, "simulate")?)
+        }
+        Some("recover-check") => {
+            reject_unknown_fields(
+                &request,
+                "recover-check request",
+                &["command", "fit", "truth", "targets", "settings"],
+            )?;
+            let fit = request
+                .get("fit")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    invalid_request(
+                        "recover-check request needs \"fit\": a v0-provisional NDJSON string",
+                    )
+                })?;
+            let truth = request
+                .get("truth")
+                .ok_or_else(|| invalid_request("recover-check request needs a truth object"))?;
+            if !matches!(truth, Value::Object(_)) {
+                return Err(invalid_request(
+                    "recover-check request truth must be an object",
+                ));
+            }
+            let settings_doc = request_settings(&request, "recover-check")?;
+            reject_unknown_settings_fields(settings_doc, "recover-check", &["interval"])?;
+            let interval = setting_f64(settings_doc, "interval", 0.8, "recover-check")?;
+            recover_check_report(fit, truth, request.get("targets"), interval)
+        }
         Some("recover") => {
             reject_unknown_fields(
                 &request,
@@ -2311,10 +2901,10 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
             json::write(&response)
         }
         Some(command) => Err(invalid_request(format!(
-            "unknown command \"{command}\"; supported commands are \"sample\", \"diagnose\", \"diagnostics\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"recover\", and \"sbc\""
+            "unknown command \"{command}\"; supported commands are \"sample\", \"diagnose\", \"diagnostics\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"simulate\", \"recover-check\", \"recover\", and \"sbc\""
         ))),
         None => Err(invalid_request(
-            "request needs \"command\": \"sample\", \"diagnose\", \"diagnostics\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"recover\", or \"sbc\"",
+            "request needs \"command\": \"sample\", \"diagnose\", \"diagnostics\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"simulate\", \"recover-check\", \"recover\", or \"sbc\"",
         )),
     }
 }

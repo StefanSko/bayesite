@@ -11,14 +11,19 @@
 //!       --fit <fit.jsonl|-> [--seed N] [--out <yrep.jsonl|->]
 //!   bayesite posterior-check --model <ir.json|-> --data <data.json|->
 //!       --fit <fit.jsonl|-> [--seed N] [--out <ppc.json|->]
+//!   bayesite simulate --model <ir.json|-> --data <data.json|->
+//!       --truth <truth.json|-> [--seed N] [--out <data.json|->]
+//!   bayesite recover-check --fit <fit.jsonl|-> --truth <truth.json|->
+//!       [--targets <targets.json|->] [--interval P] [--out <report.json|->]
 //!   bayesite recover --model <ir.json|-> --scenario <scenario.json|->
 //!       [--out <report.json|->]
 //!   bayesite sbc --model <ir.json|-> --scenario <scenario.json|->
 //!       [--replicates N] [--out <report.json|->]
 //!
 //! `sample` writes the v0-provisional NDJSON protocol (see `protocol.rs`).
-//! `diagnose`, `recover`, and `sbc` write one v0-provisional JSON object, and
-//! `prior-predictive` writes v0-provisional NDJSON. `-` means stdout/stdin.
+//! `diagnose`, `recover-check`, `recover`, and `sbc` write one v0-provisional
+//! JSON object; `simulate` writes a plain data document; `prior-predictive`
+//! writes v0-provisional NDJSON. `-` means stdout/stdin.
 //! Errors are a single JSON object on stderr with a nonzero exit code; messages
 //! state what to change.
 //!
@@ -30,10 +35,10 @@ use std::io::Write;
 use bayesite_core::error::{Error, ErrorKind};
 use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
-use bayesite_core::model::{data_from_json, DataValue, Posterior};
+use bayesite_core::model::{data_from_json, data_to_json, DataValue, Posterior};
 use bayesite_core::predictive::{
     posterior_check_report, posterior_predictive_ndjson_lines, prior_predictive_ndjson_lines,
-    PriorPredictiveSettings,
+    simulate_data_from_truth, PriorPredictiveSettings,
 };
 use bayesite_core::protocol;
 use bayesite_core::sampler::{sample, ChainDraws, Settings};
@@ -191,6 +196,8 @@ enum Command {
     PriorPredictive(PriorPredictiveArgs),
     PosteriorPredictive(PosteriorPredictiveArgs),
     PosteriorCheck(PosteriorCheckArgs),
+    Simulate(SimulateArgs),
+    RecoverCheck(RecoverCheckArgs),
     Recover(RecoverArgs),
     Sbc(SbcArgs),
 }
@@ -233,6 +240,22 @@ struct PosteriorCheckArgs {
     seed: u64,
 }
 
+struct SimulateArgs {
+    model_path: String,
+    data_path: String,
+    truth_path: String,
+    out_path: String,
+    seed: u64,
+}
+
+struct RecoverCheckArgs {
+    fit_path: String,
+    truth_path: String,
+    targets_path: Option<String>,
+    out_path: String,
+    interval: f64,
+}
+
 struct RecoverArgs {
     model_path: String,
     scenario_path: String,
@@ -269,6 +292,10 @@ fn usage() -> &'static str {
      --fit <fit.jsonl|-> [--seed N] [--out <yrep.jsonl|->]\n\
      usage: bayesite posterior-check --model <ir.json|-> --data <data.json|-> \
      --fit <fit.jsonl|-> [--seed N] [--out <ppc.json|->]\n\
+     usage: bayesite simulate --model <ir.json|-> --data <data.json|-> \
+     --truth <truth.json|-> [--seed N] [--out <data.json|->]\n\
+     usage: bayesite recover-check --fit <fit.jsonl|-> --truth <truth.json|-> \
+     [--targets <targets.json|->] [--interval P] [--out <report.json|->]\n\
      usage: bayesite recover --model <ir.json|-> --scenario <scenario.json|-> \
      [--out <report.json|->]\n\
      usage: bayesite sbc --model <ir.json|-> --scenario <scenario.json|-> \
@@ -287,6 +314,8 @@ fn parse_args(argv: &[String]) -> Result<Command, Error> {
             parse_posterior_predictive_args(&argv[1..]).map(Command::PosteriorPredictive)
         }
         "posterior-check" => parse_posterior_check_args(&argv[1..]).map(Command::PosteriorCheck),
+        "simulate" => parse_simulate_args(&argv[1..]).map(Command::Simulate),
+        "recover-check" => parse_recover_check_args(&argv[1..]).map(Command::RecoverCheck),
         "recover" => parse_recover_args(&argv[1..]).map(Command::Recover),
         "sbc" => parse_sbc_args(&argv[1..]).map(Command::Sbc),
         other => Err(usage_error(format!(
@@ -582,6 +611,109 @@ fn parse_posterior_check_args(argv: &[String]) -> Result<PosteriorCheckArgs, Err
     })
 }
 
+fn parse_simulate_args(argv: &[String]) -> Result<SimulateArgs, Error> {
+    reject_duplicate_flags(
+        "simulate",
+        argv,
+        &["--model", "--data", "--truth", "--out", "--seed"],
+    )?;
+    let mut model_path: Option<String> = None;
+    let mut data_path: Option<String> = None;
+    let mut truth_path: Option<String> = None;
+    let mut out_path = "-".to_string();
+    let mut seed = 0u64;
+
+    let mut iter = argv.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--model" => model_path = Some(value_for_flag(&mut iter, "--model")?.clone()),
+            "--data" => data_path = Some(value_for_flag(&mut iter, "--data")?.clone()),
+            "--truth" => truth_path = Some(value_for_flag(&mut iter, "--truth")?.clone()),
+            "--out" => out_path = value_for_flag(&mut iter, "--out")?.clone(),
+            "--seed" => seed = parse_artifact_seed(value_for_flag(&mut iter, "--seed")?)?,
+            other => {
+                return Err(usage_error(format!(
+                    "unknown flag {other}; see `bayesite simulate` usage"
+                )))
+            }
+        }
+    }
+    let model_path =
+        model_path.ok_or_else(|| usage_error("--model is required (a path or - for stdin)"))?;
+    let data_path =
+        data_path.ok_or_else(|| usage_error("--data is required (a path or - for stdin)"))?;
+    let truth_path =
+        truth_path.ok_or_else(|| usage_error("--truth is required (a path or - for stdin)"))?;
+    validate_single_stdin_input(
+        "simulate",
+        &[
+            ("--model", &model_path),
+            ("--data", &data_path),
+            ("--truth", &truth_path),
+        ],
+    )?;
+    Ok(SimulateArgs {
+        model_path,
+        data_path,
+        truth_path,
+        out_path,
+        seed,
+    })
+}
+
+fn parse_recover_check_args(argv: &[String]) -> Result<RecoverCheckArgs, Error> {
+    reject_duplicate_flags(
+        "recover-check",
+        argv,
+        &["--fit", "--truth", "--targets", "--out", "--interval"],
+    )?;
+    let mut fit_path: Option<String> = None;
+    let mut truth_path: Option<String> = None;
+    let mut targets_path: Option<String> = None;
+    let mut out_path = "-".to_string();
+    let mut interval = 0.8f64;
+
+    let mut iter = argv.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--fit" => fit_path = Some(value_for_flag(&mut iter, "--fit")?.clone()),
+            "--truth" => truth_path = Some(value_for_flag(&mut iter, "--truth")?.clone()),
+            "--targets" => targets_path = Some(value_for_flag(&mut iter, "--targets")?.clone()),
+            "--out" => out_path = value_for_flag(&mut iter, "--out")?.clone(),
+            "--interval" => {
+                interval = value_for_flag(&mut iter, "--interval")?
+                    .parse()
+                    .map_err(|_| usage_error("--interval must be a number in (0, 1)"))?
+            }
+            other => {
+                return Err(usage_error(format!(
+                    "unknown flag {other}; see `bayesite recover-check` usage"
+                )))
+            }
+        }
+    }
+    let fit_path =
+        fit_path.ok_or_else(|| usage_error("--fit is required (a path or - for stdin)"))?;
+    let truth_path =
+        truth_path.ok_or_else(|| usage_error("--truth is required (a path or - for stdin)"))?;
+    let mut inputs = vec![
+        ("--fit", fit_path.as_str()),
+        ("--truth", truth_path.as_str()),
+    ];
+    if let Some(targets_path) = &targets_path {
+        inputs.push(("--targets", targets_path.as_str()));
+    }
+    validate_single_stdin_input("recover-check", &inputs)?;
+    validate_target_accept(interval, "--interval")?;
+    Ok(RecoverCheckArgs {
+        fit_path,
+        truth_path,
+        targets_path,
+        out_path,
+        interval,
+    })
+}
+
 fn parse_recover_args(argv: &[String]) -> Result<RecoverArgs, Error> {
     reject_duplicate_flags("recover", argv, &["--model", "--scenario", "--out"])?;
     let mut model_path: Option<String> = None;
@@ -790,6 +922,37 @@ fn run_posterior_check(args: PosteriorCheckArgs) -> Result<(), Error> {
     let data = cli_data_from_json(&data_doc, "posterior-check")?;
     let fit = read_input(&args.fit_path)?;
     let report = posterior_check_report(meta, data, &fit, args.seed)?;
+    write_text(&args.out_path, &report)
+}
+
+fn run_simulate(args: SimulateArgs) -> Result<(), Error> {
+    let model_doc = json::parse(&read_input(&args.model_path)?)?;
+    let meta = decode_model(&model_doc)?;
+    let data_doc = json::parse(&read_input(&args.data_path)?)?;
+    let data = cli_data_from_json(&data_doc, "simulate")?;
+    let truth_doc = json::parse(&read_input(&args.truth_path)?)?;
+    if !matches!(truth_doc, Value::Object(_)) {
+        return Err(usage_error("simulate truth must be an object"));
+    }
+    let truth = data_from_json(&truth_doc)?;
+    let generated = simulate_data_from_truth(meta, data, truth, args.seed)?;
+    let data_doc = data_to_json(&generated, "simulate")?;
+    let text = json::write(&data_doc)?;
+    write_text(&args.out_path, &text)
+}
+
+fn run_recover_check(args: RecoverCheckArgs) -> Result<(), Error> {
+    let fit = read_input(&args.fit_path)?;
+    let truth_doc = json::parse(&read_input(&args.truth_path)?)?;
+    if !matches!(truth_doc, Value::Object(_)) {
+        return Err(usage_error("recover-check truth must be an object"));
+    }
+    let targets_doc = match &args.targets_path {
+        Some(path) => Some(json::parse(&read_input(path)?)?),
+        None => None,
+    };
+    let report =
+        protocol::recover_check_report(&fit, &truth_doc, targets_doc.as_ref(), args.interval)?;
     write_text(&args.out_path, &report)
 }
 
@@ -1075,6 +1238,8 @@ fn run() -> Result<(), Error> {
         Command::PriorPredictive(args) => run_prior_predictive(args),
         Command::PosteriorPredictive(args) => run_posterior_predictive(args),
         Command::PosteriorCheck(args) => run_posterior_check(args),
+        Command::Simulate(args) => run_simulate(args),
+        Command::RecoverCheck(args) => run_recover_check(args),
         Command::Recover(args) => run_recover(args),
         Command::Sbc(args) => run_sbc(args),
     }

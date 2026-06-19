@@ -50,6 +50,70 @@ pub fn data_from_json(document: &Value) -> Result<Vec<(String, DataValue)>, Erro
     Ok(out)
 }
 
+fn data_scalar_to_json(value: f64, integer: bool, context: &str) -> Result<Value, Error> {
+    if integer {
+        if !value.is_finite() || value.fract() != 0.0 {
+            return Err(mismatch(format!(
+                "{context} integer value must be finite and integral, got {value}"
+            )));
+        }
+        if value < i64::MIN as f64 || value > i64::MAX as f64 {
+            return Err(mismatch(format!(
+                "{context} integer value must fit JSON integer range, got {value}"
+            )));
+        }
+        Ok(Value::Int(value as i64))
+    } else {
+        if !value.is_finite() {
+            return Err(mismatch(format!(
+                "{context} float value must be finite, got {value}"
+            )));
+        }
+        Ok(Value::Float(value))
+    }
+}
+
+/// Render a normal Bayesite data document using the typed dtype/shape/values
+/// convention accepted by [`data_from_json`]. This preserves integer support
+/// for generated discrete observations while keeping `sample` unaware of data
+/// provenance.
+pub fn data_to_json(data: &[(String, DataValue)], context: &str) -> Result<Value, Error> {
+    let mut entries = Vec::with_capacity(data.len());
+    for (name, value) in data {
+        let value_context = format!("{context} data value \"{name}\"");
+        let values = value
+            .values
+            .iter()
+            .map(|&entry| data_scalar_to_json(entry, value.integer, &value_context))
+            .collect::<Result<Vec<_>, _>>()?;
+        let shape = value
+            .shape
+            .iter()
+            .map(|&dim| {
+                if dim > i64::MAX as usize {
+                    Err(mismatch(format!(
+                        "{value_context} shape dimension must fit JSON integer range, got {dim}"
+                    )))
+                } else {
+                    Ok(Value::Int(dim as i64))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.push((
+            name.clone(),
+            Value::Object(vec![
+                (
+                    "dtype".to_string(),
+                    Value::Str(if value.integer { "int64" } else { "float64" }.to_string()),
+                ),
+                ("shape".to_string(), Value::Array(shape)),
+                ("values".to_string(), Value::Array(values)),
+            ]),
+        ));
+    }
+    Ok(Value::Object(entries))
+}
+
 fn collect_numbers(name: &str, value: &Value, into: &mut Vec<f64>) -> Result<(), Error> {
     match value {
         Value::Int(i) => {

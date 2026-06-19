@@ -9,7 +9,8 @@ wire format, which remains `{"jaxstanv5_ir": 1, "model": ...}`.
 
 ## Format markers
 
-Every agent-facing workflow artifact or error uses an explicit marker:
+Every agent-facing workflow artifact or error uses an explicit marker. Plain
+Bayesite data documents, including `simulate` output, intentionally do not:
 
 | Surface | Marker |
 |---|---|
@@ -18,6 +19,8 @@ Every agent-facing workflow artifact or error uses an explicit marker:
 | `prior-predictive` stream | `prior_predictive_format: "v0-provisional"` |
 | `posterior-predictive` stream | `posterior_predictive_format: "v0-provisional"` |
 | `posterior-check` report | `posterior_check_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
+| `simulate` data document | no marker; plain data document accepted by `sample` |
+| `recover-check` report | `recover_check_format: "v0-provisional"` |
 | `recover` report | `recover_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
 | `sbc` report | `sbc_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
 | CLI/protocol errors | `error_format: "v0-provisional"` |
@@ -182,6 +185,77 @@ The report includes:
 
 `posterior-check` does not emit an aggregate model-fit verdict, pass/fail result,
 or recommendation.
+
+## `bayesite simulate`
+
+`simulate` uses a decoded simulation model, declared input data, supplied
+constrained free-value truth, and an explicit seed to generate observed data.
+It writes a normal typed Bayesite data document, not a special simulation
+artifact, so `sample` does not need to know whether the data was simulated.
+
+Example:
+
+```sh
+bayesite simulate \
+  --model generator.json \
+  --data fixed_inputs.json \
+  --truth truth.json \
+  --seed 1 \
+  --out generated_data.json
+```
+
+The `truth` document is keyed by free-value name and may use the same scalar,
+array, or typed dtype/shape/values conventions as data documents. `simulate`
+requires truth for every free value, rejects unknown truth keys, validates
+free-value shape and constraints, and then simulates directly assignable
+observed `DataRef` stochastic sites. Generated output contains declared inputs
+first and generated observed values after them in stochastic-site order.
+
+Current scope: directly assignable observed data sites only. Non-assignable
+observed value expressions fail with a typed repair error. Non-observed prior
+factors need not be directly simulatable because fixed truth is already
+supplied.
+
+## `bayesite recover-check`
+
+`recover-check` compares a complete v0-provisional posterior fit stream to
+supplied reference truth values. It does not need model, data, or simulation
+provenance; it only needs posterior draws and truth.
+
+Example:
+
+```sh
+bayesite recover-check \
+  --fit fit.jsonl \
+  --truth truth.json \
+  --targets targets.json \
+  --interval 0.8 \
+  --out recovery_check.json
+```
+
+Without `--targets`, every truth key must have the same name as a posterior
+parameter, and extra posterior parameters are ignored. With explicit targets,
+renamed same-shape comparisons are supported:
+
+```json
+{
+  "targets": [
+    {"name": "alpha_recovery", "truth": "alpha_true", "posterior": "alpha"}
+  ]
+}
+```
+
+The report includes:
+
+- `recover_check_format: "v0-provisional"`
+- source posterior artifact kind/scope, chain count/order, and draw count
+- target count/order and same-shape target metadata
+- supplied truth values and `truth_source: "supplied_truth"`
+- posterior means, equal-tailed interval bounds, ranks, exact tie counts,
+  interval containment facts, R-hat/ESS, coordinate order, and statistic labels
+
+`recover-check` does not emit pass/fail, verdict, coverage, interpretation, or
+recommendation fields.
 
 ## `bayesite recover`
 

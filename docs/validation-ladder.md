@@ -34,7 +34,7 @@ maps, and unsupported versions.
 The CLI and wasm/native protocol must expose the intended command set:
 
 ```text
-sample | diagnose | prior-predictive | posterior-predictive | posterior-check | recover | sbc
+sample | diagnose | prior-predictive | posterior-predictive | posterior-check | simulate | recover-check | recover | sbc
 ```
 
 G1 pins the common artifact contract:
@@ -172,24 +172,35 @@ Current limitation: prior predictive supports directly assignable stochastic
 sites only. Broader analytic summary checks and `jaxstanv5` reference
 comparisons remain future G9 conformance work.
 
-### G10 — Recover
+### G10 — Simulation and recovery checks
 
-`bayesite recover` currently runs one v0-provisional scenario: simulate
-truth/data through the prior-predictive path, fit the generated observed data
-with NUTS, and report factual recovery metadata.
+`bayesite simulate` generates a plain data document from declared inputs,
+supplied constrained free-value truth, a simulation model, and an explicit seed.
+`bayesite recover-check` compares a complete posterior fit stream to supplied
+truth values without requiring model/data/simulation provenance. `bayesite
+recover` remains a single-command convenience workflow that simulates truth/data
+through the prior-predictive path, fits generated observed data with NUTS, and
+reports factual recovery metadata.
 
 G10 pins:
 
-- scenario parsing and repair errors;
-- declared-data and generated-observed metadata;
-- seed derivation and artifact provenance;
-- parameter order, constrained-scale truth, ranks, exact tie counts,
-  equal-tailed interval facts, R-hat/ESS labels, and coordinate order;
-- aggregate sampler counts and per-chain raw sampler facts;
+- fixed-truth simulation parsing and repair errors;
+- simulation output as normal sample-consumable data, with declared inputs and
+  generated observed values in explicit order;
+- fixed-truth validation for missing/unknown free values, shape mismatches, and
+  constraint violations;
+- recover-check target parsing, default same-name mappings, explicit renamed
+  mappings, and same-shape validation;
+- recover-check parameter order, constrained-scale truth, ranks, exact tie
+  counts, equal-tailed interval facts, R-hat/ESS labels, and coordinate order;
+- recover scenario parsing, declared-data and generated-observed metadata, seed
+  derivation, artifact provenance, sampler counts, and per-chain raw sampler
+  facts;
 - absence of aggregate recovery pass/fail or coverage verdicts.
 
-Current limitation: recover is a single-scenario factual report. Repeated-scenario
-coverage summaries remain future G10 conformance work.
+Current limitation: recover is a single-scenario factual report, and
+recover-check supports same-shape targets rather than transformed estimands.
+Repeated-scenario coverage summaries remain future G10 conformance work.
 
 ### G11 — SBC
 

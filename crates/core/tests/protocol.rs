@@ -575,6 +575,189 @@ fn sample_command_returns_single_chain_ndjson() {
 }
 
 #[test]
+fn simulate_request_returns_plain_data_consumable_by_sample() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let data = fixture_declared_data("linear_regression", &["x"]);
+    let truth = json::parse(r#"{"alpha": 1.5, "beta": 0.2, "sigma": 0.8}"#).unwrap();
+    let request = Value::Object(vec![
+        ("command".to_string(), Value::Str("simulate".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), data),
+        ("truth".to_string(), truth),
+        ("seed".to_string(), Value::Int(11)),
+    ]);
+    let generated = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert!(
+        generated.get("simulate_format").is_none(),
+        "simulate output should be plain data, not a special artifact"
+    );
+    assert!(generated.get("x").is_some());
+    let y = generated.get("y").expect("generated y data");
+    assert_eq!(y.get("dtype").and_then(Value::as_str), Some("float64"));
+    assert_eq!(int_array(y.get("shape").unwrap()), [5]);
+    assert_eq!(y.get("values").and_then(Value::as_array).unwrap().len(), 5);
+
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), generated),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(12)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+    let header = json::parse(fit.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        header.get("draws_format").and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+}
+
+#[test]
+fn recover_check_request_compares_fit_draws_to_supplied_truth() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let data = fixture_declared_data("linear_regression", &["x"]);
+    let truth = json::parse(r#"{"alpha": 1.5, "beta": 0.2, "sigma": 0.8}"#).unwrap();
+    let simulate_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("simulate".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), data),
+        ("truth".to_string(), truth.clone()),
+        ("seed".to_string(), Value::Int(21)),
+    ]);
+    let generated = json::parse(&handle_request(&json::write(&simulate_request).unwrap())).unwrap();
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), generated),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(22)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+    let request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("recover-check".to_string()),
+        ),
+        ("fit".to_string(), Value::Str(fit)),
+        ("truth".to_string(), truth),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"interval": 0.8}"#).unwrap(),
+        ),
+    ]);
+    let report = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        report.get("recover_check_format").and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    assert!(report.get("verdict").is_none());
+    assert!(report.get("pass").is_none());
+    assert_eq!(
+        string_array(report.get("target_order").unwrap()),
+        ["alpha", "beta", "sigma"]
+    );
+    let alpha = report
+        .get("targets")
+        .and_then(|targets| targets.get("alpha"))
+        .expect("alpha recovery target");
+    assert_eq!(alpha.get("truth").and_then(Value::as_f64), Some(1.5));
+    assert_eq!(
+        alpha.get("truth_source").and_then(Value::as_str),
+        Some("supplied_truth")
+    );
+    assert_count_support(alpha, "rank", 4);
+    assert_count_support(alpha, "tie_count", 4);
+    assert!(alpha.get("interval_contains_truth").is_some());
+}
+
+#[test]
+fn recover_check_request_supports_explicit_target_mapping() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), fixture.get("data").unwrap().clone()),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(23)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+    let request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("recover-check".to_string()),
+        ),
+        ("fit".to_string(), Value::Str(fit)),
+        (
+            "truth".to_string(),
+            json::parse(r#"{"alpha_true": 1.5, "unused_generator_value": 9.0}"#).unwrap(),
+        ),
+        (
+            "targets".to_string(),
+            json::parse(
+                r#"{"targets": [{"name": "alpha_recovery", "truth": "alpha_true", "posterior": "alpha"}]}"#,
+            )
+            .unwrap(),
+        ),
+    ]);
+    let report = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        string_array(report.get("target_order").unwrap()),
+        ["alpha_recovery"]
+    );
+    let alpha = report
+        .get("targets")
+        .and_then(|targets| targets.get("alpha_recovery"))
+        .expect("alpha recovery target");
+    assert_eq!(
+        alpha.get("truth_name").and_then(Value::as_str),
+        Some("alpha_true")
+    );
+    assert_eq!(
+        alpha.get("posterior_name").and_then(Value::as_str),
+        Some("alpha")
+    );
+}
+
+#[test]
+fn simulate_request_rejects_missing_free_value_truth() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let request = Value::Object(vec![
+        ("command".to_string(), Value::Str("simulate".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        (
+            "data".to_string(),
+            fixture_declared_data("linear_regression", &["x"]),
+        ),
+        (
+            "truth".to_string(),
+            json::parse(r#"{"alpha": 1.5, "beta": 0.2}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(11)),
+    ]);
+    let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        response.get("error").and_then(Value::as_str),
+        Some("DataShapeMismatch")
+    );
+    assert_eq!(
+        response.get("message").and_then(Value::as_str),
+        Some("simulate truth is missing free value \"sigma\"")
+    );
+}
+
+#[test]
 fn posterior_predictive_request_returns_ndjson() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
