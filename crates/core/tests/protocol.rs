@@ -5367,3 +5367,48 @@ fn diagnose_rejects_draw_line_stats_without_sample_stats_mode_marker() {
         "draw line sample_stats_mode must accompany diverging, tree_depth, and tree_accept"
     ));
 }
+
+#[test]
+fn ndjson_lines_rejects_per_draw_stats_out_of_parser_bounds() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
+    let data = data_from_json(fixture.get("data").unwrap()).unwrap();
+    let posterior = Posterior::new(meta, data).unwrap();
+    let settings = Settings {
+        num_warmup: 0,
+        num_draws: 4,
+        max_treedepth: 4,
+        ..Settings::default()
+    };
+    let chain = sample(&posterior, &settings, 5, 0).unwrap();
+
+    // tree_depth exceeds max_treedepth, with a matching-length histogram so
+    // only the bounds check rejects it.
+    let mut bad_depth = chain.clone();
+    bad_depth.tree_depth[0] = 5; // > max_treedepth (4)
+    bad_depth.treedepth_histogram = vec![0usize; 6];
+    bad_depth.treedepth_histogram[5] = 1;
+    bad_depth.treedepth_histogram[bad_depth.tree_depth[1] as usize] += 1;
+    bad_depth.treedepth_histogram[bad_depth.tree_depth[2] as usize] += 1;
+    bad_depth.treedepth_histogram[bad_depth.tree_depth[3] as usize] += 1;
+    // divergences/mean_accept stay consistent so the bounds check is what fires.
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad_depth)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err
+        .message
+        .contains("per-draw tree_depth 5 must be in 0..=4"));
+
+    // tree_accept out of [0,1], but its mean matches mean_accept so only the
+    // bounds check rejects it.
+    let mut bad_accept = chain.clone();
+    // Set two draws to -1 and 2 so the mean is unchanged relative to originals? Just force a bounds violation.
+    bad_accept.tree_accept[0] = -1.0;
+    // Adjust mean_accept to match the new mean so only the bounds check fires.
+    let new_sum: f64 = bad_accept.tree_accept.iter().sum::<f64>();
+    bad_accept.mean_accept = new_sum / bad_accept.tree_accept.len() as f64;
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad_accept)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err
+        .message
+        .contains("per-draw tree_accept must be in [0, 1]"));
+}

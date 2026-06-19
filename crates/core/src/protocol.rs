@@ -182,7 +182,7 @@ pub fn ndjson_lines(
 ) -> Result<Vec<String>, Error> {
     validate_reportable_seed(seed, "sample artifact")?;
     validate_reportable_settings(settings)?;
-    validate_fit_artifact_draws(chains)?;
+    validate_fit_artifact_draws(chains, settings.max_treedepth)?;
     let draw_count = fit_artifact_draw_count(chains)?;
     let packing = posterior.packing();
     let chain_ids: Vec<u64> = chains.iter().map(|(chain_id, _)| *chain_id).collect();
@@ -517,7 +517,10 @@ fn validate_reportable_settings(settings: &Settings) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_reportable_chain_diagnostics(chain: &ChainDraws) -> Result<(), Error> {
+fn validate_reportable_chain_diagnostics(
+    chain: &ChainDraws,
+    max_treedepth: usize,
+) -> Result<(), Error> {
     if chain.divergences > i64::MAX as usize {
         return Err(invalid_artifact(
             "sample artifact chain divergences must be in 0..=9223372036854775807 because artifacts report divergences as JSON integers",
@@ -544,6 +547,23 @@ fn validate_reportable_chain_diagnostics(chain: &ChainDraws) -> Result<(), Error
         return Err(invalid_artifact(
             "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion",
         ));
+    }
+    // Enforce the same per-draw bounds the parser checks, so a caller cannot
+    // construct a `ChainDraws` that serializes a per_draw_v1 artifact which
+    // `diagnose` would then reject.
+    for &depth in &chain.tree_depth {
+        if depth as usize > max_treedepth {
+            return Err(invalid_artifact(format!(
+                "sample artifact per-draw tree_depth {depth} must be in 0..={max_treedepth}; rerun `bayesite sample` to completion",
+            )));
+        }
+    }
+    for &accept in &chain.tree_accept {
+        if !(0.0..=1.0).contains(&accept) {
+            return Err(invalid_artifact(
+                "sample artifact per-draw tree_accept must be in [0, 1]; rerun `bayesite sample` to completion",
+            ));
+        }
     }
     // The per-draw arrays must agree with the chain-level aggregates so a
     // caller cannot construct a `ChainDraws` that emits a self-contradictory
@@ -583,7 +603,10 @@ fn validate_reportable_chain_diagnostics(chain: &ChainDraws) -> Result<(), Error
     Ok(())
 }
 
-fn validate_fit_artifact_draws(chains: &[(u64, ChainDraws)]) -> Result<(), Error> {
+fn validate_fit_artifact_draws(
+    chains: &[(u64, ChainDraws)],
+    max_treedepth: usize,
+) -> Result<(), Error> {
     let Some((_, first)) = chains.first() else {
         return Err(invalid_artifact(
             "sample artifacts need at least one chain because they include diagnostics",
@@ -591,7 +614,7 @@ fn validate_fit_artifact_draws(chains: &[(u64, ChainDraws)]) -> Result<(), Error
     };
     for (chain_id, chain) in chains {
         validate_reportable_chain_id(*chain_id)?;
-        validate_reportable_chain_diagnostics(chain)?;
+        validate_reportable_chain_diagnostics(chain, max_treedepth)?;
     }
     let draws_per_chain = first.draws.len();
     if draws_per_chain < 4 {
