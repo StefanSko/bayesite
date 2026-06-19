@@ -4898,6 +4898,48 @@ fn ndjson_lines_rejects_unreportable_chain_diagnostics() {
 }
 
 #[test]
+fn ndjson_lines_rejects_mismatched_per_draw_sample_stats_lengths() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
+    let data = data_from_json(fixture.get("data").unwrap()).unwrap();
+    let posterior = Posterior::new(meta, data).unwrap();
+    let settings = Settings {
+        num_warmup: 0,
+        num_draws: 4,
+        max_treedepth: 4,
+        ..Settings::default()
+    };
+    let chain = sample(&posterior, &settings, 5, 0).unwrap();
+
+    let mut short_diverging = chain.clone();
+    short_diverging.diverging.pop();
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, short_diverging)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert_eq!(
+        err.message,
+        "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion"
+    );
+
+    let mut short_tree_depth = chain.clone();
+    short_tree_depth.tree_depth.clear();
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, short_tree_depth)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert_eq!(
+        err.message,
+        "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion"
+    );
+
+    let mut short_tree_accept = chain.clone();
+    short_tree_accept.tree_accept = vec![0.5];
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, short_tree_accept)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert_eq!(
+        err.message,
+        "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion"
+    );
+}
+
+#[test]
 fn prior_predictive_ndjson_rejects_unreportable_draw_count() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();

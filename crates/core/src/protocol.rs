@@ -514,6 +514,19 @@ fn validate_reportable_chain_diagnostics(chain: &ChainDraws) -> Result<(), Error
             "sample artifact treedepth histogram counts must be in 0..=9223372036854775807 because artifacts report treedepth counts as JSON integers",
         ));
     }
+    // Per-draw sampler statistics must be aligned with the retained draws so
+    // emission can index them without panicking. A library or wasm caller that
+    // constructs `ChainDraws` directly with mismatched lengths is rejected here
+    // with a typed error rather than panicking inside the emission loop.
+    let draw_count = chain.draws.len();
+    if chain.diverging.len() != draw_count
+        || chain.tree_depth.len() != draw_count
+        || chain.tree_accept.len() != draw_count
+    {
+        return Err(invalid_artifact(
+            "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion",
+        ));
+    }
     Ok(())
 }
 
