@@ -1799,6 +1799,18 @@ fn recovery_fit_series(text: &str) -> Result<(Vec<ParamSpec>, Vec<i64>, Recovery
     Ok((specs, chain_ids, series_by_param))
 }
 
+fn reject_duplicate_recovery_truth(truth: &[(String, DataValue)]) -> Result<(), Error> {
+    for index in 0..truth.len() {
+        let name = &truth[index].0;
+        if truth[..index].iter().any(|(existing, _)| existing == name) {
+            return Err(invalid_request(format!(
+                "recover-check truth has duplicate value \"{name}\"; remove one"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn parse_recovery_targets(
     targets_doc: Option<&Value>,
     truth: &[(String, DataValue)],
@@ -2181,6 +2193,7 @@ pub fn recover_check_report(
         ));
     }
     let truth = data_from_json(truth_doc)?;
+    reject_duplicate_recovery_truth(&truth)?;
     let (specs, chain_ids, series_by_param) = recovery_fit_series(fit)?;
     let targets = parse_recovery_targets(targets_doc, &truth, &specs)?;
     let total_draws = series_by_param[0][0].iter().map(Vec::len).sum::<usize>();

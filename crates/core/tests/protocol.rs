@@ -731,6 +731,99 @@ fn recover_check_request_supports_explicit_target_mapping() {
 }
 
 #[test]
+fn simulate_request_allows_declared_data_refs_in_non_assignable_factors() {
+    let mut fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let ir_doc = object_entry_mut(&mut fixture, "ir");
+    let model = object_entry_mut(ir_doc, "model");
+    let Value::Object(entries) = model else {
+        panic!("model must be object");
+    };
+    let stochastic_sites = entries
+        .iter_mut()
+        .find(|(name, _)| name == "stochastic_sites")
+        .map(|(_, value)| value)
+        .expect("stochastic sites");
+    let Value::Array(sites) = stochastic_sites else {
+        panic!("stochastic_sites must be array");
+    };
+    sites.insert(
+        3,
+        json::parse(
+            r#"{
+                "node": "ResolvedStochasticSite",
+                "name": "declared_x_factor",
+                "distribution": {
+                    "node": "Normal",
+                    "loc": {"node": "ConstNode", "value": 0.0},
+                    "scale": {"node": "ConstNode", "value": 1.0}
+                },
+                "value": {
+                    "node": "BinOp",
+                    "op": "+",
+                    "left": {"node": "ParamRef", "name": "alpha"},
+                    "right": {"node": "DataRef", "name": "x"}
+                }
+            }"#,
+        )
+        .unwrap(),
+    );
+    let ir = fixture.get("ir").unwrap().clone();
+    let request = Value::Object(vec![
+        ("command".to_string(), Value::Str("simulate".to_string())),
+        ("model".to_string(), ir),
+        (
+            "data".to_string(),
+            fixture_declared_data("linear_regression", &["x"]),
+        ),
+        (
+            "truth".to_string(),
+            json::parse(r#"{"alpha": 1.5, "beta": 0.2, "sigma": 0.8}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(11)),
+    ]);
+    let generated = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert!(generated.get("y").is_some());
+    assert!(generated.get("error").is_none());
+}
+
+#[test]
+fn recover_check_request_rejects_duplicate_truth_keys() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let sample_request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sample".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        ("data".to_string(), fixture.get("data").unwrap().clone()),
+        (
+            "settings".to_string(),
+            json::parse(r#"{"num_warmup": 10, "num_draws": 4}"#).unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(23)),
+        ("chain_id".to_string(), Value::Int(0)),
+    ]);
+    let fit = handle_request(&json::write(&sample_request).unwrap());
+    let request = Value::Object(vec![
+        (
+            "command".to_string(),
+            Value::Str("recover-check".to_string()),
+        ),
+        ("fit".to_string(), Value::Str(fit)),
+        (
+            "truth".to_string(),
+            json::parse(r#"{"alpha": 1.5, "alpha": 1.6}"#).unwrap(),
+        ),
+    ]);
+    let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        response.get("error").and_then(Value::as_str),
+        Some("InvalidSettings")
+    );
+    assert_eq!(
+        response.get("message").and_then(Value::as_str),
+        Some("recover-check truth has duplicate value \"alpha\"; remove one")
+    );
+}
+
+#[test]
 fn simulate_request_rejects_missing_free_value_truth() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let request = Value::Object(vec![

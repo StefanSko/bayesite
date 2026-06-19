@@ -1235,24 +1235,30 @@ pub fn simulate_prior_predictive(
     Ok(PriorPredictiveRun { sites, draws })
 }
 
-fn index_spec_contains_data_ref(index: &IndexSpec) -> bool {
+fn collect_index_spec_data_refs(index: &IndexSpec, refs: &mut Vec<String>) {
     match index {
-        IndexSpec::Scalar(expr) => expr_contains_data_ref(expr),
-        IndexSpec::Full => false,
-        IndexSpec::Tuple(items) => items.iter().any(index_spec_contains_data_ref),
+        IndexSpec::Scalar(expr) => collect_expr_data_refs(expr, refs),
+        IndexSpec::Full => {}
+        IndexSpec::Tuple(items) => {
+            for item in items {
+                collect_index_spec_data_refs(item, refs);
+            }
+        }
     }
 }
 
-fn expr_contains_data_ref(expr: &Expr) -> bool {
+fn collect_expr_data_refs(expr: &Expr, refs: &mut Vec<String>) {
     match expr {
-        Expr::Data(_) => true,
-        Expr::Param(_) | Expr::Const(_) => false,
+        Expr::Data(name) => refs.push(name.clone()),
+        Expr::Param(_) | Expr::Const(_) => {}
         Expr::Bin { left, right, .. } => {
-            expr_contains_data_ref(left) || expr_contains_data_ref(right)
+            collect_expr_data_refs(left, refs);
+            collect_expr_data_refs(right, refs);
         }
-        Expr::Unary { operand, .. } => expr_contains_data_ref(operand),
+        Expr::Unary { operand, .. } => collect_expr_data_refs(operand, refs),
         Expr::Index { base, index } => {
-            expr_contains_data_ref(base) || index_spec_contains_data_ref(index)
+            collect_expr_data_refs(base, refs);
+            collect_index_spec_data_refs(index, refs);
         }
         Expr::VectorScatter {
             length,
@@ -1261,11 +1267,11 @@ fn expr_contains_data_ref(expr: &Expr) -> bool {
             missing_idx,
             missing_values,
         } => {
-            expr_contains_data_ref(length)
-                || expr_contains_data_ref(observed_idx)
-                || expr_contains_data_ref(observed_values)
-                || expr_contains_data_ref(missing_idx)
-                || expr_contains_data_ref(missing_values)
+            collect_expr_data_refs(length, refs);
+            collect_expr_data_refs(observed_idx, refs);
+            collect_expr_data_refs(observed_values, refs);
+            collect_expr_data_refs(missing_idx, refs);
+            collect_expr_data_refs(missing_values, refs);
         }
     }
 }
@@ -1395,9 +1401,17 @@ pub fn simulate_data_from_truth(
                 ));
             }
             other => {
-                if expr_contains_data_ref(other) {
+                let mut refs = Vec::new();
+                collect_expr_data_refs(other, &mut refs);
+                refs.sort();
+                refs.dedup();
+                let unbound = refs
+                    .into_iter()
+                    .filter(|name| !data.contains_key(name) && !env.values.contains_key(name))
+                    .collect::<Vec<_>>();
+                if !unbound.is_empty() {
                     return Err(invalid(format!(
-                        "simulate stochastic site \"{}\" has a non-assignable observed value expression; only direct DataRef observed sites are supported in v0-provisional simulation",
+                        "simulate stochastic site \"{}\" has a non-assignable observed value expression referencing ungenerated data {unbound:?}; only direct DataRef observed sites are supported in v0-provisional simulation",
                         site.name
                     )));
                 }
