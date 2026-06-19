@@ -4940,6 +4940,55 @@ fn ndjson_lines_rejects_mismatched_per_draw_sample_stats_lengths() {
 }
 
 #[test]
+fn ndjson_lines_rejects_per_draw_stats_disagreeing_with_aggregates() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
+    let data = data_from_json(fixture.get("data").unwrap()).unwrap();
+    let posterior = Posterior::new(meta, data).unwrap();
+    let settings = Settings {
+        num_warmup: 0,
+        num_draws: 4,
+        max_treedepth: 4,
+        ..Settings::default()
+    };
+    let chain = sample(&posterior, &settings, 5, 0).unwrap();
+
+    // diverging count disagrees with divergences aggregate.
+    let mut bad = chain.clone();
+    bad.diverging[0] = !bad.diverging[0];
+    // divergences aggregate left as-is from the real sample, so it now disagrees.
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err.message.contains("per-draw diverging count"));
+    assert!(err.message.contains("must match chain divergences"));
+
+    // tree_depth disagrees with treedepth_histogram.
+    let mut bad_hist = chain.clone();
+    // force a depth that the histogram does not record for draw 0
+    let original_depth = bad_hist.tree_depth[0];
+    let new_depth = if original_depth == 0 { 1 } else { 0 };
+    bad_hist.tree_depth[0] = new_depth;
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad_hist)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err
+        .message
+        .contains("per-draw tree-depth histogram must match treedepth_histogram"));
+
+    // tree_accept mean disagrees with mean_accept.
+    let mut bad_mean = chain.clone();
+    // Move draw 0's acceptance to the opposite end of [0,1] so the mean always shifts.
+    bad_mean.tree_accept[0] = if bad_mean.tree_accept[0] > 0.5 {
+        0.0
+    } else {
+        1.0
+    };
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad_mean)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err.message.contains("per-draw mean tree_accept"));
+    assert!(err.message.contains("must match chain mean_accept"));
+}
+
+#[test]
 fn prior_predictive_ndjson_rejects_unreportable_draw_count() {
     let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
@@ -5118,10 +5167,10 @@ fn diagnose_reports_per_draw_sample_stats_grouped_by_chain() {
 fn diagnose_rejects_per_draw_stats_on_some_draws_only() {
     let fit = [
         r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
-        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
         r#"{"chain":0,"draw":1,"values":{"alpha":1.0}}"#,
-        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
         r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
     ]
     .join("\n");
@@ -5136,10 +5185,10 @@ fn diagnose_rejects_per_draw_stats_on_some_draws_only() {
 fn diagnose_rejects_draw_stats_without_header_mode() {
     let fit = [
         r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1}"#,
-        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
         r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
     ]
     .join("\n");
@@ -5172,10 +5221,10 @@ fn diagnose_rejects_header_mode_without_draw_stats() {
 fn diagnose_rejects_tree_depth_exceeding_max_treedepth() {
     let fit = [
         r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
-        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"diverging":false,"tree_depth":5,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":5,"tree_accept":0.9}"#,
         r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
     ]
     .join("\n");
@@ -5190,10 +5239,10 @@ fn diagnose_rejects_tree_depth_exceeding_max_treedepth() {
 fn diagnose_rejects_partial_per_draw_fields() {
     let fit = [
         r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
-        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"diverging":false,"tree_depth":1}"#,
-        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
         r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
     ]
     .join("\n");
@@ -5227,10 +5276,10 @@ fn diagnose_rejects_per_draw_diverging_count_mismatch_with_trailer() {
     // Per-draw diverging count is 1 but trailer divergences is 0.
     let fit = [
         r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
-        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"diverging":true,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":true,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
         r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[0,4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
     ]
     .join("\n");
@@ -5246,10 +5295,10 @@ fn diagnose_rejects_per_draw_treedepth_histogram_mismatch_with_trailer() {
     // Per-draw depths 1,1,1,1 -> histogram [0,4], but trailer says [4,0].
     let fit = [
         r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
-        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
         r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[4,0],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
     ]
     .join("\n");
@@ -5265,10 +5314,10 @@ fn diagnose_rejects_per_draw_mean_accept_mismatch_with_trailer() {
     // Per-draw mean accept = 0.9, trailer says 0.5 (beyond 1e-9 tolerance).
     let fit = [
         r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
-        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
-        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
         r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[0,4],"step_size":1.0,"mean_accept":0.5}],"rhat":{},"ess":{}}}"#,
     ]
     .join("\n");
@@ -5276,5 +5325,45 @@ fn diagnose_rejects_per_draw_mean_accept_mismatch_with_trailer() {
     assert_eq!(err.kind, ErrorKind::MalformedDocument);
     assert!(err.message.contains(
         "per-draw mean tree_accept for chain 0 is 0.9 but fit trailer mean_accept is 0.5"
+    ));
+}
+
+#[test]
+fn diagnose_rejects_draw_line_with_wrong_sample_stats_mode() {
+    // Header says per_draw_v1, draw line carries v1-shaped stats but marks
+    // itself per_draw_v2. The draw-line marker must match.
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[0,4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err
+        .message
+        .contains("draw line sample_stats_mode must be \"per_draw_v1\" when present"));
+}
+
+#[test]
+fn diagnose_rejects_draw_line_stats_without_sample_stats_mode_marker() {
+    // Draw line carries the three stat fields but omits the draw-line
+    // sample_stats_mode marker. The marker must accompany the stat fields.
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[0,4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err.message.contains(
+        "draw line sample_stats_mode must accompany diverging, tree_depth, and tree_accept"
     ));
 }

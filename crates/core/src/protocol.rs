@@ -415,14 +415,32 @@ fn parse_draw_sample_stats(line: &Value) -> Result<Option<PerDrawSampleStats>, E
     let has_diverging = line.get("diverging").is_some();
     let has_tree_depth = line.get("tree_depth").is_some();
     let has_tree_accept = line.get("tree_accept").is_some();
-    let has_any = has_diverging || has_tree_depth || has_tree_accept;
-    if !has_any {
+    let has_mode = line.get("sample_stats_mode").is_some();
+    let has_any_stat = has_diverging || has_tree_depth || has_tree_accept;
+    // The draw-line sample_stats_mode marker and the three per-draw stat fields
+    // form one metadata block: present together or omitted together. This keeps
+    // the draw line's self-description consistent with what the parser reads.
+    if has_mode != has_any_stat {
+        return Err(invalid_fit(
+            "draw line sample_stats_mode must accompany diverging, tree_depth, and tree_accept; rerun `bayesite sample` to completion",
+        ));
+    }
+    if !has_any_stat {
         return Ok(None);
     }
     if !(has_diverging && has_tree_depth && has_tree_accept) {
         return Err(invalid_fit(
             "draw line per-draw sample stats must include diverging, tree_depth, and tree_accept when present; rerun `bayesite sample` to completion",
         ));
+    }
+    let mode = line
+        .get("sample_stats_mode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_fit("draw line sample_stats_mode must be a string when present"))?;
+    if mode != SAMPLE_STATS_MODE_PER_DRAW {
+        return Err(invalid_fit(format!(
+            "draw line sample_stats_mode must be \"{SAMPLE_STATS_MODE_PER_DRAW}\" when present; rerun `bayesite sample` to completion"
+        )));
     }
     let diverging = match line.get("diverging") {
         Some(Value::Bool(b)) => *b,
@@ -526,6 +544,41 @@ fn validate_reportable_chain_diagnostics(chain: &ChainDraws) -> Result<(), Error
         return Err(invalid_artifact(
             "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion",
         ));
+    }
+    // The per-draw arrays must agree with the chain-level aggregates so a
+    // caller cannot construct a `ChainDraws` that emits a self-contradictory
+    // artifact (which `diagnose` would then reject). This mirrors the
+    // `validate_per_draw_stats_match_trailer` cross-check on the parse side.
+    let diverging_count = chain.diverging.iter().filter(|&&d| d).count();
+    if diverging_count != chain.divergences {
+        return Err(invalid_artifact(format!(
+            "sample artifact per-draw diverging count {diverging_count} must match chain divergences {}; rerun `bayesite sample` to completion",
+            chain.divergences
+        )));
+    }
+    let mut recomputed_hist = vec![0usize; chain.treedepth_histogram.len()];
+    for &depth in &chain.tree_depth {
+        if depth as usize >= recomputed_hist.len() {
+            return Err(invalid_artifact(format!(
+                "sample artifact per-draw tree_depth {depth} exceeds treedepth_histogram length {}; rerun `bayesite sample` to completion",
+                recomputed_hist.len()
+            )));
+        }
+        recomputed_hist[depth as usize] += 1;
+    }
+    if recomputed_hist != chain.treedepth_histogram {
+        return Err(invalid_artifact(
+            "sample artifact per-draw tree-depth histogram must match treedepth_histogram; rerun `bayesite sample` to completion",
+        ));
+    }
+    if draw_count > 0 {
+        let mean_accept = chain.tree_accept.iter().sum::<f64>() / draw_count as f64;
+        if (mean_accept - chain.mean_accept).abs() > 1e-9 {
+            return Err(invalid_artifact(format!(
+                "sample artifact per-draw mean tree_accept {mean_accept} must match chain mean_accept {}; rerun `bayesite sample` to completion",
+                chain.mean_accept
+            )));
+        }
     }
     Ok(())
 }

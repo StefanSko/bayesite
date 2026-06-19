@@ -81,8 +81,8 @@ Each draw line includes:
 - per-draw sampler statistics: `sample_stats_mode: "per_draw_v1"`,
   `diverging` (bool), `tree_depth` (integer in `0..=max_treedepth`), and
   `tree_accept` (float in `[0, 1]`, the trajectory mean Metropolis
-  acceptance). These three fields are present together on every draw line or
-  omitted together.
+  acceptance). The `sample_stats_mode` marker and these three fields are present
+  together on every draw line or omitted together.
 
 The trailer includes:
 
