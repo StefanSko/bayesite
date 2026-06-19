@@ -49,6 +49,12 @@ const DIAGNOSE_WORKFLOW_PHASES: [&str; 4] = [
     "recompute_diagnostics",
     "emit_report",
 ];
+
+/// Header flag value announcing that each draw line carries per-draw sampler
+/// statistics (`diverging`, `tree_depth`, `tree_accept`). Older v0 streams
+/// without this header field are still accepted by `diagnose`; when the field
+/// is absent, per-draw stats are unavailable.
+const SAMPLE_STATS_MODE_PER_DRAW: &str = "per_draw_v1";
 fn tensor_to_value(shape: &[usize], data: &[f64]) -> Value {
     if shape.is_empty() {
         Value::Float(data[0])
@@ -157,6 +163,10 @@ fn header_value(
         ("chain_order".to_string(), u64_order_value(chain_ids)),
         ("draw_count".to_string(), Value::Int(draw_count as i64)),
         ("chains".to_string(), Value::Int(chain_ids.len() as i64)),
+        (
+            "sample_stats_mode".to_string(),
+            Value::Str(SAMPLE_STATS_MODE_PER_DRAW.to_string()),
+        ),
     ]);
     Value::Object(entries)
 }
@@ -203,7 +213,7 @@ pub fn ndjson_lines(
     }
 
     let mut draw_index = 0usize;
-    for ((chain_id, _), draws) in chains.iter().zip(&constrained_chains) {
+    for ((chain_id, chain), draws) in chains.iter().zip(&constrained_chains) {
         for (draw_id, constrained) in draws.iter().enumerate() {
             let values = Value::Object(
                 constrained
@@ -237,6 +247,22 @@ pub fn ndjson_lines(
                 ),
                 ("parameter_order".to_string(), entry_order_value(&packing)),
                 ("values".to_string(), values),
+                (
+                    "sample_stats_mode".to_string(),
+                    Value::Str(SAMPLE_STATS_MODE_PER_DRAW.to_string()),
+                ),
+                (
+                    "diverging".to_string(),
+                    Value::Bool(chain.diverging[draw_id]),
+                ),
+                (
+                    "tree_depth".to_string(),
+                    Value::Int(chain.tree_depth[draw_id] as i64),
+                ),
+                (
+                    "tree_accept".to_string(),
+                    Value::Float(chain.tree_accept[draw_id]),
+                ),
             ]);
             let line = Value::Object(line_entries);
             lines.push(json::write(&line)?);
@@ -355,6 +381,80 @@ struct ParsedDraw {
     chain: i64,
     draw: usize,
     values: Vec<Vec<f64>>,
+    sample_stats: Option<PerDrawSampleStats>,
+}
+
+/// Per-draw sampler statistics parsed from a draw line when
+/// `sample_stats_mode` is `per_draw_v1`.
+#[derive(Debug, Clone)]
+struct PerDrawSampleStats {
+    diverging: bool,
+    tree_depth: i64,
+    tree_accept: f64,
+}
+
+fn parse_sample_stats_mode(doc: &Value, context: &str) -> Result<Option<String>, Error> {
+    let Some(value) = doc.get("sample_stats_mode") else {
+        return Ok(None);
+    };
+    let parsed = value.as_str().ok_or_else(|| {
+        invalid_fit(format!(
+            "{context} sample_stats_mode must be a string when present"
+        ))
+    })?;
+    if parsed == SAMPLE_STATS_MODE_PER_DRAW {
+        Ok(Some(parsed.to_string()))
+    } else {
+        Err(invalid_fit(format!(
+            "{context} sample_stats_mode must be \"{SAMPLE_STATS_MODE_PER_DRAW}\" when present; rerun `bayesite sample` to completion"
+        )))
+    }
+}
+
+fn parse_draw_sample_stats(line: &Value) -> Result<Option<PerDrawSampleStats>, Error> {
+    let has_diverging = line.get("diverging").is_some();
+    let has_tree_depth = line.get("tree_depth").is_some();
+    let has_tree_accept = line.get("tree_accept").is_some();
+    let has_any = has_diverging || has_tree_depth || has_tree_accept;
+    if !has_any {
+        return Ok(None);
+    }
+    if !(has_diverging && has_tree_depth && has_tree_accept) {
+        return Err(invalid_fit(
+            "draw line per-draw sample stats must include diverging, tree_depth, and tree_accept when present; rerun `bayesite sample` to completion",
+        ));
+    }
+    let diverging = match line.get("diverging") {
+        Some(Value::Bool(b)) => *b,
+        _ => {
+            return Err(invalid_fit(
+                "draw line diverging must be a boolean when present",
+            ))
+        }
+    };
+    let tree_depth = line
+        .get("tree_depth")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| invalid_fit("draw line tree_depth must be an integer when present"))?;
+    if !(0..=20).contains(&tree_depth) {
+        return Err(invalid_fit(
+            "draw line tree_depth must be in 0..=20 when present; rerun `bayesite sample` to completion",
+        ));
+    }
+    let tree_accept = line
+        .get("tree_accept")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| invalid_fit("draw line tree_accept must be a number when present"))?;
+    if !(0.0..=1.0).contains(&tree_accept) {
+        return Err(invalid_fit(
+            "draw line tree_accept must be in [0, 1] when present",
+        ));
+    }
+    Ok(Some(PerDrawSampleStats {
+        diverging,
+        tree_depth,
+        tree_accept,
+    }))
 }
 
 fn invalid_fit(message: impl Into<String>) -> Error {
@@ -1239,6 +1339,7 @@ fn parse_draw(line: &Value, specs: &[ParamSpec], source_seed: i64) -> Result<Par
         })?;
         parsed.push(parse_param_value(value, spec)?);
     }
+    let sample_stats = parse_draw_sample_stats(line)?;
     Ok(ParsedDraw {
         draw_index,
         parameter_metadata,
@@ -1250,6 +1351,7 @@ fn parse_draw(line: &Value, specs: &[ParamSpec], source_seed: i64) -> Result<Par
         chain,
         draw,
         values: parsed,
+        sample_stats,
     })
 }
 
@@ -1395,6 +1497,12 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         "artifact_scope",
         POSTERIOR_DRAWS.scope,
     )?;
+    let header_sample_stats_mode = parse_sample_stats_mode(&header, "fit header")?;
+    let per_draw_sample_stats_expected = header_sample_stats_mode.is_some();
+    let header_max_treedepth = source_settings
+        .get("max_treedepth")
+        .and_then(Value::as_i64)
+        .unwrap_or(0) as usize;
 
     let mut draws = Vec::new();
     let mut trailer: Option<Value> = None;
@@ -1404,6 +1512,7 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
     let mut draw_parameter_metadata: Option<bool> = None;
     let mut draw_artifact_metadata: Option<bool> = None;
     let mut draw_chain_metadata: Option<bool> = None;
+    let mut draw_sample_stats_metadata: Option<bool> = None;
     for (line_index, line) in lines.enumerate() {
         if line.trim().is_empty() {
             return Err(invalid_fit(format!(
@@ -1463,6 +1572,34 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
             }
             Some(_) => {}
             None => draw_chain_metadata = Some(draw.chain_metadata),
+        }
+        let has_sample_stats = draw.sample_stats.is_some();
+        match draw_sample_stats_metadata {
+            Some(expected) if expected != has_sample_stats => {
+                return Err(invalid_fit(
+                    "fit draw per-draw sample stats must be present on every draw line or omitted from every draw line; rerun `bayesite sample` to completion",
+                ));
+            }
+            Some(_) => {}
+            None => draw_sample_stats_metadata = Some(has_sample_stats),
+        }
+        if per_draw_sample_stats_expected && !has_sample_stats {
+            return Err(invalid_fit(
+                "fit header sample_stats_mode is per_draw_v1 but a draw line is missing per-draw sample stats; rerun `bayesite sample` to completion",
+            ));
+        }
+        if has_sample_stats && !per_draw_sample_stats_expected {
+            return Err(invalid_fit(
+                "draw line carries per-draw sample stats but fit header has no sample_stats_mode; rerun `bayesite sample` to completion",
+            ));
+        }
+        if let Some(stats) = &draw.sample_stats {
+            if stats.tree_depth > header_max_treedepth as i64 {
+                return Err(invalid_fit(format!(
+                    "draw line tree_depth {} exceeds fit header settings.max_treedepth {}; rerun `bayesite sample` to completion",
+                    stats.tree_depth, header_max_treedepth
+                )));
+            }
         }
         let expected_draw_index = draws.len();
         if let Some(draw_index) = draw.draw_index {
@@ -1638,6 +1775,49 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         ess_entries.push((spec.name.clone(), diagnostic_value(worst_ess)));
     }
 
+    // Per-draw sample stats, grouped by chain in draw order. Available only
+    // when the source stream carried `sample_stats_mode: per_draw_v1`.
+    let per_draw_sample_stats_available = draw_sample_stats_metadata.unwrap_or(false);
+    let sample_stats_value = if per_draw_sample_stats_available {
+        let mut by_chain: Vec<(i64, Vec<Value>)> = chain_ids
+            .iter()
+            .map(|&id| (id, Vec::with_capacity(draws_per_chain)))
+            .collect();
+        for draw in &draws {
+            let chain = chain_ids
+                .iter()
+                .position(|&id| id == draw.chain)
+                .expect("chain id was registered");
+            let stats = draw
+                .sample_stats
+                .as_ref()
+                .expect("per-draw sample stats presence was validated");
+            by_chain[chain].1.push(Value::Object(vec![
+                ("diverging".to_string(), Value::Bool(stats.diverging)),
+                ("tree_depth".to_string(), Value::Int(stats.tree_depth)),
+                ("tree_accept".to_string(), Value::Float(stats.tree_accept)),
+            ]));
+        }
+        Value::Array(
+            by_chain
+                .into_iter()
+                .map(|(chain_id, entries)| {
+                    Value::Object(vec![
+                        ("chain".to_string(), Value::Int(chain_id)),
+                        (
+                            "chain_index_base".to_string(),
+                            Value::Str(CHAIN_INDEX_BASE.to_string()),
+                        ),
+                        ("draw_count".to_string(), Value::Int(entries.len() as i64)),
+                        ("draws".to_string(), Value::Array(entries)),
+                    ])
+                })
+                .collect(),
+        )
+    } else {
+        Value::Null
+    };
+
     let mut response_entries = vec![
         (
             "diagnostics_format".to_string(),
@@ -1708,6 +1888,15 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
             "source_draw_chain_metadata".to_string(),
             Value::Bool(draw_chain_metadata.unwrap_or(false)),
         ),
+    ]);
+    if let Some(mode) = header_sample_stats_mode.clone() {
+        response_entries.push(("source_sample_stats_mode".to_string(), Value::Str(mode)));
+    }
+    response_entries.push((
+        "source_draw_sample_stats_metadata".to_string(),
+        Value::Bool(per_draw_sample_stats_available),
+    ));
+    response_entries.extend([
         (
             "source_parameter_count".to_string(),
             Value::Int(specs.len() as i64),
@@ -1734,6 +1923,7 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         ("chains".to_string(), Value::Array(chain_stats.to_vec())),
         ("rhat".to_string(), Value::Object(rhat_entries)),
         ("ess".to_string(), Value::Object(ess_entries)),
+        ("sample_stats".to_string(), sample_stats_value),
     ]);
     let response = Value::Object(response_entries);
     json::write(&response)
