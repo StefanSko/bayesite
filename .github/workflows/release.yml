@@ -29,11 +29,11 @@ jobs:
             target: x86_64-unknown-linux-musl
             archive_format: tar.gz
             exe: ''
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             archive_format: tar.gz
             exe: ''
-          - os: macos-13
+          - os: macos-15
             target: aarch64-apple-darwin
             archive_format: tar.gz
             exe: ''
