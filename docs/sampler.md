@@ -87,7 +87,8 @@ identical draws, on every platform including wasm.
 - **Initialization**: uniform(-2, 2) on the unconstrained scale, retried up
   to 100 times for a finite density — same policy as Stan, but without
   user-suppliable inits yet.
-- **Energy diagnostic**: per-draw energies (Stan's `energy__`) are not
-  recorded; divergences, tree depths, step size, and acceptance statistics
-  are.
+- **Energy diagnostic**: retained draws record Hamiltonian energy as
+  `sample_stats.energy` in the v0-provisional fit stream. The value is the
+  selected phase-space point's `-logp + 0.5 * p^T M^{-1} p` for that
+  transition; Bayesite emits the factual energy but no BFMI verdict.
 - **Dense metric**: not implemented; the metric is always diagonal.
