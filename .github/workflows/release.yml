@@ -1,0 +1,109 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label for manually built artifacts
+        default: manual
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive_format: tar.gz
+            exe: ''
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive_format: tar.gz
+            exe: ''
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive_format: tar.gz
+            exe: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_format: zip
+            exe: .exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust target
+        shell: bash
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: Install Linux musl linker
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build release CLI
+        shell: bash
+        run: >-
+          cargo build --release --locked --bin bayesite
+          --target "${{ matrix.target }}"
+          --manifest-path crates/core/Cargo.toml
+
+      - name: Validate CLI JSON error smoke
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/bayesite${{ matrix.exe }}"
+          python scripts/smoke_release_binary.py "$bin"
+
+      - name: Package release artifact
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/bayesite${{ matrix.exe }}"
+          name="bayesite-${RELEASE_VERSION}-${{ matrix.target }}"
+          python scripts/package_release.py \
+            --binary "$bin" \
+            --name "$name" \
+            --format "${{ matrix.archive_format }}" \
+            --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bayesite-${{ env.RELEASE_VERSION }}-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_VERSION" dist/* --clobber
+          else
+            gh release create "$RELEASE_VERSION" dist/* \
+              --title "Bayesite $RELEASE_VERSION" \
+              --notes "Bayesite CLI release $RELEASE_VERSION."
+          fi

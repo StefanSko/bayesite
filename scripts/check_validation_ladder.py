@@ -208,6 +208,7 @@ def main() -> None:
             "warnings",
         ],
     )
+    _run("release packaging helper tests", ["python3", "scripts/test_release_tooling.py"])
     _check_release_cli_binary()
     _run(
         "G1-G5 fixture, log-density, sampler, and protocol tests",
