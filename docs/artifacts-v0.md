@@ -66,10 +66,11 @@ Header facts include:
 - parameter shapes, packing order, `parameter_order`, `parameter_count`, and
   zero-based row-major `coordinate_order`
 - sampler settings, seed, chain count/order, and retained draw count
-- `sample_stats_mode: "per_draw_v1"`, announcing that every draw line carries
-  per-draw sampler statistics (`diverging`, `tree_depth`, `tree_accept`). Older
-  v0 streams without this header field are still accepted by `diagnose`; when
-  absent, per-draw stats are unavailable.
+- `sample_stats_mode: "per_draw_v2"`, announcing that every draw line carries
+  per-draw sampler statistics (`diverging`, `tree_depth`, `tree_accept`,
+  `energy`). Older v0 streams with `per_draw_v1` carry the first three fields
+  but no `energy`; older streams without this header field are still accepted
+  by `diagnose`; when absent, per-draw stats are unavailable.
 
 Each draw line includes:
 
@@ -78,11 +79,14 @@ Each draw line includes:
 - seed, total retained `draw_count`, chain count/order, chain id,
   `chain_index_base`, per-chain draw index, parameter count/order
 - constrained parameter values keyed by parameter name
-- per-draw sampler statistics: `sample_stats_mode: "per_draw_v1"`,
-  `diverging` (bool), `tree_depth` (integer in `0..=max_treedepth`), and
+- per-draw sampler statistics: `sample_stats_mode: "per_draw_v2"`,
+  `diverging` (bool), `tree_depth` (integer in `0..=max_treedepth`),
   `tree_accept` (float in `[0, 1]`, the trajectory mean Metropolis
-  acceptance). The `sample_stats_mode` marker and these three fields are present
-  together on every draw line or omitted together.
+  acceptance), and `energy` (finite float, the retained draw's Hamiltonian
+  energy including potential plus sampled kinetic energy). The
+  `sample_stats_mode` marker and these four fields are present together on
+  every new draw line. Older `per_draw_v1` draw lines contain only
+  `diverging`, `tree_depth`, and `tree_accept`.
 
 The trailer includes:
 
@@ -110,22 +114,28 @@ The report includes:
 - per-chain sampler facts from the trailer
 - recomputed per-parameter R-hat/ESS maps plus statistic and coordinate-reduction
   labels
-- `source_sample_stats_mode` and `source_draw_sample_stats_metadata` recording
-  whether the source stream carried per-draw sample stats
+- `source_sample_stats_mode`, `source_draw_sample_stats_metadata`, and
+  `source_draw_sample_stats_energy_metadata` recording whether the source stream
+  carried per-draw sample stats and whether those stats include `energy`
 - a `sample_stats` group: when the source stream carried per-draw stats, one
-  entry per chain with `draw_count` and a `draws` array of
-  `{diverging, tree_depth, tree_accept}` objects in draw order; when the source
-  stream did not, `sample_stats` is JSON `null`
+  entry per chain with `draw_count` and a `draws` array in draw order. New
+  `per_draw_v2` streams produce `{diverging, tree_depth, tree_accept, energy}`
+  objects; older `per_draw_v1` streams produce
+  `{diverging, tree_depth, tree_accept}` objects. When the source stream did not
+  carry per-draw stats, `sample_stats` is JSON `null`
 
 `diagnose` accepts older v0 streams without some optional metadata, but validates
 metadata when it is present. It rejects mismatched counts, non-contiguous draw
 indexes, malformed chain/order metadata, lines after the trailer, and
 inconsistent per-draw sample stats (present on some draw lines but not others,
-or present on draw lines without the header `sample_stats_mode`). When per-draw
-sample stats are present, it also cross-checks them against the trailer chain
-aggregates: the per-draw diverging count must match `divergences`, the
-recomputed tree-depth histogram must match `treedepth_histogram`, and the mean
-of `tree_accept` must match `mean_accept` (within 1e-9).
+or present on draw lines without the header `sample_stats_mode`). It accepts
+both `per_draw_v1` and `per_draw_v2` source streams; `per_draw_v2` requires a
+finite `energy` number on every draw line, while `per_draw_v1` must not include
+`energy`. When per-draw sample stats are present, `diagnose` cross-checks them
+against the trailer chain aggregates: the per-draw diverging count must match
+`divergences`, the recomputed tree-depth histogram must match
+`treedepth_histogram`, and the mean of `tree_accept` must match `mean_accept`
+(within 1e-9).
 
 ## `bayesite prior-predictive`
 
