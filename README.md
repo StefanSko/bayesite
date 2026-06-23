@@ -56,6 +56,56 @@ separate `jaxstanv5_ir` v1 format documented in
 - Workflow artifacts are not stable v1 formats yet; consumers must check the
   `v0-provisional` markers.
 
+## Install released CLI binary
+
+Released Bayesite CLI artifacts are versioned GitHub Release assets. On macOS
+or x86_64 Linux, this installs a pinned release to `~/.local/bin/bayesite`
+without a source checkout or Cargo on the execution path:
+
+```sh
+VERSION=v0.1.0
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) TARGET=aarch64-apple-darwin ;;
+  Darwin-x86_64) TARGET=x86_64-apple-darwin ;;
+  Linux-x86_64) TARGET=x86_64-unknown-linux-musl ;;
+  *) echo "unsupported platform" >&2; exit 1 ;;
+esac
+
+NAME="bayesite-${VERSION}-${TARGET}"
+BASE="https://github.com/StefanSko/bayesite/releases/download/${VERSION}"
+TMPDIR="$(mktemp -d)"
+mkdir -p "$HOME/.local/bin"
+cd "$TMPDIR"
+curl -fsSLO "${BASE}/${NAME}.tar.gz"
+curl -fsSLO "${BASE}/${NAME}.tar.gz.sha256"
+if command -v shasum >/dev/null 2>&1; then
+  shasum -a 256 -c "${NAME}.tar.gz.sha256"
+else
+  sha256sum -c "${NAME}.tar.gz.sha256"
+fi
+tar -xzf "${NAME}.tar.gz"
+install -m 0755 "${NAME}/bayesite" "$HOME/.local/bin/bayesite"
+```
+
+For Windows, download `bayesite-${VERSION}-x86_64-pc-windows-msvc.zip` and the
+adjacent `.sha256` file from the same release, verify the checksum, unzip, and
+put `bayesite.exe` on `PATH`.
+
+Release automation builds these assets, packages `README.md`/`LICENSE`/`NOTICE`
+with the executable, writes checksums, and runs the same JSON-error smoke used
+by local validation before publishing artifacts.
+
+Developer fallback when Rust/Cargo is already present:
+
+```sh
+cargo install \
+  --git https://github.com/StefanSko/bayesite \
+  --tag v0.1.0 \
+  --package bayesite-core \
+  --bin bayesite \
+  --locked
+```
+
 ## Build and validate
 
 ```sh
@@ -67,6 +117,7 @@ This self-contained default gate checks:
 - zero-dependency core via `cargo tree`;
 - `cargo fmt --check`;
 - `cargo clippy -D warnings`;
+- release packaging helper tests;
 - release CLI build and JSON-error smoke test;
 - Rust tests;
 - wasm build.
@@ -91,9 +142,7 @@ agent execution path.
 ## CLI examples
 
 ```sh
-cargo build --release --bin bayesite
-
-./target/release/bayesite sample \
+bayesite sample \
   --model model_ir.json \
   --data data.json \
   --seed 1 \
@@ -102,51 +151,51 @@ cargo build --release --bin bayesite
   --draws 1000 \
   --out fit.jsonl
 
-./target/release/bayesite diagnose \
+bayesite diagnose \
   --fit fit.jsonl \
   --out diagnostics.json
 
-./target/release/bayesite prior-predictive \
+bayesite prior-predictive \
   --model model_ir.json \
   --data predictors.json \
   --seed 1 \
   --draws 1000 \
   --out pp.jsonl
 
-./target/release/bayesite posterior-predictive \
+bayesite posterior-predictive \
   --model model_ir.json \
   --data observed_data.json \
   --fit fit.jsonl \
   --seed 2 \
   --out yrep.jsonl
 
-./target/release/bayesite posterior-check \
+bayesite posterior-check \
   --model model_ir.json \
   --data observed_data.json \
   --fit fit.jsonl \
   --seed 2 \
   --out ppc.json
 
-./target/release/bayesite simulate \
+bayesite simulate \
   --model generator_ir.json \
   --data fixed_inputs.json \
   --truth truth.json \
   --seed 1 \
   --out generated_data.json
 
-./target/release/bayesite recover-check \
+bayesite recover-check \
   --fit fit.jsonl \
   --truth truth.json \
   --targets targets.json \
   --interval 0.8 \
   --out recovery_check.json
 
-./target/release/bayesite recover \
+bayesite recover \
   --model model_ir.json \
   --scenario recover_scenario.json \
   --out recover.json
 
-./target/release/bayesite sbc \
+bayesite sbc \
   --model model_ir.json \
   --scenario sbc_scenario.json \
   --replicates 100 \
