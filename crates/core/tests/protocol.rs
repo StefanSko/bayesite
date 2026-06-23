@@ -490,6 +490,10 @@ fn sample_command_returns_single_chain_ndjson() {
     assert_eq!(int_array(header.get("chain_order").unwrap()), [3]);
     assert_eq!(header.get("draw_count").and_then(Value::as_i64), Some(100));
     assert_eq!(
+        header.get("sample_stats_mode").and_then(Value::as_str),
+        Some("per_draw_v2")
+    );
+    assert_eq!(
         header.get("parameter_count").and_then(Value::as_i64),
         Some(3)
     );
@@ -524,6 +528,17 @@ fn sample_command_returns_single_chain_ndjson() {
     assert_eq!(first.get("chain_count").and_then(Value::as_i64), Some(1));
     assert_eq!(int_array(first.get("chain_order").unwrap()), [3]);
     assert_eq!(first.get("chain").and_then(Value::as_i64), Some(3));
+    assert_eq!(
+        first.get("sample_stats_mode").and_then(Value::as_str),
+        Some("per_draw_v2")
+    );
+    assert!(
+        first
+            .get("energy")
+            .and_then(Value::as_f64)
+            .is_some_and(f64::is_finite),
+        "sample draw should report finite Hamiltonian energy"
+    );
     assert_eq!(
         first.get("chain_index_base").and_then(Value::as_str),
         Some("zero_based_chain_id")
@@ -1450,10 +1465,14 @@ fn diagnose_command_consumes_fit_ndjson() {
         response
             .get("source_sample_stats_mode")
             .and_then(Value::as_str),
-        Some("per_draw_v1")
+        Some("per_draw_v2")
     );
     assert!(matches!(
         response.get("source_draw_sample_stats_metadata"),
+        Some(Value::Bool(true))
+    ));
+    assert!(matches!(
+        response.get("source_draw_sample_stats_energy_metadata"),
         Some(Value::Bool(true))
     ));
     assert_eq!(
@@ -1526,6 +1545,13 @@ fn diagnose_command_consumes_fit_ndjson() {
         assert!((0..=10).contains(&depth));
         let accept = entry.get("tree_accept").and_then(Value::as_f64).unwrap();
         assert!((0.0..=1.0).contains(&accept));
+        assert!(
+            entry
+                .get("energy")
+                .and_then(Value::as_f64)
+                .is_some_and(f64::is_finite),
+            "diagnose should preserve finite per-draw energy"
+        );
     }
     // The per-draw divergence total must match the trailer chain total.
     let trailer_divergences = chains[0]
@@ -4937,6 +4963,15 @@ fn ndjson_lines_rejects_mismatched_per_draw_sample_stats_lengths() {
         err.message,
         "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion"
     );
+
+    let mut short_energy = chain;
+    short_energy.energy.pop();
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, short_energy)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert_eq!(
+        err.message,
+        "sample artifact per-draw energy must have one entry per retained draw; rerun `bayesite sample` to completion"
+    );
 }
 
 #[test]
@@ -5117,6 +5152,10 @@ fn diagnose_accepts_legacy_stream_without_per_draw_sample_stats() {
         response.get("source_draw_sample_stats_metadata"),
         Some(Value::Bool(false))
     ));
+    assert!(matches!(
+        response.get("source_draw_sample_stats_energy_metadata"),
+        Some(Value::Bool(false))
+    ));
     assert!(matches!(response.get("sample_stats"), Some(Value::Null)));
 }
 
@@ -5139,6 +5178,10 @@ fn diagnose_reports_per_draw_sample_stats_grouped_by_chain() {
             .and_then(Value::as_str),
         Some("per_draw_v1")
     );
+    assert!(matches!(
+        response.get("source_draw_sample_stats_energy_metadata"),
+        Some(Value::Bool(false))
+    ));
     let sample_stats = response
         .get("sample_stats")
         .and_then(Value::as_array)
@@ -5155,12 +5198,65 @@ fn diagnose_reports_per_draw_sample_stats_grouped_by_chain() {
     assert_eq!(draws.len(), 4);
     assert_eq!(draws[1].get("diverging"), Some(&Value::Bool(true)));
     assert_eq!(draws[1].get("tree_depth").and_then(Value::as_i64), Some(2));
+    assert!(draws[1].get("energy").is_none());
     // diverging total matches trailer chain divergences
     let total: i64 = draws
         .iter()
         .filter(|d| matches!(d.get("diverging"), Some(Value::Bool(true))))
         .count() as i64;
     assert_eq!(total, 1);
+}
+
+#[test]
+fn diagnose_reports_per_draw_v2_energy_grouped_by_chain() {
+    let fit = [
+        r#"{"draws_format":"v0-provisional","artifact_kind":"posterior_draws","artifact_scope":"observed_data_conditioned_parameter_draws","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"parameter_order":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"chain_count":1,"chain_order":[0],"draw_count":4,"sample_stats_mode":"per_draw_v2"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":1,"tree_accept":0.9,"energy":10.0}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v2","diverging":true,"tree_depth":2,"tree_accept":0.4,"energy":11.5}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":1,"tree_accept":0.95,"energy":9.25}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":3,"tree_accept":0.8,"energy":12.75}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":1,"treedepth_histogram":[0,2,1,1],"step_size":1.0,"mean_accept":0.7625}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let response = json::parse(&diagnose_ndjson(&fit).unwrap()).unwrap();
+    assert!(response.get("error").is_none(), "{response:?}");
+    assert_eq!(
+        response
+            .get("source_sample_stats_mode")
+            .and_then(Value::as_str),
+        Some("per_draw_v2")
+    );
+    assert!(matches!(
+        response.get("source_draw_sample_stats_energy_metadata"),
+        Some(Value::Bool(true))
+    ));
+    let sample_stats = response
+        .get("sample_stats")
+        .and_then(Value::as_array)
+        .expect("sample_stats group");
+    let draws = sample_stats[0]
+        .get("draws")
+        .and_then(Value::as_array)
+        .unwrap();
+    assert_eq!(draws[1].get("energy").and_then(Value::as_f64), Some(11.5));
+}
+
+#[test]
+fn diagnose_rejects_per_draw_v2_missing_energy() {
+    let fit = [
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v2"}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":1,"tree_accept":0.9,"energy":10.0}"#,
+        r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":1,"tree_accept":0.9,"energy":10.0}"#,
+        r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":1,"tree_accept":0.9,"energy":10.0}"#,
+        r#"{"trailer":{"chains":[{"chain":0,"divergences":0,"treedepth_histogram":[0,4],"step_size":1.0,"mean_accept":0.9}],"rhat":{},"ess":{}}}"#,
+    ]
+    .join("\n");
+    let err = diagnose_ndjson(&fit).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err
+        .message
+        .contains("draw line energy must be a finite number for sample_stats_mode per_draw_v2"));
 }
 
 #[test]
@@ -5214,7 +5310,7 @@ fn diagnose_rejects_header_mode_without_draw_stats() {
     assert_eq!(err.kind, ErrorKind::MalformedDocument);
     assert!(err
         .message
-        .contains("fit header sample_stats_mode is per_draw_v1 but a draw line is missing"));
+        .contains("fit header sample_stats_mode is set but a draw line is missing"));
 }
 
 #[test]
@@ -5256,7 +5352,7 @@ fn diagnose_rejects_partial_per_draw_fields() {
 #[test]
 fn diagnose_rejects_unknown_sample_stats_mode() {
     let fit = [
-        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v2"}"#,
+        r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v3"}"#,
         r#"{"chain":0,"draw":0,"values":{"alpha":0.0}}"#,
         r#"{"chain":0,"draw":1,"values":{"alpha":1.0}}"#,
         r#"{"chain":0,"draw":2,"values":{"alpha":2.0}}"#,
@@ -5268,7 +5364,7 @@ fn diagnose_rejects_unknown_sample_stats_mode() {
     assert_eq!(err.kind, ErrorKind::MalformedDocument);
     assert!(err
         .message
-        .contains("sample_stats_mode must be \"per_draw_v1\""));
+        .contains("sample_stats_mode must be \"per_draw_v1\" or \"per_draw_v2\""));
 }
 
 #[test]
@@ -5330,11 +5426,11 @@ fn diagnose_rejects_per_draw_mean_accept_mismatch_with_trailer() {
 
 #[test]
 fn diagnose_rejects_draw_line_with_wrong_sample_stats_mode() {
-    // Header says per_draw_v1, draw line carries v1-shaped stats but marks
-    // itself per_draw_v2. The draw-line marker must match.
+    // Header says per_draw_v1, draw line carries valid v2-shaped stats. The
+    // draw-line marker must still match the header marker.
     let fit = [
         r#"{"draws_format":"v0-provisional","params":[{"name":"alpha","shape":[]}],"packing":["alpha"],"settings":{"num_warmup":0,"num_draws":4,"max_treedepth":4,"target_accept":0.8},"seed":11,"chains":1,"sample_stats_mode":"per_draw_v1"}"#,
-        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
+        r#"{"chain":0,"draw":0,"values":{"alpha":0.0},"sample_stats_mode":"per_draw_v2","diverging":false,"tree_depth":1,"tree_accept":0.9,"energy":10.0}"#,
         r#"{"chain":0,"draw":1,"values":{"alpha":1.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
         r#"{"chain":0,"draw":2,"values":{"alpha":2.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
         r#"{"chain":0,"draw":3,"values":{"alpha":3.0},"sample_stats_mode":"per_draw_v1","diverging":false,"tree_depth":1,"tree_accept":0.9}"#,
@@ -5345,7 +5441,7 @@ fn diagnose_rejects_draw_line_with_wrong_sample_stats_mode() {
     assert_eq!(err.kind, ErrorKind::MalformedDocument);
     assert!(err
         .message
-        .contains("draw line sample_stats_mode must be \"per_draw_v1\" when present"));
+        .contains("draw line sample_stats_mode per_draw_v2 must match fit header sample_stats_mode per_draw_v1"));
 }
 
 #[test]
@@ -5411,4 +5507,10 @@ fn ndjson_lines_rejects_per_draw_stats_out_of_parser_bounds() {
     assert!(err
         .message
         .contains("per-draw tree_accept must be in [0, 1]"));
+
+    let mut bad_energy = chain;
+    bad_energy.energy[0] = f64::INFINITY;
+    let err = ndjson_lines(&posterior, &settings, 5, &[(0, bad_energy)]).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err.message.contains("per-draw energy must be finite"));
 }

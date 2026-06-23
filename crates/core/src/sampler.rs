@@ -63,8 +63,8 @@ impl Settings {
 
 /// Post-warmup draws and per-chain diagnostics.
 ///
-/// Per-draw sampler statistics (`diverging`, `tree_depth`, `tree_accept`) are
-/// retained alongside the chain-level aggregates (`divergences`,
+/// Per-draw sampler statistics (`diverging`, `tree_depth`, `tree_accept`,
+/// `energy`) are retained alongside the chain-level aggregates (`divergences`,
 /// `treedepth_histogram`, `mean_accept`). The aggregates are kept for backward
 /// compatibility with the v0 trailer and are consistent with the per-draw
 /// arrays by construction (they are accumulated in the same loop).
@@ -89,6 +89,9 @@ pub struct ChainDraws {
     /// Per-draw average Metropolis acceptance over the trajectory, one entry
     /// per kept draw (the dual-averaging statistic).
     pub tree_accept: Vec<f64>,
+    /// Per-draw Hamiltonian energy of the retained phase-space point, one
+    /// entry per kept draw.
+    pub energy: Vec<f64>,
 }
 
 /// Stan-style coarse step-size search: double or halve until the one-step
@@ -222,6 +225,7 @@ pub fn sample(
     let mut diverging = Vec::with_capacity(settings.num_draws);
     let mut tree_depth = Vec::with_capacity(settings.num_draws);
     let mut tree_accept = Vec::with_capacity(settings.num_draws);
+    let mut energy = Vec::with_capacity(settings.num_draws);
     for _ in 0..settings.num_draws {
         let result = transition(
             &ham,
@@ -243,6 +247,7 @@ pub fn sample(
         // u8 cannot overflow.
         tree_depth.push(result.depth as u8);
         tree_accept.push(result.accept_prob);
+        energy.push(result.energy);
         draws.push(result.q);
         logp.push(result.logp);
     }
@@ -258,5 +263,6 @@ pub fn sample(
         diverging,
         tree_depth,
         tree_accept,
+        energy,
     })
 }

@@ -50,11 +50,14 @@ const DIAGNOSE_WORKFLOW_PHASES: [&str; 4] = [
     "emit_report",
 ];
 
-/// Header flag value announcing that each draw line carries per-draw sampler
-/// statistics (`diverging`, `tree_depth`, `tree_accept`). Older v0 streams
-/// without this header field are still accepted by `diagnose`; when the field
-/// is absent, per-draw stats are unavailable.
-const SAMPLE_STATS_MODE_PER_DRAW: &str = "per_draw_v1";
+/// Header flag value emitted by this binary. `per_draw_v2` announces that each
+/// draw line carries per-draw sampler statistics (`diverging`, `tree_depth`,
+/// `tree_accept`) plus Hamiltonian `energy`. Older v0 streams with
+/// `per_draw_v1` (no energy) or without this header field are still accepted by
+/// `diagnose`; when the field is absent, per-draw stats are unavailable.
+const SAMPLE_STATS_MODE_PER_DRAW_V1: &str = "per_draw_v1";
+const SAMPLE_STATS_MODE_PER_DRAW_V2: &str = "per_draw_v2";
+const SAMPLE_STATS_MODE_PER_DRAW: &str = SAMPLE_STATS_MODE_PER_DRAW_V2;
 fn tensor_to_value(shape: &[usize], data: &[f64]) -> Value {
     if shape.is_empty() {
         Value::Float(data[0])
@@ -263,6 +266,7 @@ pub fn ndjson_lines(
                     "tree_accept".to_string(),
                     Value::Float(chain.tree_accept[draw_id]),
                 ),
+                ("energy".to_string(), Value::Float(chain.energy[draw_id])),
             ]);
             let line = Value::Object(line_entries);
             lines.push(json::write(&line)?);
@@ -385,12 +389,14 @@ struct ParsedDraw {
 }
 
 /// Per-draw sampler statistics parsed from a draw line when
-/// `sample_stats_mode` is `per_draw_v1`.
+/// `sample_stats_mode` is `per_draw_v1` or `per_draw_v2`.
 #[derive(Debug, Clone)]
 struct PerDrawSampleStats {
+    mode: String,
     diverging: bool,
     tree_depth: i64,
     tree_accept: f64,
+    energy: Option<f64>,
 }
 
 fn parse_sample_stats_mode(doc: &Value, context: &str) -> Result<Option<String>, Error> {
@@ -402,11 +408,11 @@ fn parse_sample_stats_mode(doc: &Value, context: &str) -> Result<Option<String>,
             "{context} sample_stats_mode must be a string when present"
         ))
     })?;
-    if parsed == SAMPLE_STATS_MODE_PER_DRAW {
+    if parsed == SAMPLE_STATS_MODE_PER_DRAW_V1 || parsed == SAMPLE_STATS_MODE_PER_DRAW_V2 {
         Ok(Some(parsed.to_string()))
     } else {
         Err(invalid_fit(format!(
-            "{context} sample_stats_mode must be \"{SAMPLE_STATS_MODE_PER_DRAW}\" when present; rerun `bayesite sample` to completion"
+            "{context} sample_stats_mode must be \"{SAMPLE_STATS_MODE_PER_DRAW_V1}\" or \"{SAMPLE_STATS_MODE_PER_DRAW_V2}\" when present; rerun `bayesite sample` to completion"
         )))
     }
 }
@@ -415,11 +421,12 @@ fn parse_draw_sample_stats(line: &Value) -> Result<Option<PerDrawSampleStats>, E
     let has_diverging = line.get("diverging").is_some();
     let has_tree_depth = line.get("tree_depth").is_some();
     let has_tree_accept = line.get("tree_accept").is_some();
+    let has_energy = line.get("energy").is_some();
     let has_mode = line.get("sample_stats_mode").is_some();
-    let has_any_stat = has_diverging || has_tree_depth || has_tree_accept;
-    // The draw-line sample_stats_mode marker and the three per-draw stat fields
-    // form one metadata block: present together or omitted together. This keeps
-    // the draw line's self-description consistent with what the parser reads.
+    let has_any_stat = has_diverging || has_tree_depth || has_tree_accept || has_energy;
+    // The draw-line sample_stats_mode marker and the per-draw stat fields form
+    // one metadata block: present together or omitted together. This keeps the
+    // draw line's self-description consistent with what the parser reads.
     if has_mode != has_any_stat {
         return Err(invalid_fit(
             "draw line sample_stats_mode must accompany diverging, tree_depth, and tree_accept; rerun `bayesite sample` to completion",
@@ -437,9 +444,9 @@ fn parse_draw_sample_stats(line: &Value) -> Result<Option<PerDrawSampleStats>, E
         .get("sample_stats_mode")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid_fit("draw line sample_stats_mode must be a string when present"))?;
-    if mode != SAMPLE_STATS_MODE_PER_DRAW {
+    if mode != SAMPLE_STATS_MODE_PER_DRAW_V1 && mode != SAMPLE_STATS_MODE_PER_DRAW_V2 {
         return Err(invalid_fit(format!(
-            "draw line sample_stats_mode must be \"{SAMPLE_STATS_MODE_PER_DRAW}\" when present; rerun `bayesite sample` to completion"
+            "draw line sample_stats_mode must be \"{SAMPLE_STATS_MODE_PER_DRAW_V1}\" or \"{SAMPLE_STATS_MODE_PER_DRAW_V2}\" when present; rerun `bayesite sample` to completion"
         )));
     }
     let diverging = match line.get("diverging") {
@@ -468,10 +475,32 @@ fn parse_draw_sample_stats(line: &Value) -> Result<Option<PerDrawSampleStats>, E
             "draw line tree_accept must be in [0, 1] when present",
         ));
     }
+    let energy = if mode == SAMPLE_STATS_MODE_PER_DRAW_V2 {
+        let energy = line.get("energy").and_then(Value::as_f64).ok_or_else(|| {
+            invalid_fit(
+                "draw line energy must be a finite number for sample_stats_mode per_draw_v2",
+            )
+        })?;
+        if !energy.is_finite() {
+            return Err(invalid_fit(
+                "draw line energy must be a finite number for sample_stats_mode per_draw_v2",
+            ));
+        }
+        Some(energy)
+    } else {
+        if has_energy {
+            return Err(invalid_fit(
+                "draw line energy requires sample_stats_mode per_draw_v2",
+            ));
+        }
+        None
+    };
     Ok(Some(PerDrawSampleStats {
+        mode: mode.to_string(),
         diverging,
         tree_depth,
         tree_accept,
+        energy,
     }))
 }
 
@@ -548,9 +577,14 @@ fn validate_reportable_chain_diagnostics(
             "sample artifact per-draw sample stats (diverging, tree_depth, tree_accept) must each have one entry per retained draw; rerun `bayesite sample` to completion",
         ));
     }
+    if chain.energy.len() != draw_count {
+        return Err(invalid_artifact(
+            "sample artifact per-draw energy must have one entry per retained draw; rerun `bayesite sample` to completion",
+        ));
+    }
     // Enforce the same per-draw bounds the parser checks, so a caller cannot
-    // construct a `ChainDraws` that serializes a per_draw_v1 artifact which
-    // `diagnose` would then reject.
+    // construct a `ChainDraws` that serializes an artifact which `diagnose`
+    // would then reject.
     for &depth in &chain.tree_depth {
         if depth as usize > max_treedepth {
             return Err(invalid_artifact(format!(
@@ -562,6 +596,13 @@ fn validate_reportable_chain_diagnostics(
         if !(0.0..=1.0).contains(&accept) {
             return Err(invalid_artifact(
                 "sample artifact per-draw tree_accept must be in [0, 1]; rerun `bayesite sample` to completion",
+            ));
+        }
+    }
+    for &energy in &chain.energy {
+        if !energy.is_finite() {
+            return Err(invalid_artifact(
+                "sample artifact per-draw energy must be finite; rerun `bayesite sample` to completion",
             ));
         }
     }
@@ -1768,7 +1809,7 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         }
         if per_draw_sample_stats_expected && !has_sample_stats {
             return Err(invalid_fit(
-                "fit header sample_stats_mode is per_draw_v1 but a draw line is missing per-draw sample stats; rerun `bayesite sample` to completion",
+                "fit header sample_stats_mode is set but a draw line is missing per-draw sample stats; rerun `bayesite sample` to completion",
             ));
         }
         if has_sample_stats && !per_draw_sample_stats_expected {
@@ -1777,6 +1818,14 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
             ));
         }
         if let Some(stats) = &draw.sample_stats {
+            if let Some(header_mode) = &header_sample_stats_mode {
+                if stats.mode != *header_mode {
+                    return Err(invalid_fit(format!(
+                        "draw line sample_stats_mode {} must match fit header sample_stats_mode {}; rerun `bayesite sample` to completion",
+                        stats.mode, header_mode
+                    )));
+                }
+            }
             if stats.tree_depth > header_max_treedepth as i64 {
                 return Err(invalid_fit(format!(
                     "draw line tree_depth {} exceeds fit header settings.max_treedepth {}; rerun `bayesite sample` to completion",
@@ -1962,7 +2011,7 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
     }
 
     // Per-draw sample stats, grouped by chain in draw order. Available only
-    // when the source stream carried `sample_stats_mode: per_draw_v1`.
+    // when the source stream carried a recognized sample_stats_mode.
     let per_draw_sample_stats_available = draw_sample_stats_metadata.unwrap_or(false);
     let sample_stats_value = if per_draw_sample_stats_available {
         let mut by_chain: Vec<(i64, Vec<Value>)> = chain_ids
@@ -1978,11 +2027,15 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
                 .sample_stats
                 .as_ref()
                 .expect("per-draw sample stats presence was validated");
-            by_chain[chain].1.push(Value::Object(vec![
+            let mut entries = vec![
                 ("diverging".to_string(), Value::Bool(stats.diverging)),
                 ("tree_depth".to_string(), Value::Int(stats.tree_depth)),
                 ("tree_accept".to_string(), Value::Float(stats.tree_accept)),
-            ]));
+            ];
+            if let Some(energy) = stats.energy {
+                entries.push(("energy".to_string(), Value::Float(energy)));
+            }
+            by_chain[chain].1.push(Value::Object(entries));
         }
         Value::Array(
             by_chain
@@ -2081,6 +2134,13 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
     response_entries.push((
         "source_draw_sample_stats_metadata".to_string(),
         Value::Bool(per_draw_sample_stats_available),
+    ));
+    response_entries.push((
+        "source_draw_sample_stats_energy_metadata".to_string(),
+        Value::Bool(
+            per_draw_sample_stats_available
+                && header_sample_stats_mode.as_deref() == Some(SAMPLE_STATS_MODE_PER_DRAW_V2),
+        ),
     ));
     response_entries.extend([
         (

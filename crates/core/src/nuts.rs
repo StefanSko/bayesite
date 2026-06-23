@@ -135,6 +135,7 @@ fn log_sum_exp(a: f64, b: f64) -> f64 {
 struct Subtree {
     /// Proposal drawn multinomially from the subtree.
     proposal_q: Vec<f64>,
+    proposal_p: Vec<f64>,
     proposal_logp: f64,
     proposal_grad: Vec<f64>,
     /// Momentum / sharp momentum at the edge nearest the existing tree.
@@ -161,6 +162,8 @@ pub struct Transition {
     /// Average Metropolis acceptance over the trajectory (dual-averaging
     /// statistic).
     pub accept_prob: f64,
+    /// Hamiltonian energy of the retained phase-space point.
+    pub energy: f64,
 }
 
 struct TreeStats {
@@ -191,6 +194,7 @@ fn build_tree(
         let p_sharp = ham.p_sharp(&z.p);
         return Ok(Some(Subtree {
             proposal_q: z.q.clone(),
+            proposal_p: z.p.clone(),
             proposal_logp: z.logp,
             proposal_grad: z.grad.clone(),
             p_beg: z.p.clone(),
@@ -212,10 +216,20 @@ fn build_tree(
     // Multinomial selection between the two halves.
     let log_sum_weight = log_sum_exp(left.log_sum_weight, right.log_sum_weight);
     let take_right = rng.uniform().ln() < right.log_sum_weight - log_sum_weight;
-    let (proposal_q, proposal_logp, proposal_grad) = if take_right {
-        (right.proposal_q, right.proposal_logp, right.proposal_grad)
+    let (proposal_q, proposal_p, proposal_logp, proposal_grad) = if take_right {
+        (
+            right.proposal_q,
+            right.proposal_p,
+            right.proposal_logp,
+            right.proposal_grad,
+        )
     } else {
-        (left.proposal_q, left.proposal_logp, left.proposal_grad)
+        (
+            left.proposal_q,
+            left.proposal_p,
+            left.proposal_logp,
+            left.proposal_grad,
+        )
     };
 
     let rho = add(&left.rho, &right.rho);
@@ -230,6 +244,7 @@ fn build_tree(
     }
 
     left.proposal_q = proposal_q;
+    left.proposal_p = proposal_p;
     left.proposal_logp = proposal_logp;
     left.proposal_grad = proposal_grad;
     left.p_end = right.p_end;
@@ -258,6 +273,7 @@ pub fn transition(
     let mut rho = state.p.clone();
 
     let mut sample_q = state.q.clone();
+    let mut sample_p = state.p.clone();
     let mut sample_logp = state.logp;
     let mut sample_grad = state.grad.clone();
     let mut log_sum_weight = 0.0; // weight of the initial point
@@ -286,6 +302,7 @@ pub fn transition(
             || rng.uniform().ln() < subtree.log_sum_weight - log_sum_weight
         {
             sample_q = subtree.proposal_q.clone();
+            sample_p = subtree.proposal_p.clone();
             sample_logp = subtree.proposal_logp;
             sample_grad = subtree.proposal_grad.clone();
         }
@@ -332,6 +349,12 @@ pub fn transition(
     } else {
         0.0
     };
+    let energy = ham.energy(&State {
+        q: sample_q.clone(),
+        p: sample_p,
+        logp: sample_logp,
+        grad: sample_grad.clone(),
+    });
     Ok(Transition {
         q: sample_q,
         logp: sample_logp,
@@ -340,6 +363,7 @@ pub fn transition(
         n_leapfrog: stats.n_leapfrog,
         divergent: stats.divergent,
         accept_prob,
+        energy,
     })
 }
 
@@ -467,6 +491,8 @@ mod tests {
         assert_eq!(a.n_leapfrog, b.n_leapfrog);
         assert_eq!(a.divergent, b.divergent);
         assert_eq!(a.accept_prob, b.accept_prob);
+        assert_eq!(a.energy, b.energy);
+        assert!(a.energy.is_finite());
     }
 
     #[test]
