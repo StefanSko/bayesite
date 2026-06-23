@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import tarfile
 import tempfile
 import unittest
@@ -79,14 +80,23 @@ class ReleaseToolingTests(unittest.TestCase):
     def test_smoke_release_binary_accepts_cli_json_error_surface(self) -> None:
         smoke = load_script("smoke_release_binary.py")
         with tempfile.TemporaryDirectory() as tmp:
-            binary = Path(tmp) / "bayesite"
-            binary.write_text(
-                "#!/bin/sh\n"
-                "printf '%s\\n' '{\"error_format\":\"v0-provisional\",\"error\":\"InvalidSettings\",\"message\":\"missing command: use bayesite sample\"}' >&2\n"
-                "exit 1\n",
-                encoding="utf-8",
-            )
-            binary.chmod(binary.stat().st_mode | 0o755)
+            if os.name == "nt":
+                binary = Path(tmp) / "bayesite.cmd"
+                binary.write_text(
+                    "@echo off\r\n"
+                    '>&2 echo {"error_format":"v0-provisional","error":"InvalidSettings","message":"missing command: use bayesite sample"}\r\n'
+                    "exit /b 1\r\n",
+                    encoding="utf-8",
+                )
+            else:
+                binary = Path(tmp) / "bayesite"
+                binary.write_text(
+                    "#!/bin/sh\n"
+                    "printf '%s\\n' '{\"error_format\":\"v0-provisional\",\"error\":\"InvalidSettings\",\"message\":\"missing command: use bayesite sample\"}' >&2\n"
+                    "exit 1\n",
+                    encoding="utf-8",
+                )
+                binary.chmod(binary.stat().st_mode | 0o755)
             smoke.smoke_binary(binary)
 
 
