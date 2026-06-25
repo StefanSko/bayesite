@@ -1744,6 +1744,7 @@ fn parse_fit_stream(
     text: &str,
     expected_packing: &[(String, Vec<usize>)],
     expected_posterior_identity_hash: &str,
+    expected_model_data_fingerprint: Option<&str>,
 ) -> Result<FitDrawStream, Error> {
     let mut lines = text.lines();
     let header_line = lines
@@ -1761,7 +1762,23 @@ fn parse_fit_stream(
             "fit parameter order/shapes must match the model and data; rerun `bayesite sample` for this model/data pair",
         ));
     }
-    if header
+    if let Some(expected) = expected_model_data_fingerprint {
+        if let Some(got) = header.get("model_data_fingerprint").and_then(Value::as_str) {
+            if got != expected {
+                return Err(malformed_fit(
+                    "fit model_data_fingerprint must match the supplied model and data; rerun `bayesite sample` for these inputs",
+                ));
+            }
+        } else if header
+            .get("posterior_identity_hash")
+            .and_then(Value::as_str)
+            != Some(expected_posterior_identity_hash)
+        {
+            return Err(malformed_fit(
+                "fit posterior_identity_hash must match the supplied model and data; rerun `bayesite sample` for these inputs",
+            ));
+        }
+    } else if header
         .get("posterior_identity_hash")
         .and_then(Value::as_str)
         != Some(expected_posterior_identity_hash)
@@ -1831,7 +1848,26 @@ fn parse_fit_stream(
             "fit trailer artifact_scope must match posterior_draws sample output",
         ));
     }
-    if trailer
+    if let Some(expected) = expected_model_data_fingerprint {
+        if let Some(got) = trailer
+            .get("model_data_fingerprint")
+            .and_then(Value::as_str)
+        {
+            if got != expected {
+                return Err(malformed_fit(
+                    "fit trailer model_data_fingerprint must match the supplied model and data; rerun `bayesite sample` for these inputs",
+                ));
+            }
+        } else if trailer
+            .get("posterior_identity_hash")
+            .and_then(Value::as_str)
+            != Some(expected_posterior_identity_hash)
+        {
+            return Err(malformed_fit(
+                "fit trailer posterior_identity_hash must match the supplied model and data; rerun `bayesite sample` for these inputs",
+            ));
+        }
+    } else if trailer
         .get("posterior_identity_hash")
         .and_then(Value::as_str)
         != Some(expected_posterior_identity_hash)
@@ -2224,10 +2260,25 @@ pub fn simulate_posterior_predictive(
     fit_ndjson: &str,
     seed: u64,
 ) -> Result<PosteriorPredictiveRun, Error> {
+    simulate_posterior_predictive_with_model_data_fingerprint(meta, data, fit_ndjson, seed, None)
+}
+
+pub fn simulate_posterior_predictive_with_model_data_fingerprint(
+    meta: ModelMeta,
+    data: Vec<(String, DataValue)>,
+    fit_ndjson: &str,
+    seed: u64,
+    expected_model_data_fingerprint: Option<&str>,
+) -> Result<PosteriorPredictiveRun, Error> {
     validate_reportable_seed(seed, "posterior-predictive artifact")?;
     let posterior = Posterior::new(meta.clone(), data.clone())?;
     let packing = posterior.packing();
-    let fit = parse_fit_stream(fit_ndjson, &packing, posterior.identity_hash())?;
+    let fit = parse_fit_stream(
+        fit_ndjson,
+        &packing,
+        posterior.identity_hash(),
+        expected_model_data_fingerprint,
+    )?;
     let data_map = full_data_map(&data)?;
     let declared_data = declared_data_from_full(&meta, &data_map)?;
     let declared_map = bind_declared_data(&meta, declared_data)?;
@@ -2331,9 +2382,27 @@ pub fn posterior_predictive_ndjson_lines(
     fit_ndjson: &str,
     seed: u64,
 ) -> Result<Vec<String>, Error> {
+    posterior_predictive_ndjson_lines_with_model_data_fingerprint(
+        meta, data, fit_ndjson, seed, None,
+    )
+}
+
+pub fn posterior_predictive_ndjson_lines_with_model_data_fingerprint(
+    meta: ModelMeta,
+    data: Vec<(String, DataValue)>,
+    fit_ndjson: &str,
+    seed: u64,
+    expected_model_data_fingerprint: Option<&str>,
+) -> Result<Vec<String>, Error> {
     let data_map = full_data_map(&data)?;
     let declared_data = declared_data_from_full(&meta, &data_map)?;
-    let run = simulate_posterior_predictive(meta, data, fit_ndjson, seed)?;
+    let run = simulate_posterior_predictive_with_model_data_fingerprint(
+        meta,
+        data,
+        fit_ndjson,
+        seed,
+        expected_model_data_fingerprint,
+    )?;
     let mut lines = Vec::with_capacity(run.draws.len() + 2);
     lines.push(json::write(&posterior_predictive_header_value(
         &run,
@@ -2450,8 +2519,24 @@ pub fn posterior_check_report(
     fit_ndjson: &str,
     seed: u64,
 ) -> Result<String, Error> {
+    posterior_check_report_with_model_data_fingerprint(meta, data, fit_ndjson, seed, None)
+}
+
+pub fn posterior_check_report_with_model_data_fingerprint(
+    meta: ModelMeta,
+    data: Vec<(String, DataValue)>,
+    fit_ndjson: &str,
+    seed: u64,
+    expected_model_data_fingerprint: Option<&str>,
+) -> Result<String, Error> {
     let data_map = full_data_map(&data)?;
-    let run = simulate_posterior_predictive(meta, data, fit_ndjson, seed)?;
+    let run = simulate_posterior_predictive_with_model_data_fingerprint(
+        meta,
+        data,
+        fit_ndjson,
+        seed,
+        expected_model_data_fingerprint,
+    )?;
     let mut checks = Vec::new();
     for (site_idx, site) in run.sites.iter().enumerate() {
         let observed = data_map.get(&site.name).ok_or_else(|| {

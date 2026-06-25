@@ -2,8 +2,8 @@
 //! wasm ABI.
 //!
 //! Lines: a header object (`draws_format: "v0-provisional"`, artifact
-//! kind/scope, parameter names/shapes/coordinate order, packing order,
-//! workflow phases, settings, seed, chain count), one object per draw with
+//! kind/scope, optional model/data fingerprint, parameter names/shapes/coordinate
+//! order, packing order, workflow phases, settings, seed, chain count), one object per draw with
 //! constrained values keyed by parameter, and a trailer with per-chain
 //! diagnostics plus cross-chain R-hat/ESS. Unavailable diagnostics are encoded
 //! as JSON null, never as non-JSON floats. The marker is mandatory: the real
@@ -100,6 +100,7 @@ fn diagnostic_value(value: f64) -> Value {
 
 fn header_value(
     posterior_identity_hash: &str,
+    model_data_fingerprint: Option<&str>,
     packing: &[(String, Vec<usize>)],
     settings: &Settings,
     seed: u64,
@@ -113,6 +114,14 @@ fn header_value(
             "posterior_identity_hash".to_string(),
             Value::Str(posterior_identity_hash.to_string()),
         ),
+    ]);
+    if let Some(fingerprint) = model_data_fingerprint {
+        entries.push((
+            "model_data_fingerprint".to_string(),
+            Value::Str(fingerprint.to_string()),
+        ));
+    }
+    entries.extend([
         (
             "params".to_string(),
             Value::Array(
@@ -183,6 +192,16 @@ pub fn ndjson_lines(
     seed: u64,
     chains: &[(u64, ChainDraws)],
 ) -> Result<Vec<String>, Error> {
+    ndjson_lines_with_model_data_fingerprint(posterior, settings, seed, chains, None)
+}
+
+pub fn ndjson_lines_with_model_data_fingerprint(
+    posterior: &Posterior,
+    settings: &Settings,
+    seed: u64,
+    chains: &[(u64, ChainDraws)],
+    model_data_fingerprint: Option<&str>,
+) -> Result<Vec<String>, Error> {
     validate_reportable_seed(seed, "sample artifact")?;
     validate_reportable_settings(settings)?;
     validate_fit_artifact_draws(chains, settings.max_treedepth)?;
@@ -193,6 +212,7 @@ pub fn ndjson_lines(
         Vec::with_capacity(2 + chains.iter().map(|(_, c)| c.draws.len()).sum::<usize>());
     lines.push(json::write(&header_value(
         posterior.identity_hash(),
+        model_data_fingerprint,
         &packing,
         settings,
         seed,
@@ -340,6 +360,14 @@ pub fn ndjson_lines(
             "posterior_identity_hash".to_string(),
             Value::Str(posterior.identity_hash().to_string()),
         ),
+    ]);
+    if let Some(fingerprint) = model_data_fingerprint {
+        trailer_entries.push((
+            "model_data_fingerprint".to_string(),
+            Value::Str(fingerprint.to_string()),
+        ));
+    }
+    trailer_entries.extend([
         ("seed".to_string(), Value::Int(seed as i64)),
         (
             "draws_per_chain".to_string(),

@@ -1,8 +1,12 @@
-# Bayesite v0-provisional artifacts
+# Bayescycle/Bayesite v0-provisional artifacts
 
-Bayesite workflow artifacts are intentionally **v0-provisional**. They are
+These workflow artifacts are intentionally **v0-provisional**. They are
 machine-readable and tested, but not a stable public artifact format yet.
 Consumers must check the relevant format marker before parsing.
+
+The posterior run-directory contract is owned by bayescycle; Bayesite is one
+producer/consumer of the current wire shape. This document records the Bayesite
+CLI's implementation of that shared contract.
 
 This document covers workflow artifacts only. It does not change the model IR
 wire format, which remains `{"jaxstanv5_ir": 1, "model": ...}`.
@@ -37,13 +41,15 @@ decision.
   `{"error_format":"v0-provisional","error":"<Kind>","message":"..."}`.
 - Messages are repair-oriented: they name the field/path or command shape to
   change.
-- Counts, orders, coordinate orders, artifact kind/scope, seed metadata, and
-  index-base labels are emitted explicitly where they disambiguate streamed
-  records.
+- Counts, orders, coordinate orders, artifact kind/scope, seed metadata,
+  optional model/data fingerprints, and index-base labels are emitted explicitly
+  where they disambiguate streamed records.
 - Parameter summaries use constrained parameter values, not unconstrained NUTS
   state values.
 - R-hat/ESS values that are unavailable for short or degenerate chains are JSON
   `null`, never `NaN`, `Infinity`, or a late serialization failure.
+- When present, `model_data_fingerprint` is `sha256:` plus the SHA-256 digest of
+  `b"bayescycle-model-data-v1\n" + model_ir_bytes + b"\n" + data_json_bytes`.
 - Report objects are factual records. They do not add recovery, sampler-quality,
   or SBC uniformity verdicts.
 
@@ -68,7 +74,8 @@ Header facts include:
 - sampler settings, seed, chain count/order, and retained draw count
 - `sample_stats_mode: "per_draw_v2"`, announcing that every draw line carries
   per-draw sampler statistics (`diverging`, `tree_depth`, `tree_accept`,
-  `energy`). Older v0 streams with `per_draw_v1` carry the first three fields
+  `energy`). The Bayesite CLI also emits `model_data_fingerprint` when it can
+  fingerprint the exact model/data inputs. Older v0 streams with `per_draw_v1` carry the first three fields
   but no `energy`; older streams without this header field are still accepted
   by `diagnose`; when absent, per-draw stats are unavailable.
 
@@ -91,6 +98,7 @@ Each draw line includes:
 The trailer includes:
 
 - the same draw format and artifact identity
+- optional model/data fingerprint metadata when emitted by the producer
 - completion metadata: seed, draws per chain, chain count/order, total retained
   draw count, parameter count/order
 - per-chain raw sampler facts: retained draw count, divergences, tree-depth

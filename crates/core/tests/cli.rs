@@ -2498,6 +2498,10 @@ fn samples_linear_regression_over_the_subprocess_protocol() {
     );
     assert_sample_artifact_identity(&header);
     assert_sample_workflow_phases(&header, "workflow_phases");
+    assert!(header
+        .get("model_data_fingerprint")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.starts_with("sha256:")));
     assert_eq!(header.get("chain_count").and_then(Value::as_i64), Some(2));
     assert_eq!(int_array(header.get("chain_order").unwrap()), [0, 1]);
     assert_eq!(header.get("draw_count").and_then(Value::as_i64), Some(400));
@@ -2592,6 +2596,12 @@ fn samples_linear_regression_over_the_subprocess_protocol() {
     let trailer = trailer.get("trailer").expect("trailer object");
     assert_sample_artifact_identity(trailer);
     assert_sample_workflow_phases(trailer, "workflow_phases");
+    assert_eq!(
+        trailer
+            .get("model_data_fingerprint")
+            .and_then(Value::as_str),
+        header.get("model_data_fingerprint").and_then(Value::as_str)
+    );
     assert_eq!(trailer.get("chain_count").and_then(Value::as_i64), Some(2));
     assert_eq!(int_array(trailer.get("chain_order").unwrap()), [0, 1]);
     assert_eq!(trailer.get("draw_count").and_then(Value::as_i64), Some(400));
