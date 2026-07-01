@@ -1,10 +1,19 @@
 //! Reverse-mode AD over the closed op set the IR compiles to.
 //!
-//! A `Tape` is built per evaluation: forward values are computed eagerly as
+//! A `Tape` is built once per graph: forward values are computed eagerly as
 //! ops are pushed, and `backward` walks the tape once to accumulate adjoint
 //! tensors. The op set is exactly what the evaluator and the distribution
 //! log-densities need — this is not a general autodiff.
+//!
+//! Because the graph structure of a bound model is fixed (index expressions
+//! are parameter-free by IR contract), a built tape can be re-evaluated at a
+//! new point without rebuilding it: [`Tape::set_leaf`] updates the input
+//! leaves and [`Tape::replay`] re-runs the forward pass in evaluation order
+//! through the same `eval_op` code that computed the values at build time.
+//! Everything value-dependent — including support masks, which are grad-free
+//! predicate ops rather than captured constants — is recomputed on replay.
 
+use crate::error::Error;
 use crate::linalg;
 use crate::special;
 use crate::tensor::{GatherMap, Tensor};
@@ -12,6 +21,15 @@ use crate::tensor::{GatherMap, Tensor};
 /// Handle to a tape node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Var(usize);
+
+/// Comparison predicate materialized as a 0.0/1.0 mask tensor.
+#[derive(Debug, Clone, Copy)]
+enum CmpKind {
+    Ge,
+    Gt,
+    Le,
+    Lt,
+}
 
 #[derive(Debug, Clone)]
 enum Op {
@@ -38,11 +56,12 @@ enum Op {
     /// Zeros of `len`, with parent segments scattered to fixed positions:
     /// out[positions[i]] = parent[i] for each (parent, positions) pair.
     Scatter {
+        len: usize,
         parts: Vec<(Var, Vec<usize>)>,
     },
     /// Elementwise select: cond ? then_v : else_v (all broadcast together).
     Where {
-        cond: Tensor,
+        cond: Var,
         then_v: Var,
         else_v: Var,
     },
@@ -64,15 +83,251 @@ enum Op {
     SolveLower(Var, Var),
     /// Concatenate along the last axis (equal leading dims).
     ConcatLast(Vec<Var>),
-    /// Materialized broadcast to a wider shape.
-    Broadcast(Var),
-    Reshape(Var),
+    /// Materialized broadcast to the stored shape.
+    Broadcast(Var, Vec<usize>),
+    Reshape(Var, Vec<usize>),
+    /// Grad-free 0.0/1.0 comparison mask with broadcasting.
+    Cmp(CmpKind, Var, Var),
+    /// Grad-free logical AND of two 0.0/1.0 masks with broadcasting.
+    And(Var, Var),
+    /// Grad-free elementwise "is an integer" mask.
+    IsInteger(Var),
+    /// Grad-free scalar mask: 1.0 iff the rank-1 parent strictly increases.
+    IsStrictlyIncreasing(Var),
+    /// out[row] = base[row * k + clamp(index[row], 0, k-1)] along the last
+    /// axis of `base`; the index is re-read per evaluation (grad flows
+    /// through `base` only).
+    TakeAlongLast {
+        base: Var,
+        index: Var,
+    },
 }
 
 struct Node {
     value: Tensor,
     op: Op,
     requires_grad: bool,
+    /// Depends (through any op, including grad-free masks) on an input leaf,
+    /// so its value must be recomputed on replay.
+    dynamic: bool,
+}
+
+/// Forward evaluation of one op from its parents' current values. This is
+/// the single implementation shared by graph construction and [`Tape::replay`],
+/// so a replayed tape is bit-identical to a freshly built one.
+fn eval_op(nodes: &[Node], op: &Op) -> Tensor {
+    let value = |v: &Var| -> &Tensor { &nodes[v.0].value };
+    match op {
+        Op::Leaf => unreachable!("leaf values are assigned, not computed"),
+        Op::Add(a, b) => value(a)
+            .binary(value(b), |x, y| x + y)
+            .expect("shapes broadcast"),
+        Op::Sub(a, b) => value(a)
+            .binary(value(b), |x, y| x - y)
+            .expect("shapes broadcast"),
+        Op::Mul(a, b) => value(a)
+            .binary(value(b), |x, y| x * y)
+            .expect("shapes broadcast"),
+        Op::Div(a, b) => value(a)
+            .binary(value(b), |x, y| x / y)
+            .expect("shapes broadcast"),
+        Op::Neg(a) => value(a).map(|x| -x),
+        Op::Exp(a) => value(a).map(f64::exp),
+        Op::Ln(a) => value(a).map(f64::ln),
+        Op::Ln1p(a) => value(a).map(f64::ln_1p),
+        Op::Sigmoid(a) => value(a).map(special::sigmoid),
+        Op::Softplus(a) => value(a).map(special::softplus),
+        Op::Gammaln(a) => value(a).map(special::gammaln),
+        Op::Xlogy(a, b) => value(a)
+            .binary(value(b), special::xlogy)
+            .expect("shapes broadcast"),
+        Op::Sum(a) => Tensor::scalar(value(a).sum()),
+        Op::Gather(a, map) => {
+            let parent = value(a);
+            let data: Vec<f64> = map.map.iter().map(|&i| parent.data()[i]).collect();
+            Tensor::from_vec(map.out_shape.clone(), data)
+        }
+        Op::Scatter { len, parts } => {
+            let mut data = vec![0.0; *len];
+            for (var, positions) in parts {
+                let src = value(var);
+                assert_eq!(
+                    src.len(),
+                    positions.len(),
+                    "scatter segment length mismatch"
+                );
+                for (v, &pos) in src.data().iter().zip(positions.iter()) {
+                    data[pos] = *v;
+                }
+            }
+            Tensor::from_vec(vec![*len], data)
+        }
+        Op::Where {
+            cond,
+            then_v,
+            else_v,
+        } => {
+            let shape = Tensor::broadcast_shapes(value(cond).shape(), value(then_v).shape())
+                .and_then(|s| Tensor::broadcast_shapes(&s, value(else_v).shape()))
+                .expect("shapes broadcast");
+            let cond_b = value(cond).broadcast_to(&shape).expect("cond broadcasts");
+            let then_b = value(then_v).broadcast_to(&shape).expect("then broadcasts");
+            let else_b = value(else_v).broadcast_to(&shape).expect("else broadcasts");
+            let data: Vec<f64> = cond_b
+                .data()
+                .iter()
+                .zip(then_b.data().iter().zip(else_b.data()))
+                .map(|(&c, (&t, &e))| if c != 0.0 { t } else { e })
+                .collect();
+            Tensor::from_vec(shape, data)
+        }
+        Op::OrderedInverse(a) => {
+            let y = value(a);
+            let mut data = Vec::with_capacity(y.len());
+            let mut acc = y.data()[0];
+            data.push(acc);
+            for &yi in &y.data()[1..] {
+                acc += yi.exp();
+                data.push(acc);
+            }
+            Tensor::from_vec(vec![y.len()], data)
+        }
+        Op::NormalLogProb {
+            value: x,
+            loc,
+            scale,
+        } => {
+            let shape = Tensor::broadcast_shapes(value(x).shape(), value(loc).shape())
+                .and_then(|shape| Tensor::broadcast_shapes(&shape, value(scale).shape()))
+                .expect("Normal log_prob shapes broadcast");
+            let value_b = value(x).broadcast_to(&shape).expect("value broadcasts");
+            let loc_b = value(loc).broadcast_to(&shape).expect("loc broadcasts");
+            let scale_b = value(scale).broadcast_to(&shape).expect("scale broadcasts");
+            let half_log_2pi = 0.5 * (2.0 * std::f64::consts::PI).ln();
+            let data = value_b
+                .data()
+                .iter()
+                .zip(loc_b.data())
+                .zip(scale_b.data())
+                .map(|((&x, &m), &s)| {
+                    let delta = x - m;
+                    let standardized = delta / s;
+                    let sq = standardized * standardized;
+                    let term = -0.5 * sq;
+                    let term = term - s.ln();
+                    term - half_log_2pi
+                })
+                .collect();
+            Tensor::from_vec(shape, data)
+        }
+        Op::MultivariateNormalLogProb {
+            value: x,
+            mean,
+            scale_tril,
+        } => {
+            let l_t = value(scale_tril);
+            let n = l_t.shape()[0];
+            let value_b = value(x)
+                .broadcast_to(&[n])
+                .expect("value broadcasts to event shape");
+            let mean_b = value(mean)
+                .broadcast_to(&[n])
+                .expect("mean broadcasts to event shape");
+            let delta: Vec<f64> = value_b
+                .data()
+                .iter()
+                .zip(mean_b.data())
+                .map(|(&x, &m)| x - m)
+                .collect();
+            let solved = linalg::solve_lower(n, l_t.data(), &delta);
+            let quadratic: f64 = solved.iter().map(|z| z * z).sum();
+            let log_det: f64 = (0..n).map(|i| l_t.data()[i * n + i].ln()).sum();
+            let term = -0.5 * quadratic;
+            let term = term - log_det;
+            let logp = term - 0.5 * (n as f64) * (2.0 * std::f64::consts::PI).ln();
+            Tensor::scalar(logp)
+        }
+        Op::SolveLower(l, b) => {
+            let l_t = value(l);
+            let b_t = value(b);
+            let n = l_t.shape()[0];
+            let x = linalg::solve_lower(n, l_t.data(), b_t.data());
+            Tensor::from_vec(vec![n], x)
+        }
+        Op::ConcatLast(parts) => {
+            let first = value(&parts[0]);
+            let lead = first.shape()[..first.rank() - 1].to_vec();
+            let rows: usize = lead.iter().product();
+            let mut last_total = 0usize;
+            for part in parts {
+                let t = value(part);
+                last_total += t.shape()[t.rank() - 1];
+            }
+            let mut data = Vec::with_capacity(rows * last_total);
+            for row in 0..rows {
+                for part in parts {
+                    let t = value(part);
+                    let w = t.shape()[t.rank() - 1];
+                    data.extend_from_slice(&t.data()[row * w..(row + 1) * w]);
+                }
+            }
+            let mut shape = lead;
+            shape.push(last_total);
+            Tensor::from_vec(shape, data)
+        }
+        Op::Broadcast(a, shape) => value(a).broadcast_to(shape).expect("shape broadcasts"),
+        Op::Reshape(a, shape) => value(a)
+            .reshape(shape.clone())
+            .expect("reshape size matches"),
+        Op::Cmp(kind, a, b) => value(a)
+            .binary(value(b), |x, y| {
+                let holds = match kind {
+                    CmpKind::Ge => x >= y,
+                    CmpKind::Gt => x > y,
+                    CmpKind::Le => x <= y,
+                    CmpKind::Lt => x < y,
+                };
+                if holds {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .expect("shapes broadcast"),
+        Op::And(a, b) => value(a)
+            .binary(
+                value(b),
+                |x, y| {
+                    if x != 0.0 && y != 0.0 {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                },
+            )
+            .expect("shapes broadcast"),
+        Op::IsInteger(a) => value(a).map(|x| if x == x.floor() { 1.0 } else { 0.0 }),
+        Op::IsStrictlyIncreasing(a) => {
+            let data = value(a).data();
+            let increasing = data.windows(2).all(|w| w[1] > w[0]);
+            Tensor::scalar(if increasing { 1.0 } else { 0.0 })
+        }
+        Op::TakeAlongLast { base, index } => {
+            let base_t = value(base);
+            let idx = value(index);
+            let k = *base_t.shape().last().expect("base has rank >= 1");
+            let data: Vec<f64> = idx
+                .data()
+                .iter()
+                .enumerate()
+                .map(|(row, &raw)| {
+                    let clipped = raw.clamp(0.0, (k - 1) as f64);
+                    base_t.data()[row * k + clipped as usize]
+                })
+                .collect();
+            Tensor::from_vec(idx.shape().to_vec(), data)
+        }
+    }
 }
 
 #[derive(Default)]
@@ -93,23 +348,108 @@ impl Tape {
         self.nodes[v.0].requires_grad
     }
 
-    fn push(&mut self, value: Tensor, op: Op, requires_grad: bool) -> Var {
+    /// Whether any parent (through any op, including grad-free masks)
+    /// depends on an input leaf.
+    fn op_dynamic(&self, op: &Op) -> bool {
+        let dynamic = |v: &Var| self.nodes[v.0].dynamic;
+        match op {
+            Op::Leaf => false,
+            Op::Add(a, b)
+            | Op::Sub(a, b)
+            | Op::Mul(a, b)
+            | Op::Div(a, b)
+            | Op::Xlogy(a, b)
+            | Op::SolveLower(a, b)
+            | Op::Cmp(_, a, b)
+            | Op::And(a, b) => dynamic(a) || dynamic(b),
+            Op::Neg(a)
+            | Op::Exp(a)
+            | Op::Ln(a)
+            | Op::Ln1p(a)
+            | Op::Sigmoid(a)
+            | Op::Softplus(a)
+            | Op::Gammaln(a)
+            | Op::Sum(a)
+            | Op::Gather(a, _)
+            | Op::OrderedInverse(a)
+            | Op::Broadcast(a, _)
+            | Op::Reshape(a, _)
+            | Op::IsInteger(a)
+            | Op::IsStrictlyIncreasing(a) => dynamic(a),
+            Op::Scatter { parts, .. } => parts.iter().any(|(v, _)| dynamic(v)),
+            Op::Where {
+                cond,
+                then_v,
+                else_v,
+            } => dynamic(cond) || dynamic(then_v) || dynamic(else_v),
+            Op::NormalLogProb { value, loc, scale } => {
+                dynamic(value) || dynamic(loc) || dynamic(scale)
+            }
+            Op::MultivariateNormalLogProb {
+                value,
+                mean,
+                scale_tril,
+            } => dynamic(value) || dynamic(mean) || dynamic(scale_tril),
+            Op::ConcatLast(parts) => parts.iter().any(dynamic),
+            Op::TakeAlongLast { base, index } => dynamic(base) || dynamic(index),
+        }
+    }
+
+    /// Evaluate `op` from its parents' current values and push the node.
+    fn push_op(&mut self, op: Op, requires_grad: bool) -> Var {
+        let value = eval_op(&self.nodes, &op);
+        let dynamic = self.op_dynamic(&op);
         self.nodes.push(Node {
             value,
             op,
             requires_grad,
+            dynamic,
         });
         Var(self.nodes.len() - 1)
     }
 
-    /// A constant leaf (no gradient).
+    /// A constant leaf (no gradient, never recomputed).
     pub fn constant(&mut self, value: Tensor) -> Var {
-        self.push(value, Op::Leaf, false)
+        self.nodes.push(Node {
+            value,
+            op: Op::Leaf,
+            requires_grad: false,
+            dynamic: false,
+        });
+        Var(self.nodes.len() - 1)
     }
 
-    /// An input leaf that participates in gradients.
+    /// An input leaf that participates in gradients and can be updated
+    /// between replays via [`Tape::set_leaf`].
     pub fn input(&mut self, value: Tensor) -> Var {
-        self.push(value, Op::Leaf, true)
+        self.nodes.push(Node {
+            value,
+            op: Op::Leaf,
+            requires_grad: true,
+            dynamic: true,
+        });
+        Var(self.nodes.len() - 1)
+    }
+
+    /// Overwrite an input leaf's data in place (same shape).
+    pub fn set_leaf(&mut self, v: Var, data: &[f64]) {
+        let node = &mut self.nodes[v.0];
+        debug_assert!(matches!(node.op, Op::Leaf), "set_leaf targets leaves");
+        node.value.data_mut().copy_from_slice(data);
+    }
+
+    /// Re-run the forward pass in evaluation order, recomputing every node
+    /// that depends on an input leaf. Uses the same `eval_op` code path as
+    /// graph construction, so results are bit-identical to a fresh build.
+    pub fn replay(&mut self) {
+        for i in 0..self.nodes.len() {
+            let (prev, rest) = self.nodes.split_at_mut(i);
+            let node = &mut rest[0];
+            if matches!(node.op, Op::Leaf) || !node.dynamic {
+                continue;
+            }
+            node.value = eval_op(prev, &node.op);
+        }
     }
 
     fn binary_grad(&self, a: Var, b: Var) -> bool {
@@ -117,158 +457,93 @@ impl Tape {
     }
 
     pub fn add(&mut self, a: Var, b: Var) -> Var {
-        let value = self
-            .value(a)
-            .binary(self.value(b), |x, y| x + y)
-            .expect("shapes broadcast");
         let grad = self.binary_grad(a, b);
-        self.push(value, Op::Add(a, b), grad)
+        self.push_op(Op::Add(a, b), grad)
     }
 
     pub fn sub(&mut self, a: Var, b: Var) -> Var {
-        let value = self
-            .value(a)
-            .binary(self.value(b), |x, y| x - y)
-            .expect("shapes broadcast");
         let grad = self.binary_grad(a, b);
-        self.push(value, Op::Sub(a, b), grad)
+        self.push_op(Op::Sub(a, b), grad)
     }
 
     pub fn mul(&mut self, a: Var, b: Var) -> Var {
-        let value = self
-            .value(a)
-            .binary(self.value(b), |x, y| x * y)
-            .expect("shapes broadcast");
         let grad = self.binary_grad(a, b);
-        self.push(value, Op::Mul(a, b), grad)
+        self.push_op(Op::Mul(a, b), grad)
     }
 
     pub fn div(&mut self, a: Var, b: Var) -> Var {
-        let value = self
-            .value(a)
-            .binary(self.value(b), |x, y| x / y)
-            .expect("shapes broadcast");
         let grad = self.binary_grad(a, b);
-        self.push(value, Op::Div(a, b), grad)
+        self.push_op(Op::Div(a, b), grad)
     }
 
     pub fn neg(&mut self, a: Var) -> Var {
-        let value = self.value(a).map(|x| -x);
         let grad = self.requires_grad(a);
-        self.push(value, Op::Neg(a), grad)
+        self.push_op(Op::Neg(a), grad)
     }
 
     pub fn exp(&mut self, a: Var) -> Var {
-        let value = self.value(a).map(f64::exp);
         let grad = self.requires_grad(a);
-        self.push(value, Op::Exp(a), grad)
+        self.push_op(Op::Exp(a), grad)
     }
 
     pub fn ln(&mut self, a: Var) -> Var {
-        let value = self.value(a).map(f64::ln);
         let grad = self.requires_grad(a);
-        self.push(value, Op::Ln(a), grad)
+        self.push_op(Op::Ln(a), grad)
     }
 
     pub fn ln_1p(&mut self, a: Var) -> Var {
-        let value = self.value(a).map(f64::ln_1p);
         let grad = self.requires_grad(a);
-        self.push(value, Op::Ln1p(a), grad)
+        self.push_op(Op::Ln1p(a), grad)
     }
 
     pub fn sigmoid(&mut self, a: Var) -> Var {
-        let value = self.value(a).map(special::sigmoid);
         let grad = self.requires_grad(a);
-        self.push(value, Op::Sigmoid(a), grad)
+        self.push_op(Op::Sigmoid(a), grad)
     }
 
     pub fn softplus(&mut self, a: Var) -> Var {
-        let value = self.value(a).map(special::softplus);
         let grad = self.requires_grad(a);
-        self.push(value, Op::Softplus(a), grad)
+        self.push_op(Op::Softplus(a), grad)
     }
 
     pub fn gammaln(&mut self, a: Var) -> Var {
-        let value = self.value(a).map(special::gammaln);
         let grad = self.requires_grad(a);
-        self.push(value, Op::Gammaln(a), grad)
+        self.push_op(Op::Gammaln(a), grad)
     }
 
     pub fn xlogy(&mut self, a: Var, b: Var) -> Var {
-        let value = self
-            .value(a)
-            .binary(self.value(b), special::xlogy)
-            .expect("shapes broadcast");
         let grad = self.binary_grad(a, b);
-        self.push(value, Op::Xlogy(a, b), grad)
+        self.push_op(Op::Xlogy(a, b), grad)
     }
 
     pub fn sum(&mut self, a: Var) -> Var {
-        let value = Tensor::scalar(self.value(a).sum());
         let grad = self.requires_grad(a);
-        self.push(value, Op::Sum(a), grad)
+        self.push_op(Op::Sum(a), grad)
     }
 
     pub fn gather(&mut self, a: Var, map: GatherMap) -> Var {
-        let parent = self.value(a);
-        let data: Vec<f64> = map.map.iter().map(|&i| parent.data()[i]).collect();
-        let value = Tensor::from_vec(map.out_shape.clone(), data);
         let grad = self.requires_grad(a);
-        self.push(value, Op::Gather(a, map), grad)
+        self.push_op(Op::Gather(a, map), grad)
     }
 
     /// Assemble a rank-1 vector of length `len` from scattered segments.
     /// Positions must be in-bounds; later writes win on overlap (JAX
     /// `.at[].set` chaining), though the IR validates disjointness upstream.
     pub fn scatter(&mut self, len: usize, parts: Vec<(Var, Vec<usize>)>) -> Var {
-        let mut data = vec![0.0; len];
-        let mut grad = false;
-        for (var, positions) in &parts {
-            let src = self.value(*var);
-            assert_eq!(
-                src.len(),
-                positions.len(),
-                "scatter segment length mismatch"
-            );
-            for (value, &pos) in src.data().iter().zip(positions.iter()) {
-                data[pos] = *value;
-            }
-            grad |= self.requires_grad(*var);
-        }
-        self.push(
-            Tensor::from_vec(vec![len], data),
-            Op::Scatter { parts },
-            grad,
-        )
+        let grad = parts.iter().any(|(var, _)| self.requires_grad(*var));
+        self.push_op(Op::Scatter { len, parts }, grad)
     }
 
     /// Elementwise select with broadcasting; gradient flows through the
     /// selected branch only (select semantics, not masked multiply, so an
-    /// infinite adjoint cannot poison the unselected branch).
-    pub fn where_select(&mut self, cond: Tensor, then_v: Var, else_v: Var) -> Var {
-        let shape = Tensor::broadcast_shapes(cond.shape(), self.value(then_v).shape())
-            .and_then(|s| Tensor::broadcast_shapes(&s, self.value(else_v).shape()))
-            .expect("shapes broadcast");
-        let cond_b = cond.broadcast_to(&shape).expect("cond broadcasts");
-        let then_b = self
-            .value(then_v)
-            .broadcast_to(&shape)
-            .expect("then broadcasts");
-        let else_b = self
-            .value(else_v)
-            .broadcast_to(&shape)
-            .expect("else broadcasts");
-        let data: Vec<f64> = cond_b
-            .data()
-            .iter()
-            .zip(then_b.data().iter().zip(else_b.data()))
-            .map(|(&c, (&t, &e))| if c != 0.0 { t } else { e })
-            .collect();
+    /// infinite adjoint cannot poison the unselected branch). The condition
+    /// is a tape var — typically a grad-free mask — so it is recomputed when
+    /// the tape is replayed at a new point.
+    pub fn where_select(&mut self, cond: Var, then_v: Var, else_v: Var) -> Var {
         let grad = self.binary_grad(then_v, else_v);
-        self.push(
-            Tensor::from_vec(shape, data),
+        self.push_op(
             Op::Where {
-                cond: cond_b,
+                cond,
                 then_v,
                 else_v,
             },
@@ -276,60 +551,78 @@ impl Tape {
         )
     }
 
+    /// Grad-free elementwise `a >= b` mask (1.0/0.0) with broadcasting.
+    pub fn ge(&mut self, a: Var, b: Var) -> Result<Var, Error> {
+        self.cmp(CmpKind::Ge, a, b)
+    }
+
+    /// Grad-free elementwise `a > b` mask (1.0/0.0) with broadcasting.
+    pub fn gt(&mut self, a: Var, b: Var) -> Result<Var, Error> {
+        self.cmp(CmpKind::Gt, a, b)
+    }
+
+    /// Grad-free elementwise `a <= b` mask (1.0/0.0) with broadcasting.
+    pub fn le(&mut self, a: Var, b: Var) -> Result<Var, Error> {
+        self.cmp(CmpKind::Le, a, b)
+    }
+
+    /// Grad-free elementwise `a < b` mask (1.0/0.0) with broadcasting.
+    pub fn lt(&mut self, a: Var, b: Var) -> Result<Var, Error> {
+        self.cmp(CmpKind::Lt, a, b)
+    }
+
+    fn cmp(&mut self, kind: CmpKind, a: Var, b: Var) -> Result<Var, Error> {
+        Tensor::broadcast_shapes(self.value(a).shape(), self.value(b).shape())?;
+        Ok(self.push_op(Op::Cmp(kind, a, b), false))
+    }
+
+    /// Grad-free logical AND of two 0.0/1.0 masks with broadcasting.
+    pub fn and(&mut self, a: Var, b: Var) -> Result<Var, Error> {
+        Tensor::broadcast_shapes(self.value(a).shape(), self.value(b).shape())?;
+        Ok(self.push_op(Op::And(a, b), false))
+    }
+
+    /// Grad-free elementwise "is an integer" mask (1.0/0.0).
+    pub fn is_integer(&mut self, a: Var) -> Var {
+        self.push_op(Op::IsInteger(a), false)
+    }
+
+    /// Grad-free scalar mask: 1.0 iff the rank-1 input strictly increases.
+    pub fn is_strictly_increasing(&mut self, a: Var) -> Var {
+        assert_eq!(self.value(a).rank(), 1, "expects a rank-1 input");
+        self.push_op(Op::IsStrictlyIncreasing(a), false)
+    }
+
+    /// `out[row] = base[row, clamp(index[row], 0, k-1)]` along the last axis
+    /// of `base`. Indices are re-read per evaluation; gradient flows through
+    /// `base` only.
+    pub fn take_along_last(&mut self, base: Var, index: Var) -> Var {
+        let base_shape = self.value(base).shape();
+        assert!(!base_shape.is_empty(), "base must have rank >= 1");
+        assert_eq!(
+            &base_shape[..base_shape.len() - 1],
+            self.value(index).shape(),
+            "index shape must equal base leading dims"
+        );
+        let grad = self.requires_grad(base);
+        self.push_op(Op::TakeAlongLast { base, index }, grad)
+    }
+
     pub fn ordered_inverse(&mut self, a: Var) -> Var {
-        let y = self.value(a);
-        assert_eq!(y.rank(), 1, "Ordered constraint requires vector values");
-        let mut data = Vec::with_capacity(y.len());
-        let mut acc = y.data()[0];
-        data.push(acc);
-        for &yi in &y.data()[1..] {
-            acc += yi.exp();
-            data.push(acc);
-        }
+        assert_eq!(
+            self.value(a).rank(),
+            1,
+            "Ordered constraint requires vector values"
+        );
         let grad = self.requires_grad(a);
-        let value = Tensor::from_vec(vec![y.len()], data);
-        self.push(value, Op::OrderedInverse(a), grad)
+        self.push_op(Op::OrderedInverse(a), grad)
     }
 
     /// Elementwise Normal log probability, materialized at the broadcasted shape.
     pub fn normal_log_prob(&mut self, value: Var, loc: Var, scale: Var) -> Var {
-        let shape = Tensor::broadcast_shapes(self.value(value).shape(), self.value(loc).shape())
-            .and_then(|shape| Tensor::broadcast_shapes(&shape, self.value(scale).shape()))
-            .expect("Normal log_prob shapes broadcast");
-        let value_b = self
-            .value(value)
-            .broadcast_to(&shape)
-            .expect("value broadcasts");
-        let loc_b = self
-            .value(loc)
-            .broadcast_to(&shape)
-            .expect("loc broadcasts");
-        let scale_b = self
-            .value(scale)
-            .broadcast_to(&shape)
-            .expect("scale broadcasts");
-        let half_log_2pi = 0.5 * (2.0 * std::f64::consts::PI).ln();
-        let data = value_b
-            .data()
-            .iter()
-            .zip(loc_b.data())
-            .zip(scale_b.data())
-            .map(|((&x, &m), &s)| {
-                let delta = x - m;
-                let standardized = delta / s;
-                let sq = standardized * standardized;
-                let term = -0.5 * sq;
-                let term = term - s.ln();
-                term - half_log_2pi
-            })
-            .collect();
         let grad =
             self.requires_grad(value) || self.requires_grad(loc) || self.requires_grad(scale);
-        self.push(
-            Tensor::from_vec(shape, data),
-            Op::NormalLogProb { value, loc, scale },
-            grad,
-        )
+        self.push_op(Op::NormalLogProb { value, loc, scale }, grad)
     }
 
     /// MultivariateNormal log probability for a single rank-1 event.
@@ -338,30 +631,9 @@ impl Tape {
         assert_eq!(l_t.rank(), 2, "scale_tril must be rank-2");
         let n = l_t.shape()[0];
         assert_eq!(l_t.shape(), &[n, n], "scale_tril must be square");
-        let value_b = self
-            .value(value)
-            .broadcast_to(&[n])
-            .expect("value broadcasts to event shape");
-        let mean_b = self
-            .value(mean)
-            .broadcast_to(&[n])
-            .expect("mean broadcasts to event shape");
-        let delta: Vec<f64> = value_b
-            .data()
-            .iter()
-            .zip(mean_b.data())
-            .map(|(&x, &m)| x - m)
-            .collect();
-        let solved = linalg::solve_lower(n, l_t.data(), &delta);
-        let quadratic: f64 = solved.iter().map(|z| z * z).sum();
-        let log_det: f64 = (0..n).map(|i| l_t.data()[i * n + i].ln()).sum();
-        let term = -0.5 * quadratic;
-        let term = term - log_det;
-        let logp = term - 0.5 * (n as f64) * (2.0 * std::f64::consts::PI).ln();
         let grad =
             self.requires_grad(value) || self.requires_grad(mean) || self.requires_grad(scale_tril);
-        self.push(
-            Tensor::scalar(logp),
+        self.push_op(
             Op::MultivariateNormalLogProb {
                 value,
                 mean,
@@ -374,22 +646,18 @@ impl Tape {
     /// Solve `L x = b`, L rank-2 lower-triangular, b rank-1.
     pub fn solve_lower(&mut self, l: Var, b: Var) -> Var {
         let l_t = self.value(l);
-        let b_t = self.value(b);
         assert_eq!(l_t.rank(), 2);
         let n = l_t.shape()[0];
         assert_eq!(l_t.shape(), &[n, n]);
-        assert_eq!(b_t.shape(), &[n]);
-        let x = linalg::solve_lower(n, l_t.data(), b_t.data());
+        assert_eq!(self.value(b).shape(), &[n]);
         let grad = self.binary_grad(l, b);
-        self.push(Tensor::from_vec(vec![n], x), Op::SolveLower(l, b), grad)
+        self.push_op(Op::SolveLower(l, b), grad)
     }
 
     /// Concatenate along the last axis; all parts share leading dims.
     pub fn concat_last(&mut self, parts: Vec<Var>) -> Var {
         assert!(!parts.is_empty());
         let lead = self.value(parts[0]).shape()[..self.value(parts[0]).rank() - 1].to_vec();
-        let rows: usize = lead.iter().product();
-        let mut last_total = 0usize;
         let mut grad = false;
         for &part in &parts {
             let t = self.value(part);
@@ -399,41 +667,41 @@ impl Tape {
                 lead.as_slice(),
                 "leading dims differ"
             );
-            last_total += t.shape()[t.rank() - 1];
             grad |= self.requires_grad(part);
         }
-        let mut data = Vec::with_capacity(rows * last_total);
-        for row in 0..rows {
-            for &part in &parts {
-                let t = self.value(part);
-                let w = t.shape()[t.rank() - 1];
-                data.extend_from_slice(&t.data()[row * w..(row + 1) * w]);
-            }
-        }
-        let mut shape = lead;
-        shape.push(last_total);
-        let value = Tensor::from_vec(shape, data);
-        self.push(value, Op::ConcatLast(parts), grad)
+        self.push_op(Op::ConcatLast(parts), grad)
     }
 
     /// Materialize a broadcast of `a` to `shape`.
     pub fn broadcast(&mut self, a: Var, shape: &[usize]) -> Var {
-        let value = self.value(a).broadcast_to(shape).expect("shape broadcasts");
         let grad = self.requires_grad(a);
-        self.push(value, Op::Broadcast(a), grad)
+        self.push_op(Op::Broadcast(a, shape.to_vec()), grad)
     }
 
     pub fn reshape(&mut self, a: Var, shape: Vec<usize>) -> Var {
-        let value = self.value(a).reshape(shape).expect("reshape size matches");
         let grad = self.requires_grad(a);
-        self.push(value, Op::Reshape(a), grad)
+        self.push_op(Op::Reshape(a, shape), grad)
     }
 
     /// Reverse pass from a scalar root; returns per-node adjoints for the
     /// requested leaves.
     pub fn backward(&self, root: Var, leaves: &[Var]) -> Vec<Tensor> {
+        let mut adjoints = Vec::new();
+        self.backward_into(root, leaves, &mut adjoints)
+    }
+
+    /// [`Tape::backward`] with a caller-owned adjoint slot buffer, so
+    /// repeated evaluations reuse its allocation instead of allocating one
+    /// slot vector per gradient.
+    pub fn backward_into(
+        &self,
+        root: Var,
+        leaves: &[Var],
+        adjoints: &mut Vec<Option<Tensor>>,
+    ) -> Vec<Tensor> {
         assert_eq!(self.value(root).len(), 1, "backward needs a scalar root");
-        let mut adjoints: Vec<Option<Tensor>> = (0..self.nodes.len()).map(|_| None).collect();
+        adjoints.clear();
+        adjoints.resize(self.nodes.len(), None);
         adjoints[root.0] = Some(Tensor::scalar(1.0));
 
         for id in (0..=root.0).rev() {
@@ -443,7 +711,7 @@ impl Tape {
             let Some(adj) = adjoints[id].take() else {
                 continue;
             };
-            self.propagate(id, &adj, &mut adjoints);
+            self.propagate(id, &adj, adjoints);
             adjoints[id] = Some(adj);
         }
 
@@ -475,6 +743,9 @@ impl Tape {
     fn propagate(&self, id: usize, adj: &Tensor, adjoints: &mut [Option<Tensor>]) {
         match &self.nodes[id].op {
             Op::Leaf => {}
+            // Grad-free masks never require gradients, so propagate is never
+            // called on them.
+            Op::Cmp(..) | Op::And(..) | Op::IsInteger(..) | Op::IsStrictlyIncreasing(..) => {}
             Op::Add(a, b) => {
                 self.accumulate(adjoints, *a, adj.clone());
                 self.accumulate(adjoints, *b, adj.clone());
@@ -569,7 +840,7 @@ impl Tape {
                 }
                 self.accumulate(adjoints, *a, grad);
             }
-            Op::Scatter { parts } => {
+            Op::Scatter { parts, .. } => {
                 for (var, positions) in parts {
                     if !self.requires_grad(*var) {
                         continue;
@@ -584,8 +855,12 @@ impl Tape {
                 then_v,
                 else_v,
             } => {
+                let cond_b = self
+                    .value(*cond)
+                    .broadcast_to(self.nodes[id].value.shape())
+                    .expect("cond broadcasts");
                 if self.requires_grad(*then_v) {
-                    let data: Vec<f64> = cond
+                    let data: Vec<f64> = cond_b
                         .data()
                         .iter()
                         .zip(adj.data())
@@ -598,7 +873,7 @@ impl Tape {
                     );
                 }
                 if self.requires_grad(*else_v) {
-                    let data: Vec<f64> = cond
+                    let data: Vec<f64> = cond_b
                         .data()
                         .iter()
                         .zip(adj.data())
@@ -767,13 +1042,26 @@ impl Tape {
                     offset += w;
                 }
             }
-            Op::Broadcast(a) => {
+            Op::Broadcast(a, _) => {
                 self.accumulate(adjoints, *a, adj.clone());
             }
-            Op::Reshape(a) => {
+            Op::Reshape(a, _) => {
                 let shape = self.value(*a).shape().to_vec();
                 let grad = Tensor::from_vec(shape, adj.data().to_vec());
                 self.accumulate(adjoints, *a, grad);
+            }
+            Op::TakeAlongLast { base, index } => {
+                if self.requires_grad(*base) {
+                    let base_t = self.value(*base);
+                    let idx = self.value(*index);
+                    let k = *base_t.shape().last().expect("base has rank >= 1");
+                    let mut grad = Tensor::zeros(base_t.shape());
+                    for (row, (&g, &raw)) in adj.data().iter().zip(idx.data()).enumerate() {
+                        let clipped = raw.clamp(0.0, (k - 1) as f64);
+                        grad.data_mut()[row * k + clipped as usize] += g;
+                    }
+                    self.accumulate(adjoints, *base, grad);
+                }
             }
         }
     }
@@ -956,7 +1244,8 @@ mod tests {
         let cond = Tensor::from_vec(vec![3], vec![1.0, 0.0, 1.0]);
         grad_check(
             move |t, v| {
-                let w = t.where_select(cond.clone(), v[0], v[1]);
+                let c = t.constant(cond.clone());
+                let w = t.where_select(c, v[0], v[1]);
                 t.sum(w)
             },
             &[
@@ -969,7 +1258,7 @@ mod tests {
         let mut tape = Tape::new();
         let a = tape.input(Tensor::from_vec(vec![2], vec![1.0, 2.0]));
         let inf = tape.constant(Tensor::from_vec(vec![2], vec![f64::NEG_INFINITY; 2]));
-        let cond = Tensor::from_vec(vec![2], vec![1.0, 1.0]);
+        let cond = tape.constant(Tensor::from_vec(vec![2], vec![1.0, 1.0]));
         let w = tape.where_select(cond, a, inf);
         let s = tape.sum(w);
         let grads = tape.backward(s, &[a]);
@@ -1063,5 +1352,93 @@ mod tests {
         let grads = tape.backward(s, &[x, c]);
         assert_eq!(grads[0].data(), &[3.0]);
         assert_eq!(grads[1].data(), &[0.0]); // constants report zero
+    }
+
+    #[test]
+    fn take_along_last_selects_and_routes_gradient() {
+        let mut tape = Tape::new();
+        let base = tape.input(Tensor::from_vec(vec![2, 3], vec![1., 2., 3., 4., 5., 6.]));
+        // Out-of-range indices clamp into [0, k-1], as in the JAX reference.
+        let index = tape.constant(Tensor::from_vec(vec![2], vec![2.0, -1.0]));
+        let taken = tape.take_along_last(base, index);
+        assert_eq!(tape.value(taken).data(), &[3.0, 4.0]);
+        let s = tape.sum(taken);
+        let grads = tape.backward(s, &[base]);
+        assert_eq!(grads[0].data(), &[0., 0., 1., 1., 0., 0.]);
+    }
+
+    #[test]
+    fn replay_recomputes_masks_and_selected_branches() {
+        // |x| via where(x >= 0, x, -x): replay at a negative point must flip
+        // the mask, the selected branch, and the gradient sign.
+        let mut tape = Tape::new();
+        let x = tape.input(Tensor::scalar(1.5));
+        let zero = tape.constant(Tensor::scalar(0.0));
+        let cond = tape.ge(x, zero).unwrap();
+        let neg = tape.neg(x);
+        let w = tape.where_select(cond, x, neg);
+        let s = tape.sum(w);
+        assert_eq!(tape.value(s).data(), &[1.5]);
+        assert_eq!(tape.backward(s, &[x])[0].data(), &[1.0]);
+
+        tape.set_leaf(x, &[-2.0]);
+        tape.replay();
+        assert_eq!(tape.value(s).data(), &[2.0]);
+        assert_eq!(tape.backward(s, &[x])[0].data(), &[-1.0]);
+
+        // Replaying back at the original point restores the original values.
+        tape.set_leaf(x, &[1.5]);
+        tape.replay();
+        assert_eq!(tape.value(s).data(), &[1.5]);
+        assert_eq!(tape.backward(s, &[x])[0].data(), &[1.0]);
+    }
+
+    #[test]
+    fn replay_matches_fresh_build_bitwise() {
+        let build = |t: &mut Tape, v: Var| -> Var {
+            let two = t.constant(Tensor::scalar(2.0));
+            let scaled = t.mul(v, two);
+            let e = t.exp(scaled);
+            let sp = t.softplus(v);
+            let g = t.gammaln(e);
+            let zero = t.constant(Tensor::scalar(0.0));
+            let mask = t.gt(v, zero).unwrap();
+            let picked = t.where_select(mask, g, sp);
+            t.sum(picked)
+        };
+        let q0 = Tensor::from_vec(vec![3], vec![0.5, -1.25, 2.0]);
+        let q1 = Tensor::from_vec(vec![3], vec![-0.75, 0.3, 1.1]);
+
+        let mut replayed = Tape::new();
+        let x = replayed.input(q0.clone());
+        let root = build(&mut replayed, x);
+        replayed.set_leaf(x, q1.data());
+        replayed.replay();
+
+        let mut fresh = Tape::new();
+        let y = fresh.input(q1);
+        let fresh_root = build(&mut fresh, y);
+
+        assert_eq!(replayed.value(root).data(), fresh.value(fresh_root).data());
+        assert_eq!(
+            replayed.backward(root, &[x])[0].data(),
+            fresh.backward(fresh_root, &[y])[0].data()
+        );
+    }
+
+    #[test]
+    fn replay_skips_constant_subtrees() {
+        let mut tape = Tape::new();
+        let c = tape.constant(Tensor::scalar(3.0));
+        let c2 = tape.exp(c);
+        let x = tape.input(Tensor::scalar(1.0));
+        let p = tape.mul(c2, x);
+        let s = tape.sum(p);
+        tape.set_leaf(x, &[2.0]);
+        tape.replay();
+        assert_eq!(tape.value(s).data(), &[2.0 * 3.0f64.exp()]);
+        // The constant subtree keeps its value without recomputation
+        // (dynamic=false); observable only through correctness here.
+        assert_eq!(tape.value(c2).data(), &[3.0f64.exp()]);
     }
 }

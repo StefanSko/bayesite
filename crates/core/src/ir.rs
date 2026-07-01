@@ -8,6 +8,23 @@
 use crate::error::{Error, ErrorKind};
 use crate::json::Value;
 
+/// Maximum expression nesting depth accepted by the decoder and enforced
+/// again by `Posterior::new` for programmatically built metadata. Expression
+/// decoding and evaluation both recurse per nesting level, so this bound is
+/// what turns a deeply nested `BinOp` chain into a typed error instead of a
+/// stack overflow.
+pub const MAX_EXPR_DEPTH: usize = 128;
+
+pub(crate) fn expr_too_deep() -> Error {
+    Error::new(
+        ErrorKind::MalformedDocument,
+        format!(
+            "expression nesting exceeds the supported depth of {MAX_EXPR_DEPTH}; \
+             restructure the expression (e.g. balance long operator chains)"
+        ),
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOpKind {
     Add,
@@ -305,6 +322,13 @@ fn node_tag(value: &Value) -> Option<&str> {
 }
 
 fn decode_expr(value: &Value) -> Result<Expr, Error> {
+    decode_expr_at(value, 0)
+}
+
+fn decode_expr_at(value: &Value, depth: usize) -> Result<Expr, Error> {
+    if depth >= MAX_EXPR_DEPTH {
+        return Err(expr_too_deep());
+    }
     // Union fields: a bare scalar is a constant; an object is a node.
     match value {
         Value::Int(i) => return Ok(Expr::Const(*i as f64)),
@@ -340,8 +364,8 @@ fn decode_expr(value: &Value) -> Result<Expr, Error> {
                     )))
                 }
             };
-            let left = decode_expr(node.field("left")?)?;
-            let right = decode_expr(node.field("right")?)?;
+            let left = decode_expr_at(node.field("left")?, depth + 1)?;
+            let right = decode_expr_at(node.field("right")?, depth + 1)?;
             Expr::Bin {
                 op,
                 left: Box::new(left),
@@ -359,26 +383,26 @@ fn decode_expr(value: &Value) -> Result<Expr, Error> {
                     )))
                 }
             };
-            let operand = decode_expr(node.field("operand")?)?;
+            let operand = decode_expr_at(node.field("operand")?, depth + 1)?;
             Expr::Unary {
                 function,
                 operand: Box::new(operand),
             }
         }
         "IndexOp" => {
-            let base = decode_expr(node.field("base")?)?;
-            let index = decode_index_spec(node.field("index")?)?;
+            let base = decode_expr_at(node.field("base")?, depth + 1)?;
+            let index = decode_index_spec_at(node.field("index")?, depth + 1)?;
             Expr::Index {
                 base: Box::new(base),
                 index,
             }
         }
         "VectorScatterOp" => Expr::VectorScatter {
-            length: Box::new(decode_expr(node.field("length")?)?),
-            observed_idx: Box::new(decode_expr(node.field("observed_idx")?)?),
-            observed_values: Box::new(decode_expr(node.field("observed_values")?)?),
-            missing_idx: Box::new(decode_expr(node.field("missing_idx")?)?),
-            missing_values: Box::new(decode_expr(node.field("missing_values")?)?),
+            length: Box::new(decode_expr_at(node.field("length")?, depth + 1)?),
+            observed_idx: Box::new(decode_expr_at(node.field("observed_idx")?, depth + 1)?),
+            observed_values: Box::new(decode_expr_at(node.field("observed_values")?, depth + 1)?),
+            missing_idx: Box::new(decode_expr_at(node.field("missing_idx")?, depth + 1)?),
+            missing_values: Box::new(decode_expr_at(node.field("missing_values")?, depth + 1)?),
         },
         other => return Err(unknown_tag(other, "an expression")),
     };
@@ -396,10 +420,15 @@ fn unknown_tag(tag: &str, context: &str) -> Error {
     )
 }
 
-fn decode_index_spec(value: &Value) -> Result<IndexSpec, Error> {
+fn decode_index_spec_at(value: &Value, depth: usize) -> Result<IndexSpec, Error> {
+    if depth >= MAX_EXPR_DEPTH {
+        return Err(expr_too_deep());
+    }
     let mut node = NodeFields::open(value)?;
     let spec = match node.tag {
-        "ScalarIndex" => IndexSpec::Scalar(Box::new(decode_expr(node.field("expr")?)?)),
+        "ScalarIndex" => {
+            IndexSpec::Scalar(Box::new(decode_expr_at(node.field("expr")?, depth + 1)?))
+        }
         "FullSlice" => IndexSpec::Full,
         "IndexTuple" => {
             let items = node
@@ -408,7 +437,7 @@ fn decode_index_spec(value: &Value) -> Result<IndexSpec, Error> {
                 .ok_or_else(|| malformed("IndexTuple items must be an array"))?;
             let mut specs = Vec::with_capacity(items.len());
             for item in items {
-                let spec = decode_index_spec(item)?;
+                let spec = decode_index_spec_at(item, depth + 1)?;
                 if matches!(spec, IndexSpec::Tuple(_)) {
                     return Err(malformed("nested index tuples are not supported"));
                 }

@@ -197,3 +197,28 @@ fn map_entry_without_name_value_is_malformed() {
     let err = decode_model(&doc).unwrap_err();
     assert_eq!(err.kind, ErrorKind::MalformedDocument);
 }
+
+/// A left-deep BinOp chain of `nodes` BinOp nodes as the Normal `loc`.
+fn deep_binop_param(nodes: usize) -> String {
+    let mut expr = String::from("0.0");
+    for _ in 0..nodes {
+        expr = format!(r#"{{"node": "BinOp", "op": "+", "left": {expr}, "right": 1.0}}"#);
+    }
+    NORMAL_PARAM.replace(r#"{"node": "ConstNode", "value": 0.0}"#, &expr)
+}
+
+#[test]
+fn expression_nesting_at_the_depth_limit_decodes() {
+    let entry = deep_binop_param(bayesite_core::ir::MAX_EXPR_DEPTH - 1);
+    let doc = json::parse(&minimal_model(&entry)).unwrap();
+    decode_model(&doc).unwrap();
+}
+
+#[test]
+fn expression_nesting_beyond_the_depth_limit_is_a_typed_error_not_a_crash() {
+    let entry = deep_binop_param(bayesite_core::ir::MAX_EXPR_DEPTH);
+    let doc = json::parse(&minimal_model(&entry)).unwrap();
+    let err = decode_model(&doc).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err.message.contains("nesting"), "message: {}", err.message);
+}

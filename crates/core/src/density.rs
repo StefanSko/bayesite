@@ -7,7 +7,7 @@
 
 use crate::error::{Error, ErrorKind};
 use crate::tape::{Tape, Var};
-use crate::tensor::{slice_last_map, GatherMap, Tensor};
+use crate::tensor::{slice_last_map, Tensor};
 
 /// A distribution with its parameter expressions evaluated to tape vars.
 pub enum DistVars {
@@ -71,31 +71,19 @@ fn scalar(tape: &mut Tape, v: f64) -> Var {
     tape.constant(Tensor::scalar(v))
 }
 
-/// Boolean (0.0/1.0) comparison tensor from forward values, broadcasting.
-fn cmp(a: &Tensor, b: &Tensor, f: impl Fn(f64, f64) -> bool) -> Result<Tensor, Error> {
-    a.binary(b, |x, y| if f(x, y) { 1.0 } else { 0.0 })
-}
-
-fn and(a: &Tensor, b: &Tensor) -> Result<Tensor, Error> {
-    a.binary(b, |x, y| if x != 0.0 && y != 0.0 { 1.0 } else { 0.0 })
-}
-
-fn is_integer_mask(v: &Tensor) -> Tensor {
-    v.map(|x| if x == x.floor() { 1.0 } else { 0.0 })
-}
-
 /// `jnp.clip(x, lo, hi)` as two selects; gradient flows where unclipped.
+/// Masks are grad-free tape ops, so clipping recomputes on replay.
 fn clip(tape: &mut Tape, x: Var, lo: f64, hi: f64) -> Result<Var, Error> {
     let lo_var = scalar(tape, lo);
-    let above = cmp(tape.value(x), &Tensor::scalar(lo), |a, b| a >= b)?;
+    let above = tape.ge(x, lo_var)?;
     let clipped_lo = tape.where_select(above, x, lo_var);
     let hi_var = scalar(tape, hi);
-    let below = cmp(tape.value(clipped_lo), &Tensor::scalar(hi), |a, b| a <= b)?;
+    let below = tape.le(clipped_lo, hi_var)?;
     Ok(tape.where_select(below, clipped_lo, hi_var))
 }
 
 /// Where with a -inf fallback, the standard support mask.
-fn mask_support(tape: &mut Tape, support: Tensor, log_density: Var) -> Var {
+fn mask_support(tape: &mut Tape, support: Var, log_density: Var) -> Var {
     let neg_inf = tape.constant(Tensor::scalar(f64::NEG_INFINITY));
     tape.where_select(support, log_density, neg_inf)
 }
@@ -113,7 +101,8 @@ pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Err
             let half = scalar(tape, 0.5);
             let half_sq = tape.mul(half, sq);
             let log_density = tape.sub(term, half_sq);
-            let support = cmp(tape.value(value), &Tensor::scalar(0.0), |v, z| v >= z)?;
+            let zero = scalar(tape, 0.0);
+            let support = tape.ge(value, zero)?;
             Ok(mask_support(tape, support, log_density))
         }
         DistVars::StudentT { df, loc, scale } => {
@@ -144,26 +133,29 @@ pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Err
             let log_rate = tape.ln(*rate);
             let rate_v = tape.mul(*rate, value);
             let log_density = tape.sub(log_rate, rate_v);
-            let support = cmp(tape.value(value), &Tensor::scalar(0.0), |v, z| v >= z)?;
+            let zero = scalar(tape, 0.0);
+            let support = tape.ge(value, zero)?;
             Ok(mask_support(tape, support, log_density))
         }
         DistVars::Uniform { low, high } => {
             let width = tape.sub(*high, *low);
             let log_width = tape.ln(width);
             let log_density = tape.neg(log_width);
-            let ge_low = cmp(tape.value(value), tape.value(*low), |v, l| v >= l)?;
-            let le_high = cmp(tape.value(value), tape.value(*high), |v, h| v <= h)?;
-            let support = and(&ge_low, &le_high)?;
+            let ge_low = tape.ge(value, *low)?;
+            let le_high = tape.le(value, *high)?;
+            let support = tape.and(ge_low, le_high)?;
             Ok(mask_support(tape, support, log_density))
         }
         DistVars::Beta { alpha, beta } => {
-            let zero = Tensor::scalar(0.0);
-            let one_t = Tensor::scalar(1.0);
-            let v_pos = cmp(tape.value(value), &zero, |v, z| v > z)?;
-            let v_lt_one = cmp(tape.value(value), &one_t, |v, o| v < o)?;
-            let a_pos = cmp(tape.value(*alpha), &zero, |a, z| a > z)?;
-            let b_pos = cmp(tape.value(*beta), &zero, |b, z| b > z)?;
-            let support = and(&and(&v_pos, &v_lt_one)?, &and(&a_pos, &b_pos)?)?;
+            let zero = scalar(tape, 0.0);
+            let one_t = scalar(tape, 1.0);
+            let v_pos = tape.gt(value, zero)?;
+            let v_lt_one = tape.lt(value, one_t)?;
+            let a_pos = tape.gt(*alpha, zero)?;
+            let b_pos = tape.gt(*beta, zero)?;
+            let v_ok = tape.and(v_pos, v_lt_one)?;
+            let ab_ok = tape.and(a_pos, b_pos)?;
+            let support = tape.and(v_ok, ab_ok)?;
 
             let safe = clip(tape, value, f64::MIN_POSITIVE, 1.0 - f64::EPSILON)?;
             let ga = tape.gammaln(*alpha);
@@ -186,17 +178,17 @@ pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Err
             Ok(mask_support(tape, support, log_density))
         }
         DistVars::Bernoulli { probs } => {
-            let zero = Tensor::scalar(0.0);
-            let one_t = Tensor::scalar(1.0);
-            let integer = is_integer_mask(tape.value(value));
-            let v_ge0 = cmp(tape.value(value), &zero, |v, z| v >= z)?;
-            let v_le1 = cmp(tape.value(value), &one_t, |v, o| v <= o)?;
-            let p_ge0 = cmp(tape.value(*probs), &zero, |p, z| p >= z)?;
-            let p_le1 = cmp(tape.value(*probs), &one_t, |p, o| p <= o)?;
-            let support = and(
-                &and(&integer, &v_ge0)?,
-                &and(&v_le1, &and(&p_ge0, &p_le1)?)?,
-            )?;
+            let zero = scalar(tape, 0.0);
+            let one_t = scalar(tape, 1.0);
+            let integer = tape.is_integer(value);
+            let v_ge0 = tape.ge(value, zero)?;
+            let v_le1 = tape.le(value, one_t)?;
+            let p_ge0 = tape.ge(*probs, zero)?;
+            let p_le1 = tape.le(*probs, one_t)?;
+            let v_int = tape.and(integer, v_ge0)?;
+            let p_ok = tape.and(p_ge0, p_le1)?;
+            let v_ok = tape.and(v_le1, p_ok)?;
+            let support = tape.and(v_int, v_ok)?;
 
             let first = tape.xlogy(value, *probs);
             let one = scalar(tape, 1.0);
@@ -208,11 +200,12 @@ pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Err
             Ok(mask_support(tape, support, log_mass))
         }
         DistVars::Poisson { rate } => {
-            let zero = Tensor::scalar(0.0);
-            let integer = is_integer_mask(tape.value(value));
-            let v_ge0 = cmp(tape.value(value), &zero, |v, z| v >= z)?;
-            let rate_pos = cmp(tape.value(*rate), &zero, |r, z| r > z)?;
-            let support = and(&and(&v_ge0, &integer)?, &rate_pos)?;
+            let zero = scalar(tape, 0.0);
+            let integer = tape.is_integer(value);
+            let v_ge0 = tape.ge(value, zero)?;
+            let rate_pos = tape.gt(*rate, zero)?;
+            let v_ok = tape.and(v_ge0, integer)?;
+            let support = tape.and(v_ok, rate_pos)?;
 
             let log_rate = tape.ln(*rate);
             let v_log_rate = tape.mul(value, log_rate);
@@ -224,19 +217,21 @@ pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Err
             Ok(mask_support(tape, support, log_mass))
         }
         DistVars::Binomial { total_count, probs } => {
-            let zero = Tensor::scalar(0.0);
-            let one_t = Tensor::scalar(1.0);
-            let int_v = is_integer_mask(tape.value(value));
-            let int_n = is_integer_mask(tape.value(*total_count));
-            let v_ge0 = cmp(tape.value(value), &zero, |v, z| v >= z)?;
-            let n_ge0 = cmp(tape.value(*total_count), &zero, |n, z| n >= z)?;
-            let v_le_n = cmp(tape.value(value), tape.value(*total_count), |v, n| v <= n)?;
-            let p_ge0 = cmp(tape.value(*probs), &zero, |p, z| p >= z)?;
-            let p_le1 = cmp(tape.value(*probs), &one_t, |p, o| p <= o)?;
-            let support = and(
-                &and(&and(&int_v, &int_n)?, &and(&v_ge0, &n_ge0)?)?,
-                &and(&v_le_n, &and(&p_ge0, &p_le1)?)?,
-            )?;
+            let zero = scalar(tape, 0.0);
+            let one_t = scalar(tape, 1.0);
+            let int_v = tape.is_integer(value);
+            let int_n = tape.is_integer(*total_count);
+            let v_ge0 = tape.ge(value, zero)?;
+            let n_ge0 = tape.ge(*total_count, zero)?;
+            let v_le_n = tape.le(value, *total_count)?;
+            let p_ge0 = tape.ge(*probs, zero)?;
+            let p_le1 = tape.le(*probs, one_t)?;
+            let ints = tape.and(int_v, int_n)?;
+            let nonneg = tape.and(v_ge0, n_ge0)?;
+            let left = tape.and(ints, nonneg)?;
+            let p_ok = tape.and(p_ge0, p_le1)?;
+            let right = tape.and(v_le_n, p_ok)?;
+            let support = tape.and(left, right)?;
 
             let failures = tape.sub(*total_count, value);
             let one = scalar(tape, 1.0);
@@ -263,18 +258,20 @@ pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Err
             alpha,
             beta,
         } => {
-            let zero = Tensor::scalar(0.0);
-            let int_v = is_integer_mask(tape.value(value));
-            let int_n = is_integer_mask(tape.value(*total_count));
-            let v_ge0 = cmp(tape.value(value), &zero, |v, z| v >= z)?;
-            let n_ge0 = cmp(tape.value(*total_count), &zero, |n, z| n >= z)?;
-            let v_le_n = cmp(tape.value(value), tape.value(*total_count), |v, n| v <= n)?;
-            let a_pos = cmp(tape.value(*alpha), &zero, |a, z| a > z)?;
-            let b_pos = cmp(tape.value(*beta), &zero, |b, z| b > z)?;
-            let support = and(
-                &and(&and(&int_v, &int_n)?, &and(&v_ge0, &n_ge0)?)?,
-                &and(&v_le_n, &and(&a_pos, &b_pos)?)?,
-            )?;
+            let zero = scalar(tape, 0.0);
+            let int_v = tape.is_integer(value);
+            let int_n = tape.is_integer(*total_count);
+            let v_ge0 = tape.ge(value, zero)?;
+            let n_ge0 = tape.ge(*total_count, zero)?;
+            let v_le_n = tape.le(value, *total_count)?;
+            let a_pos = tape.gt(*alpha, zero)?;
+            let b_pos = tape.gt(*beta, zero)?;
+            let ints = tape.and(int_v, int_n)?;
+            let nonneg = tape.and(v_ge0, n_ge0)?;
+            let left = tape.and(ints, nonneg)?;
+            let ab_ok = tape.and(a_pos, b_pos)?;
+            let right = tape.and(v_le_n, ab_ok)?;
+            let support = tape.and(left, right)?;
 
             let failures = tape.sub(*total_count, value);
             let one = scalar(tape, 1.0);
@@ -314,12 +311,14 @@ pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Err
             mean,
             overdispersion,
         } => {
-            let zero = Tensor::scalar(0.0);
-            let int_v = is_integer_mask(tape.value(value));
-            let v_ge0 = cmp(tape.value(value), &zero, |v, z| v >= z)?;
-            let m_pos = cmp(tape.value(*mean), &zero, |m, z| m > z)?;
-            let od_pos = cmp(tape.value(*overdispersion), &zero, |o, z| o > z)?;
-            let support = and(&and(&int_v, &v_ge0)?, &and(&m_pos, &od_pos)?)?;
+            let zero = scalar(tape, 0.0);
+            let int_v = tape.is_integer(value);
+            let v_ge0 = tape.ge(value, zero)?;
+            let m_pos = tape.gt(*mean, zero)?;
+            let od_pos = tape.gt(*overdispersion, zero)?;
+            let v_ok = tape.and(int_v, v_ge0)?;
+            let params_ok = tape.and(m_pos, od_pos)?;
+            let support = tape.and(v_ok, params_ok)?;
 
             let total = tape.add(*mean, *overdispersion);
             let v_plus_od = tape.add(value, *overdispersion);
@@ -420,42 +419,28 @@ fn ordered_logistic_log_prob(
     // batch over observations: broadcast probabilities rows against value.
     let probs_shape = tape.value(probabilities).shape().to_vec();
     let probs_batch = &probs_shape[..probs_shape.len() - 1];
-    let value_t = tape.value(value).clone();
-    let out_batch = Tensor::broadcast_shapes(probs_batch, value_t.shape())?;
+    let out_batch = Tensor::broadcast_shapes(probs_batch, tape.value(value).shape())?;
     let mut probs_full = out_batch.clone();
     probs_full.push(category_count);
     let probs_b = tape.broadcast(probabilities, &probs_full);
-    let value_b = value_t.broadcast_to(&out_batch)?;
+    let value_b = tape.broadcast(value, &out_batch);
 
-    // take_along_axis with the clipped integer category per observation.
-    let rows: usize = out_batch.iter().product();
-    let mut map = Vec::with_capacity(rows);
-    for (row, &raw) in value_b.data().iter().enumerate() {
-        let clipped = raw.clamp(0.0, (category_count - 1) as f64);
-        map.push(row * category_count + clipped as usize);
-    }
-    let selected = tape.gather(
-        probs_b,
-        GatherMap {
-            out_shape: out_batch.clone(),
-            map,
-        },
-    );
+    // take_along_axis with the clipped integer category per observation;
+    // the category indices are re-read per evaluation.
+    let selected = tape.take_along_last(probs_b, value_b);
 
     // Support: integer label in range, ordered cutpoints, positive mass.
-    let integer = is_integer_mask(&value_b);
-    let zero = Tensor::scalar(0.0);
-    let ge0 = cmp(&value_b, &zero, |v, z| v >= z)?;
-    let max_label = Tensor::scalar((category_count - 1) as f64);
-    let le_max = cmp(&value_b, &max_label, |v, m| v <= m)?;
-    let cut_values = tape.value(cutpoints).data();
-    let ordered = cut_values.windows(2).all(|w| w[1] > w[0]);
-    let ordered_t = Tensor::scalar(if ordered { 1.0 } else { 0.0 });
-    let positive = cmp(tape.value(selected), &zero, |p, z| p > z)?;
-    let support = and(
-        &and(&integer, &ge0)?,
-        &and(&le_max, &and(&ordered_t, &positive)?)?,
-    )?;
+    let integer = tape.is_integer(value_b);
+    let zero = scalar(tape, 0.0);
+    let ge0 = tape.ge(value_b, zero)?;
+    let max_label = scalar(tape, (category_count - 1) as f64);
+    let le_max = tape.le(value_b, max_label)?;
+    let ordered_t = tape.is_strictly_increasing(cutpoints);
+    let positive = tape.gt(selected, zero)?;
+    let label_int = tape.and(integer, ge0)?;
+    let mass_ok = tape.and(ordered_t, positive)?;
+    let label_ok = tape.and(le_max, mass_ok)?;
+    let support = tape.and(label_int, label_ok)?;
 
     let safe = clip(tape, selected, f64::MIN_POSITIVE, 1.0)?;
     let log_safe = tape.ln(safe);

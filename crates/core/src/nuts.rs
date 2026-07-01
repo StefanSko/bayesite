@@ -11,7 +11,7 @@
 //! sample variance), kinetic energy is `0.5 * p^T diag(inv_mass) p`.
 
 use crate::error::Error;
-use crate::model::Posterior;
+use crate::model::{CompiledLogp, Posterior};
 use crate::rng::Xoshiro256PlusPlus;
 
 /// Energy error beyond which a trajectory is declared divergent (Stan's
@@ -27,22 +27,26 @@ pub struct State {
     pub grad: Vec<f64>,
 }
 
-pub struct Hamiltonian<'a> {
-    posterior: &'a Posterior,
+/// Kinetic metric plus the compiled log-density graph. Compiling once per
+/// Hamiltonian and replaying the tape per point is what keeps leapfrog
+/// steps from rebuilding (and reallocating) the whole graph each gradient;
+/// evaluation therefore takes `&mut self`.
+pub struct Hamiltonian {
+    logp: CompiledLogp,
     pub inv_mass: Vec<f64>,
 }
 
-impl<'a> Hamiltonian<'a> {
-    pub fn new(posterior: &'a Posterior, inv_mass: Vec<f64>) -> Hamiltonian<'a> {
+impl Hamiltonian {
+    pub fn new(posterior: &Posterior, inv_mass: Vec<f64>) -> Result<Hamiltonian, Error> {
         assert_eq!(inv_mass.len(), posterior.n_params());
-        Hamiltonian {
-            posterior,
+        Ok(Hamiltonian {
+            logp: posterior.compile()?,
             inv_mass,
-        }
+        })
     }
 
-    pub fn init_state(&self, q: Vec<f64>) -> Result<State, Error> {
-        let (logp, grad) = self.posterior.logp_grad(&q)?;
+    pub fn init_state(&mut self, q: Vec<f64>) -> Result<State, Error> {
+        let (logp, grad) = self.logp.logp_grad(&q)?;
         Ok(State {
             p: vec![0.0; q.len()],
             q,
@@ -75,7 +79,7 @@ impl<'a> Hamiltonian<'a> {
     }
 
     /// One leapfrog step with (signed) step size `eps`.
-    pub fn leapfrog(&self, state: &State, eps: f64) -> Result<State, Error> {
+    pub fn leapfrog(&mut self, state: &State, eps: f64) -> Result<State, Error> {
         let p_half: Vec<f64> = state
             .p
             .iter()
@@ -88,7 +92,7 @@ impl<'a> Hamiltonian<'a> {
             .zip(p_half.iter().zip(&self.inv_mass))
             .map(|(&q, (&ph, &im))| q + eps * im * ph)
             .collect();
-        let (logp, grad) = self.posterior.logp_grad(&q)?;
+        let (logp, grad) = self.logp.logp_grad(&q)?;
         let p: Vec<f64> = p_half
             .iter()
             .zip(&grad)
@@ -173,7 +177,7 @@ struct TreeStats {
 }
 
 fn build_tree(
-    ham: &Hamiltonian<'_>,
+    ham: &mut Hamiltonian,
     rng: &mut Xoshiro256PlusPlus,
     depth: usize,
     z: &mut State,
@@ -256,7 +260,7 @@ fn build_tree(
 
 /// One NUTS transition from `state` (whose momentum is resampled here).
 pub fn transition(
-    ham: &Hamiltonian<'_>,
+    ham: &mut Hamiltonian,
     rng: &mut Xoshiro256PlusPlus,
     mut state: State,
     step_size: f64,
@@ -404,7 +408,7 @@ mod tests {
         );
     }
 
-    fn state_with_momentum(ham: &Hamiltonian<'_>, q: f64, p: f64) -> State {
+    fn state_with_momentum(ham: &mut Hamiltonian, q: f64, p: f64) -> State {
         let mut state = ham.init_state(vec![q]).unwrap();
         state.p[0] = p;
         state
@@ -438,8 +442,8 @@ mod tests {
     #[test]
     fn leapfrog_forward_then_backward_recovers_state() {
         let posterior = scalar_normal_posterior();
-        let ham = Hamiltonian::new(&posterior, vec![1.0]);
-        let state = state_with_momentum(&ham, 0.3, 0.7);
+        let mut ham = Hamiltonian::new(&posterior, vec![1.0]).unwrap();
+        let state = state_with_momentum(&mut ham, 0.3, 0.7);
 
         let forward = ham.leapfrog(&state, 0.05).unwrap();
         let recovered = ham.leapfrog(&forward, -0.05).unwrap();
@@ -458,8 +462,8 @@ mod tests {
     #[test]
     fn small_leapfrog_step_nearly_conserves_hamiltonian_energy() {
         let posterior = scalar_normal_posterior();
-        let ham = Hamiltonian::new(&posterior, vec![1.0]);
-        let state = state_with_momentum(&ham, 0.3, 0.7);
+        let mut ham = Hamiltonian::new(&posterior, vec![1.0]).unwrap();
+        let state = state_with_momentum(&mut ham, 0.3, 0.7);
         let before = ham.energy(&state);
 
         let after_state = ham.leapfrog(&state, 0.01).unwrap();
@@ -476,13 +480,13 @@ mod tests {
     #[test]
     fn fixed_seed_transition_is_deterministic() {
         let posterior = scalar_normal_posterior();
-        let ham = Hamiltonian::new(&posterior, vec![1.0]);
+        let mut ham = Hamiltonian::new(&posterior, vec![1.0]).unwrap();
         let state = ham.init_state(vec![0.1]).unwrap();
         let mut rng_a = Xoshiro256PlusPlus::for_chain(20240617, 0);
         let mut rng_b = Xoshiro256PlusPlus::for_chain(20240617, 0);
 
-        let a = transition(&ham, &mut rng_a, state.clone(), 0.25, 5).unwrap();
-        let b = transition(&ham, &mut rng_b, state, 0.25, 5).unwrap();
+        let a = transition(&mut ham, &mut rng_a, state.clone(), 0.25, 5).unwrap();
+        let b = transition(&mut ham, &mut rng_b, state, 0.25, 5).unwrap();
 
         assert_eq!(a.q, b.q);
         assert_eq!(a.logp, b.logp);
@@ -498,11 +502,11 @@ mod tests {
     #[test]
     fn too_large_step_reports_divergence() {
         let posterior = scalar_normal_posterior();
-        let ham = Hamiltonian::new(&posterior, vec![1.0]);
+        let mut ham = Hamiltonian::new(&posterior, vec![1.0]).unwrap();
         let state = ham.init_state(vec![0.1]).unwrap();
         let mut rng = Xoshiro256PlusPlus::for_chain(20240617, 0);
 
-        let result = transition(&ham, &mut rng, state, 100.0, 5).unwrap();
+        let result = transition(&mut ham, &mut rng, state, 100.0, 5).unwrap();
 
         assert!(
             result.divergent,

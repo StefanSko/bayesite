@@ -154,3 +154,58 @@ fn constrained_draws_recover_constrained_space() {
     let level = constrained[1].1.data()[0];
     assert!(level > -1.0 && level < 3.0);
 }
+
+#[test]
+fn compiled_tape_replay_matches_per_point_rebuild_bitwise() {
+    // The compiled evaluator (one graph, replayed in place per point) must
+    // produce exactly the values of the rebuild-per-call path, including
+    // when revisiting an earlier point after the masks flipped in between.
+    for name in ALL_FIXTURES {
+        let doc = fixture(name);
+        let meta = decode_model(doc.get("ir").expect("ir")).expect("ir decodes");
+        let data = data_from_json(doc.get("data").expect("data")).expect("data parses");
+        let posterior = Posterior::new(meta, data).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let mut compiled = posterior
+            .compile()
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+
+        let evaluations = doc
+            .get("evaluations")
+            .and_then(Value::as_array)
+            .expect("evals");
+        let points: Vec<Vec<f64>> = evaluations
+            .iter()
+            .map(|eval| {
+                eval.get("q")
+                    .and_then(Value::as_array)
+                    .expect("q")
+                    .iter()
+                    .map(|v| v.as_f64().expect("q numeric"))
+                    .collect()
+            })
+            .collect();
+        // Visit every point, then the first again, to exercise replay both
+        // directions.
+        for (i, q) in points.iter().chain(points.first()).enumerate() {
+            let (want_logp, want_grad) = posterior
+                .logp_grad(q)
+                .unwrap_or_else(|e| panic!("{name} eval {i}: {e}"));
+            let (logp, grad) = compiled
+                .logp_grad(q)
+                .unwrap_or_else(|e| panic!("{name} eval {i} (compiled): {e}"));
+            assert_eq!(
+                logp.to_bits(),
+                want_logp.to_bits(),
+                "{name} eval {i}: compiled logp {logp:.17e} != {want_logp:.17e}"
+            );
+            assert_eq!(grad.len(), want_grad.len(), "{name} eval {i}");
+            for (j, (&g, &w)) in grad.iter().zip(want_grad.iter()).enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    w.to_bits(),
+                    "{name} eval {i} grad[{j}]: compiled {g:.17e} != {w:.17e}"
+                );
+            }
+        }
+    }
+}
