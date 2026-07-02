@@ -23,14 +23,10 @@ no NumPy question, and no runtime dependency graph.
 - Rust seed branch: `claude/confident-heisenberg-js7ltl`
 - Branch context commit before extraction: `60d0684`
 
-Current IR v1 envelope remains:
-
-```json
-{"jaxstanv5_ir": 1, "model": {}}
-```
-
-Keep that for v1. Renaming the envelope to Bayesite is a versioned format
-decision, not a repository cleanup.
+The IR v1 envelope at extraction time was `{"jaxstanv5_ir": 1, "model": {}}`
+(historical). The reserved deliberate rename has since happened: the envelope
+is `{"bayeswire_ir": 1, "model": ...}`, owned by the bayeswire repository;
+see the bayeswire spec changelog and `AGENTS.md` seed compatibility.
 
 ## Context preserved here
 

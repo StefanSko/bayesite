@@ -14,6 +14,21 @@ const ALL_FIXTURES: [&str; 6] = [
     "varying_intercepts_poisson",
 ];
 
+/// Corpus fixtures this backend evaluates today. `Truncated` is a core-profile
+/// tag in the bayeswire spec that this backend does not implement yet; the
+/// fixtures carrying it are pinned below as explicit decode failures instead
+/// of being silently skipped. Closing that gap moves names back into this
+/// list and deletes the pin.
+const SUPPORTED_FIXTURES: [&str; 4] = [
+    "eight_schools_non_centered",
+    "ordinal_regression",
+    "partially_observed_mvn",
+    "varying_intercepts_poisson",
+];
+
+/// Corpus fixtures whose models use `Truncated`, not yet evaluable here.
+const UNSUPPORTED_TRUNCATED_FIXTURES: [&str; 2] = ["bounded_rates", "linear_regression"];
+
 fn fixture(name: &str) -> Value {
     let path = format!(
         "{}/../../tests/golden_ir/fixtures/{}.json",
@@ -55,11 +70,35 @@ fn every_golden_fixture_is_in_the_logp_gradient_gate() {
         .map(|name| (*name).to_string())
         .collect();
     assert_eq!(fixture_names, expected);
+
+    let mut partitioned: Vec<&str> = SUPPORTED_FIXTURES
+        .iter()
+        .chain(UNSUPPORTED_TRUNCATED_FIXTURES.iter())
+        .copied()
+        .collect();
+    partitioned.sort_unstable();
+    assert_eq!(partitioned, ALL_FIXTURES);
+}
+
+#[test]
+fn truncated_fixtures_fail_decode_explicitly() {
+    // Honest asymmetry, pinned: when Truncated support lands, this test goes
+    // red and the fixtures move into SUPPORTED_FIXTURES.
+    for name in UNSUPPORTED_TRUNCATED_FIXTURES {
+        let doc = fixture(name);
+        let err = decode_model(doc.get("ir").expect("ir")).expect_err("Truncated not implemented");
+        assert_eq!(err.kind, bayesite_core::error::ErrorKind::UnknownNodeTag);
+        assert!(
+            err.message.contains("Truncated"),
+            "{name}: error names the unsupported tag: {}",
+            err.message
+        );
+    }
 }
 
 #[test]
 fn logp_and_gradient_match_jax_at_committed_points() {
-    for name in ALL_FIXTURES {
+    for name in SUPPORTED_FIXTURES {
         let doc = fixture(name);
         let meta = decode_model(doc.get("ir").expect("ir")).expect("ir decodes");
         let data = data_from_json(doc.get("data").expect("data")).expect("data parses");
@@ -117,18 +156,18 @@ fn logp_and_gradient_match_jax_at_committed_points() {
 
 #[test]
 fn wrong_q_length_is_a_shape_error() {
-    let doc = fixture("linear_regression");
+    let doc = fixture("eight_schools_non_centered");
     let meta = decode_model(doc.get("ir").unwrap()).unwrap();
     let data = data_from_json(doc.get("data").unwrap()).unwrap();
     let posterior = Posterior::new(meta, data).unwrap();
-    assert_eq!(posterior.n_params(), 3);
-    let err = posterior.logp_grad(&[0.0; 4]).unwrap_err();
+    assert_eq!(posterior.n_params(), 10);
+    let err = posterior.logp_grad(&[0.0; 11]).unwrap_err();
     assert_eq!(err.kind, bayesite_core::error::ErrorKind::DataShapeMismatch);
 }
 
 #[test]
 fn missing_data_is_a_shape_error() {
-    let doc = fixture("linear_regression");
+    let doc = fixture("eight_schools_non_centered");
     let mut data = data_from_json(doc.get("data").unwrap()).unwrap();
     data.retain(|(name, _)| name != "y");
     let err = Posterior::new(decode_model(doc.get("ir").unwrap()).unwrap(), data).unwrap_err();
@@ -142,11 +181,12 @@ fn missing_data_is_a_shape_error() {
 
 #[test]
 fn constrained_draws_recover_constrained_space() {
-    // bounded_rates: p in (0,1), level in (-1,3).
-    let doc = fixture("bounded_rates");
-    let meta = decode_model(doc.get("ir").unwrap()).unwrap();
-    let data = data_from_json(doc.get("data").unwrap()).unwrap();
-    let posterior = Posterior::new(meta, data).unwrap();
+    // Interval and unit-interval transforms on an inline core-profile model
+    // produced by bayeswire: p ~ Beta(2, 2) in (0, 1) and
+    // level ~ Uniform(-1, 3) in (-1, 3).
+    let document = json::parse(CONSTRAINED_SPACE_IR).expect("inline document parses");
+    let meta = decode_model(&document).unwrap();
+    let posterior = Posterior::new(meta, Vec::new()).unwrap();
     let constrained = posterior.constrain(&[-3.0, 4.0]).unwrap();
     assert_eq!(constrained[0].0, "p");
     let p = constrained[0].1.data()[0];
@@ -160,7 +200,7 @@ fn compiled_tape_replay_matches_per_point_rebuild_bitwise() {
     // The compiled evaluator (one graph, replayed in place per point) must
     // produce exactly the values of the rebuild-per-call path, including
     // when revisiting an earlier point after the masks flipped in between.
-    for name in ALL_FIXTURES {
+    for name in SUPPORTED_FIXTURES {
         let doc = fixture(name);
         let meta = decode_model(doc.get("ir").expect("ir")).expect("ir decodes");
         let data = data_from_json(doc.get("data").expect("data")).expect("data parses");
@@ -209,3 +249,6 @@ fn compiled_tape_replay_matches_per_point_rebuild_bitwise() {
         }
     }
 }
+
+/// Inline `bayeswire_ir` document (canonical bytes from the reference producer).
+const CONSTRAINED_SPACE_IR: &str = r#"{"bayeswire_ir":1,"model":{"node":"ModelMeta","params":[{"name":"p","value":{"node":"ResolvedParam","distribution":{"node":"Beta","alpha":{"node":"ConstNode","value":2.0},"beta":{"node":"ConstNode","value":2.0}},"constraint":{"node":"UnitInterval"},"size":null}},{"name":"level","value":{"node":"ResolvedParam","distribution":{"node":"Uniform","low":{"node":"ConstNode","value":-1.0},"high":{"node":"ConstNode","value":3.0}},"constraint":{"node":"Interval","lower":-1.0,"upper":3.0},"size":null}}],"data":[],"observed_nodes":[],"expressions":[],"free_values":[{"name":"p","value":{"node":"ResolvedFreeValue","constraint":{"node":"UnitInterval"},"size":null}},{"name":"level","value":{"node":"ResolvedFreeValue","constraint":{"node":"Interval","lower":-1.0,"upper":3.0},"size":null}}],"stochastic_sites":[{"node":"ResolvedStochasticSite","name":"p","distribution":{"node":"Beta","alpha":{"node":"ConstNode","value":2.0},"beta":{"node":"ConstNode","value":2.0}},"value":{"node":"ParamRef","name":"p"}},{"node":"ResolvedStochasticSite","name":"level","distribution":{"node":"Uniform","low":{"node":"ConstNode","value":-1.0},"high":{"node":"ConstNode","value":3.0}},"value":{"node":"ParamRef","name":"level"}}]}}"#;

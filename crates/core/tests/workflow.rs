@@ -8,11 +8,25 @@ use bayesite_core::sampler::Settings;
 use bayesite_core::workflow::{recover_report, sbc_report, RecoverSettings, SbcSettings};
 
 fn fixture_text(name: &str) -> String {
-    let path = format!(
+    // Conformance fixtures come from the vendored bayeswire corpus. Names
+    // prefixed `cli_` are engine-behavior inputs kept under tests/data/
+    // because their models use `Truncated`, a core-profile tag this backend
+    // does not evaluate yet (see fixtures_eval.rs).
+    let corpus = format!(
         "{}/../../tests/golden_ir/fixtures/{}.json",
         env!("CARGO_MANIFEST_DIR"),
         name
     );
+    let local = format!(
+        "{}/tests/data/cli_models/{}.json",
+        env!("CARGO_MANIFEST_DIR"),
+        name
+    );
+    let path = if name.starts_with("cli_") {
+        local
+    } else {
+        corpus
+    };
     std::fs::read_to_string(path).expect("fixture readable")
 }
 
@@ -487,7 +501,7 @@ fn object_entry_mut<'a>(value: &'a mut Value, key: &str) -> &'a mut Value {
 }
 
 fn bounded_rates_with_named_stochastic_sites() -> Value {
-    let mut ir = fixture_ir("bounded_rates");
+    let mut ir = fixture_ir("cli_bounded_rates");
     let model = object_entry_mut(&mut ir, "model");
     let sites = object_entry_mut(model, "stochastic_sites");
     let sites = match sites {
@@ -502,7 +516,7 @@ fn bounded_rates_with_named_stochastic_sites() -> Value {
 }
 
 fn bounded_rates_without_level_truth_site() -> Value {
-    let mut ir = fixture_ir("bounded_rates");
+    let mut ir = fixture_ir("cli_bounded_rates");
     let model = object_entry_mut(&mut ir, "model");
     let sites = object_entry_mut(model, "stochastic_sites");
     let sites = match sites {
@@ -515,7 +529,7 @@ fn bounded_rates_without_level_truth_site() -> Value {
 
 #[test]
 fn workflow_reports_preserve_free_value_parameter_order() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let recover_settings = RecoverSettings {
         chains: 1,
         sampler: report_sampler(),
@@ -548,7 +562,7 @@ fn workflow_reports_preserve_free_value_parameter_order() {
         ["p", "level"]
     );
 
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let sbc_settings = SbcSettings {
         replicates: 2,
         chains: 1,
@@ -818,7 +832,7 @@ fn workflow_reports_declared_integer_data_as_json_integers() {
 
 #[test]
 fn recover_report_includes_truth_rank_facts() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = RecoverSettings {
         chains: 1,
         sampler: report_sampler(),
@@ -1215,8 +1229,8 @@ fn workflow_reports_source_stochastic_sites() {
 
 #[test]
 fn workflow_reports_shape_preserving_generated_observed_integer_flags() {
-    let data = fixture_declared_data("linear_regression", &["x"]);
-    let recover_meta = decode_model(&fixture_ir("linear_regression")).unwrap();
+    let data = fixture_declared_data("cli_linear_regression", &["x"]);
+    let recover_meta = decode_model(&fixture_ir("cli_linear_regression")).unwrap();
     let recover_settings = RecoverSettings {
         chains: 1,
         sampler: report_sampler(),
@@ -1300,8 +1314,8 @@ fn workflow_reports_shape_preserving_generated_observed_integer_flags() {
         Some("zero_based_prior_predictive_draw_order")
     );
 
-    let data = fixture_declared_data("linear_regression", &["x"]);
-    let sbc_meta = decode_model(&fixture_ir("linear_regression")).unwrap();
+    let data = fixture_declared_data("cli_linear_regression", &["x"]);
+    let sbc_meta = decode_model(&fixture_ir("cli_linear_regression")).unwrap();
     let sbc_settings = SbcSettings {
         replicates: 1,
         chains: 1,
@@ -1427,7 +1441,7 @@ fn workflow_reports_reject_missing_simulated_truth_for_free_value() {
 
 #[test]
 fn recover_report_rejects_too_few_diagnostic_draws() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = RecoverSettings {
         chains: 1,
         sampler: short_sampler(),
@@ -1443,7 +1457,7 @@ fn recover_report_rejects_too_few_diagnostic_draws() {
 
 #[test]
 fn sbc_report_rejects_too_few_diagnostic_draws() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = SbcSettings {
         replicates: 1,
         chains: 1,
@@ -1459,7 +1473,7 @@ fn sbc_report_rejects_too_few_diagnostic_draws() {
 
 #[test]
 fn recover_report_rejects_too_large_treedepth() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = RecoverSettings {
         chains: 1,
         sampler: too_deep_sampler(),
@@ -1475,7 +1489,7 @@ fn recover_report_rejects_too_large_treedepth() {
 
 #[test]
 fn sbc_report_rejects_too_large_treedepth() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = SbcSettings {
         replicates: 1,
         chains: 1,
@@ -1488,7 +1502,7 @@ fn sbc_report_rejects_too_large_treedepth() {
 
 #[test]
 fn recover_report_rejects_unreportable_sampler_counts() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = RecoverSettings {
         chains: 1,
         sampler: unreportable_draws_sampler(),
@@ -1501,7 +1515,7 @@ fn recover_report_rejects_unreportable_sampler_counts() {
         "recover sample.draws must be in 1..=9223372036854775807 because workflow reports sample.draws as a JSON integer"
     );
 
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = RecoverSettings {
         chains: 1,
         sampler: unreportable_warmup_sampler(),
@@ -1517,7 +1531,7 @@ fn recover_report_rejects_unreportable_sampler_counts() {
 
 #[test]
 fn sbc_report_rejects_unreportable_sampler_counts() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = SbcSettings {
         replicates: 1,
         chains: 1,
@@ -1530,7 +1544,7 @@ fn sbc_report_rejects_unreportable_sampler_counts() {
         "sbc sample.draws must be in 1..=9223372036854775807 because workflow reports sample.draws as a JSON integer"
     );
 
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = SbcSettings {
         replicates: 1,
         chains: 1,
@@ -1546,7 +1560,7 @@ fn sbc_report_rejects_unreportable_sampler_counts() {
 
 #[test]
 fn recover_report_rejects_unreportable_chain_count() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = RecoverSettings {
         chains: i64::MAX as u64 + 1,
         sampler: report_sampler(),
@@ -1562,7 +1576,7 @@ fn recover_report_rejects_unreportable_chain_count() {
 
 #[test]
 fn sbc_report_rejects_unreportable_chain_count() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = SbcSettings {
         replicates: 1,
         chains: i64::MAX as u64 + 1,
@@ -1578,7 +1592,7 @@ fn sbc_report_rejects_unreportable_chain_count() {
 
 #[test]
 fn sbc_report_rejects_unreportable_replicate_count() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = SbcSettings {
         replicates: i64::MAX as usize + 1,
         chains: 1,
@@ -1594,7 +1608,7 @@ fn sbc_report_rejects_unreportable_replicate_count() {
 
 #[test]
 fn sbc_report_rejects_unreportable_rank_draws() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = SbcSettings {
         replicates: 1,
         chains: i64::MAX as u64,
@@ -1610,7 +1624,7 @@ fn sbc_report_rejects_unreportable_rank_draws() {
 
 #[test]
 fn sbc_report_rejects_unreportable_rank_bin_count() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = SbcSettings {
         replicates: 1,
         chains: 1,
@@ -1631,7 +1645,7 @@ fn sbc_report_rejects_unreportable_rank_bin_count() {
 
 #[test]
 fn recover_report_rejects_unreportable_rank_bin_count() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = RecoverSettings {
         chains: 1,
         sampler: Settings {
@@ -1652,7 +1666,7 @@ fn recover_report_rejects_unreportable_rank_bin_count() {
 
 #[test]
 fn recover_report_uses_reportable_derived_seed() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = RecoverSettings {
         chains: 1,
         sampler: report_sampler(),
@@ -1695,7 +1709,7 @@ fn recover_report_uses_reportable_derived_seed() {
 
 #[test]
 fn sbc_report_uses_reportable_replicate_seeds() {
-    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let meta = decode_model(&fixture_ir("cli_bounded_rates")).unwrap();
     let settings = SbcSettings {
         replicates: 2,
         chains: 1,

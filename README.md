@@ -4,8 +4,9 @@ Bayesite is a zero-dependency Rust runtime for serialized Bayesian model IR.
 The goal is a SQLite-like Bayesian workflow binary: one executable an agent can
 run without Python, `uvx`, NumPy, or a runtime dependency graph.
 
-Bayesite is **not** a model declaration frontend. It consumes `jaxstanv5_ir` v1;
-`jaxstanv5` is currently the reference Python producer.
+Bayesite is **not** a model declaration frontend. It consumes `bayeswire_ir` v1;
+[bayeswire](https://github.com/StefanSko/bayeswire) owns the language and is
+the reference Python producer.
 
 ## Status
 
@@ -25,7 +26,8 @@ bayesite sbc
 
 Current runtime capabilities:
 
-- decodes the core `jaxstanv5_ir` v1 profile;
+- decodes the core `bayeswire_ir` v1 profile (the `Truncated` tag is a
+  known, explicitly-failing gap; see `crates/core/tests/fixtures_eval.rs`);
 - evaluates log density and gradients with in-tree reverse-mode AD;
 - samples posterior draws with NUTS only;
 - recomputes R-hat/ESS diagnostics from fit streams;
@@ -38,9 +40,11 @@ Current runtime capabilities:
 - emits factual SBC rank/histogram reports.
 
 Workflow artifacts are **v0-provisional**. Field-level details are in
-[`docs/artifacts-v0.md`](docs/artifacts-v0.md). The model IR remains the
-separate `jaxstanv5_ir` v1 format documented in
-[`docs/ir-format-v1.md`](docs/ir-format-v1.md).
+[`docs/artifacts-v0.md`](docs/artifacts-v0.md). The model IR is the
+separate `bayeswire_ir` v1 format; [`docs/ir-format-v1.md`](docs/ir-format-v1.md)
+and [`docs/ir-v1-tags.md`](docs/ir-v1-tags.md) are byte-identical vendored
+copies of the normative bayeswire spec, pinned by `BAYESWIRE_TAG` and
+hash-checked by the validation ladder.
 
 ## Current limitations
 

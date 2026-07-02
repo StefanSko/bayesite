@@ -1,7 +1,7 @@
 {
   "name": "ordinal_regression",
   "ir": {
-    "jaxstanv5_ir": 1,
+    "bayeswire_ir": 1,
     "model": {
       "node": "ModelMeta",
       "params": [

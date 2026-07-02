@@ -1,27 +1,42 @@
-# jaxstanv5 IR format, version 1
+# bayeswire IR format, version 1
 
 This document specifies the serialized form of resolved model metadata
-(`ModelMeta`), the `jaxstanv5_ir` version 1 wire format. It is the
-cross-language contract between the Python library and any other consumer
-(tooling, caches, non-Python sampling backends). The Python implementation
-lives in `jaxstanv5.ir`; the built-in tag and field inventory is generated
-into [`ir-v1-tags.md`](ir-v1-tags.md) and enforced by tests.
+(`ModelMeta`), the `bayeswire_ir` version 1 wire format. It is the normative
+cross-language contract between every producer and consumer in the bayes\*
+toolchain: the authoring frontend in this repository, sampling backends such
+as jaxstanv5 (Python/JAX) and bayesite (Rust), and any tooling or caches in
+between. The reference implementation lives in `bayeswire.ir`; the built-in
+tag and field inventory is generated into [`ir-v1-tags.md`](ir-v1-tags.md)
+and enforced by tests. Downstream repositories vendor these documents from a
+pinned bayeswire release and hash-check them; only the copies in this
+repository are normative.
 
 The serialized IR decouples model interpretation from model use, is the unit
 of provenance (hash the bytes, record the hash in run manifests), makes
 resolved declarations diffable, and provides a code-free construction path
-(`meta_from_dict` runs no user code).
+(`meta_from_dict` runs no user code). The authoring and IR path is
+stdlib-only: sampling backends bring their own runtime dependencies for
+binding, log-density evaluation, gradients, simulation, diagnostics, and
+inference, none of which are needed to declare a model or to read or write
+this JSON document.
 
 ## Envelope
 
 ```json
-{"jaxstanv5_ir": 1, "model": { ...encoded ModelMeta node... }}
+{"bayeswire_ir": 1, "model": { ...encoded ModelMeta node... }}
 ```
 
-Decoders reject a missing or unknown version with `UnsupportedIRVersion`.
 The two envelope fields must each appear exactly once. Fields outside
-`jaxstanv5_ir` and `model` are malformed; the envelope shape is part of the v1
-wire contract.
+`bayeswire_ir` and `model` are malformed; the envelope shape is part of the
+v1 wire contract. Decoders reject a missing or unknown version with
+`UnsupportedIRVersion` (or their language's equivalent).
+
+Consumers that parse from raw bytes must enforce the exactly-once rule
+directly. Consumers built on JSON parsers that silently collapse duplicate
+keys (for example Python's `json.loads`) cannot observe duplicates
+post-parse; they enforce the remaining envelope rules (both keys present,
+no others) on the parsed object and rely on hashing received bytes for
+provenance.
 
 ## Encoding rules
 
@@ -46,19 +61,23 @@ wire contract.
    else passes through as a scalar or null.
 7. **Distributions.** Built-in distributions are pre-registered. User
    packages opt in frozen-dataclass distributions with
-   `jaxstanv5.ir.register_distribution(cls)`. A distribution that is not a
+   `bayeswire.ir.register_distribution(cls)`. A distribution that is not a
    registered dataclass raises `UnserializableDistribution`. This boundary is
    intentional: it coincides with what a code-free parser can parse and what
-   a non-Python backend can evaluate.
+   a non-Python backend can evaluate. Distribution objects in IR are
+   metadata; runtime behavior such as log-density evaluation is backend
+   behavior, not part of the wire contract. Custom Python distributions with
+   runtime methods are a single-backend interoperability path only; portable
+   custom tags require explicit support in each non-Python backend that
+   consumes them.
 
 ## Decoding rules
 
 The decoder looks up `"node"` tags in the registry, rebuilds field values
 recursively, and calls the constructor. Unknown tags raise `UnknownNodeTag`;
-nodes with missing or unexpected fields, map entries without exactly
-one `"node"` tag, map entries without exactly `"name"`/`"value"`, duplicate
-entry names, and bare arrays outside map or tuple fields raise
-`MalformedIRDocument`.
+nodes with missing or unexpected fields, more than one `"node"` tag, map
+entries without exactly `"name"`/`"value"`, duplicate entry names, and bare
+arrays outside map or tuple fields raise `MalformedIRDocument`.
 
 Empty containers are disambiguated by the *field kind* recorded at
 registration time (`map`, `tuple`, or `value`, derived once from the
@@ -118,10 +137,35 @@ divergence (Python `repr` and Rust `ryu` differ in corner cases such as
   tools. Registry-extended documents are consumable only by Python processes
   that imported the registering package; non-Python consumers fail on
   extended tags with their equivalent of `UnknownNodeTag`, by design.
-- **Version policy.** Any change to the tag set, a field list, or an encoding
-  rule requires a deliberate golden-file diff
-  (`scripts/regenerate_ir_golden.py`, `tests/golden_ir/`) plus a version
-  decision.
+- **Version policy.** Any change to the tag set, a field list, or an
+  encoding rule requires a deliberate corpus diff
+  (`scripts/regenerate_corpus.py`), a changelog entry below, and
+  a version decision. `bayeswire_ir` stays at 1 until a real format change;
+  package versions move freely underneath it as long as produce-conformance
+  bytes are stable.
+
+## Conformance corpus and tolerance policy
+
+The corpus (`src/bayeswire/corpus/`, shipped as package data) holds the golden documents (`<model>.json`), their canonical-bytes
+hashes (`hashes.json`), and cross-backend evaluation fixtures
+(`fixtures/<model>.json`) bundling each IR document with concrete bind data
+and log-density plus gradient values at deterministic unconstrained points.
+The recorded values are **JAX-oracle outputs**: produced by the jaxstanv5
+backend in float64. Fixture file layout is a corpus convention, not part of
+this wire format.
+
+Producers conform by reproducing the corpus documents byte-for-byte from the
+reference declarations. Consumers conform by decoding every corpus document
+and reproducing the recorded evaluations within this tolerance policy:
+
+- **float64 evaluation** (e.g. bayesite): log density within relative
+  tolerance `1e-12`, gradient components within relative tolerance `1e-10`,
+  each with an absolute magnitude floor of `1e-8` on the reference value.
+- **float32 evaluation** (e.g. jaxstanv5's default test precision): log
+  density and gradient components within relative and absolute tolerance
+  `1e-3`.
+
+Tolerances live here, in the spec, so that no consumer quietly weakens them.
 
 ## Errors
 
@@ -140,8 +184,24 @@ repair instructions for agents producing IR documents.
 ## Out of scope
 
 This format serializes resolved model metadata only. It does not cover the
-declaration class, bound data arrays, `BoundModel`, or sampling results; the
-fit artifact is a separate format. Cross-backend evaluation fixtures under
-`tests/golden_ir/fixtures/` bundle IR documents with concrete data and
-expected log-density values for differential testing, but their layout is a
-test fixture convention, not part of this wire format.
+declaration class, bound data arrays, bound-model state, or sampling
+results; the fit artifact is a separate format. Dimension labels travel in a
+separate sidecar document specified in
+[`dimension-sidecar-v1.md`](dimension-sidecar-v1.md).
+
+## Changelog
+
+### 1 — envelope renamed to `bayeswire_ir` (bayeswire extraction)
+
+The wire envelope is `{"bayeswire_ir": 1, "model": ...}`. The format was
+extracted from jaxstanv5, where the identical encoding shipped under the
+`{"jaxstanv5_ir": 1, "model": ...}` envelope. Renaming the envelope to a
+producer-neutral key was the deliberate format decision that bayesite's
+compatibility notes reserved for exactly this occasion; it changed the two
+envelope strings and nothing else — tags, field lists, entry-array
+semantics, and canonical-bytes rules are byte-identical (verified by
+structural diff when the corpus was regenerated). The retired
+`jaxstanv5_ir` key is not accepted anywhere, by any consumer, and no
+producer emits it; documents carrying it fail with the standard
+unsupported-version error. This entry is the only place the retired key is
+recorded.

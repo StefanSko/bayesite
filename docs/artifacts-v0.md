@@ -9,7 +9,7 @@ producer/consumer of the current wire shape. This document records the Bayesite
 CLI's implementation of that shared contract.
 
 This document covers workflow artifacts only. It does not change the model IR
-wire format, which remains `{"jaxstanv5_ir": 1, "model": ...}`.
+wire format, which is `{"bayeswire_ir": 1, "model": ...}`.
 
 ## Format markers
 

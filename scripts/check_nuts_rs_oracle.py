@@ -115,7 +115,7 @@ def _resolved_data_shape(dims: list[int]) -> dict:
 
 def _model(params: list[tuple[str, dict]], data: list[tuple[str, dict]]) -> dict:
     return {
-        "jaxstanv5_ir": 1,
+        "bayeswire_ir": 1,
         "model": {
             "node": "ModelMeta",
             "params": [{"name": name, "value": value} for name, value in params],

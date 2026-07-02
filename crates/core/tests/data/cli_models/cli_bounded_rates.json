@@ -31,25 +31,14 @@
           "value": {
             "node": "ResolvedParam",
             "distribution": {
-              "node": "Truncated",
-              "base": {
-                "node": "Normal",
-                "loc": {
-                  "node": "ConstNode",
-                  "value": 1.0
-                },
-                "scale": {
-                  "node": "ConstNode",
-                  "value": 1.0
-                }
-              },
-              "lower": {
+              "node": "Normal",
+              "loc": {
                 "node": "ConstNode",
-                "value": -1.0
+                "value": 1.0
               },
-              "upper": {
+              "scale": {
                 "node": "ConstNode",
-                "value": 3.0
+                "value": 1.0
               }
             },
             "constraint": {
@@ -124,25 +113,14 @@
           "node": "ResolvedStochasticSite",
           "name": "level",
           "distribution": {
-            "node": "Truncated",
-            "base": {
-              "node": "Normal",
-              "loc": {
-                "node": "ConstNode",
-                "value": 1.0
-              },
-              "scale": {
-                "node": "ConstNode",
-                "value": 1.0
-              }
-            },
-            "lower": {
+            "node": "Normal",
+            "loc": {
               "node": "ConstNode",
-              "value": -1.0
+              "value": 1.0
             },
-            "upper": {
+            "scale": {
               "node": "ConstNode",
-              "value": 3.0
+              "value": 1.0
             }
           },
           "value": {
@@ -189,7 +167,7 @@
         0.0,
         0.0
       ],
-      "log_density": -5.318935776723736,
+      "log_density": -5.365503689016126,
       "gradient": [
         0.5,
         0.0
@@ -200,7 +178,7 @@
         0.1,
         0.2
       ],
-      "log_density": -5.31003188829478,
+      "log_density": -5.356599800587171,
       "gradient": [
         0.27518731268954005,
         -0.29702383813402106
@@ -211,7 +189,7 @@
         0.42073549240394825,
         0.4958324052262343
       ],
-      "log_density": -5.485162920970031,
+      "log_density": -5.531730833262421,
       "gradient": [
         -0.432933100014307,
         -0.7001933512277798

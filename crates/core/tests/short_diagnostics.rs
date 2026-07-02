@@ -4,12 +4,26 @@ use std::process::Command;
 use bayesite_core::json::{self, Value};
 
 fn fixture_text(name: &str) -> String {
-    std::fs::read_to_string(format!(
+    // Conformance fixtures come from the vendored bayeswire corpus. Names
+    // prefixed `cli_` are engine-behavior inputs kept under tests/data/
+    // because their models use `Truncated`, a core-profile tag this backend
+    // does not evaluate yet (see fixtures_eval.rs).
+    let corpus = format!(
         "{}/../../tests/golden_ir/fixtures/{}.json",
         env!("CARGO_MANIFEST_DIR"),
         name
-    ))
-    .expect("fixture readable")
+    );
+    let local = format!(
+        "{}/tests/data/cli_models/{}.json",
+        env!("CARGO_MANIFEST_DIR"),
+        name
+    );
+    let path = if name.starts_with("cli_") {
+        local
+    } else {
+        corpus
+    };
+    std::fs::read_to_string(path).expect("fixture readable")
 }
 
 fn short_diagnostics_dir(name: &str) -> PathBuf {
@@ -23,7 +37,7 @@ fn short_diagnostics_dir(name: &str) -> PathBuf {
 }
 
 fn write_linear_regression_inputs() -> (PathBuf, PathBuf, PathBuf) {
-    let fixture = json::parse(&fixture_text("linear_regression")).expect("fixture parses");
+    let fixture = json::parse(&fixture_text("cli_linear_regression")).expect("fixture parses");
     let dir = short_diagnostics_dir("sample");
     let model_path = dir.join("model.json");
     let data_path = dir.join("data.json");
@@ -42,7 +56,7 @@ fn write_linear_regression_inputs() -> (PathBuf, PathBuf, PathBuf) {
 }
 
 fn write_linear_regression_workflow_inputs() -> (PathBuf, PathBuf, PathBuf) {
-    let fixture = json::parse(&fixture_text("linear_regression")).expect("fixture parses");
+    let fixture = json::parse(&fixture_text("cli_linear_regression")).expect("fixture parses");
     let dir = short_diagnostics_dir("workflow");
     let model_path = dir.join("model.json");
     let recover_path = dir.join("recover.json");
