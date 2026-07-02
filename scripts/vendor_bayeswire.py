@@ -76,6 +76,10 @@ def main() -> None:
         shutil.rmtree(dest_corpus)
     for source in sorted(corpus_root.rglob("*.json")):
         rel = source.relative_to(corpus_root)
+        if rel.parts[0] == "artifacts":
+            # Run artifacts are exporter test fixtures (bayesite_idata), not
+            # wire-format goldens; this engine does not vendor them.
+            continue
         dest = dest_corpus / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, dest)
