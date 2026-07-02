@@ -7,7 +7,7 @@
 use crate::adapt::{DualAveraging, WarmupSchedule, Welford};
 use crate::error::{Error, ErrorKind};
 use crate::model::Posterior;
-use crate::nuts::{transition, Hamiltonian, State};
+use crate::nuts::{transition, Hamiltonian};
 use crate::rng::Xoshiro256PlusPlus;
 
 #[derive(Debug, Clone)]
@@ -97,7 +97,7 @@ pub struct ChainDraws {
 /// Stan-style coarse step-size search: double or halve until the one-step
 /// acceptance crosses 0.5.
 fn find_initial_step_size(
-    ham: &Hamiltonian<'_>,
+    ham: &mut Hamiltonian,
     rng: &mut Xoshiro256PlusPlus,
     q: &[f64],
     mut eps: f64,
@@ -105,12 +105,9 @@ fn find_initial_step_size(
     let mut state = ham.init_state(q.to_vec())?;
     ham.sample_momentum(&mut state, rng);
     let h0 = ham.energy(&state);
-    let delta_h = |s: &State, e: f64| -> Result<f64, Error> {
-        let stepped = ham.leapfrog(s, e)?;
-        Ok(h0 - ham.energy(&stepped))
-    };
+    let stepped = ham.leapfrog(&state, eps)?;
     let target = 0.8_f64.ln();
-    let mut dh = delta_h(&state, eps)?;
+    let mut dh = h0 - ham.energy(&stepped);
     let direction = if dh > target { 1 } else { -1 };
     for _ in 0..100 {
         ham.sample_momentum(&mut state, rng);
@@ -164,59 +161,58 @@ pub fn sample(
     }
 
     let mut inv_mass = vec![1.0; dim];
-    let mut state_q = q;
+    let state_q = q;
+
+    // One compiled Hamiltonian per chain: the logp graph does not depend on
+    // the metric, so window closes swap `inv_mass` in place instead of
+    // recompiling the tape.
+    let mut ham = Hamiltonian::new(posterior, inv_mass.clone())?;
 
     // Warmup with windowed adaptation.
     let schedule = WarmupSchedule::new(settings.num_warmup);
     let mut step_size = settings.initial_step_size;
-    let frozen_step_size;
-    {
-        let mut ham = Hamiltonian::new(posterior, inv_mass.clone());
-        if settings.num_warmup > 0 {
-            step_size = find_initial_step_size(&ham, &mut rng, &state_q, step_size)?;
-        }
-        let mut da = DualAveraging::new(step_size, settings.target_accept);
-        let mut welford = Welford::new(dim);
-        let mut state = ham.init_state(state_q.clone())?;
-
-        for iter in 0..settings.num_warmup {
-            let result = transition(
-                &ham,
-                &mut rng,
-                state.clone(),
-                da.step_size(),
-                settings.max_treedepth,
-            )?;
-            state.q = result.q;
-            state.logp = result.logp;
-            state.grad = result.grad;
-            da.update(result.accept_prob);
-
-            let window = schedule.step(iter);
-            if window.accumulate {
-                welford.push(&state.q);
-            }
-            if window.close_window && welford.count() > 1 {
-                inv_mass = welford.regularized_variance();
-                ham = Hamiltonian::new(posterior, inv_mass.clone());
-                welford = Welford::new(dim);
-                // Re-find a workable step size under the new metric and
-                // restart dual averaging around it.
-                let eps = find_initial_step_size(&ham, &mut rng, &state.q, da.step_size())?;
-                da = DualAveraging::new(eps, settings.target_accept);
-            }
-        }
-        frozen_step_size = if settings.num_warmup > 0 {
-            da.averaged_step_size()
-        } else {
-            settings.initial_step_size
-        };
-        state_q = state.q;
+    if settings.num_warmup > 0 {
+        step_size = find_initial_step_size(&mut ham, &mut rng, &state_q, step_size)?;
     }
+    let mut da = DualAveraging::new(step_size, settings.target_accept);
+    let mut welford = Welford::new(dim);
+    let mut state = ham.init_state(state_q)?;
+
+    for iter in 0..settings.num_warmup {
+        let result = transition(
+            &mut ham,
+            &mut rng,
+            state.clone(),
+            da.step_size(),
+            settings.max_treedepth,
+        )?;
+        state.q = result.q;
+        state.logp = result.logp;
+        state.grad = result.grad;
+        da.update(result.accept_prob);
+
+        let window = schedule.step(iter);
+        if window.accumulate {
+            welford.push(&state.q);
+        }
+        if window.close_window && welford.count() > 1 {
+            inv_mass = welford.regularized_variance();
+            ham.inv_mass.clone_from(&inv_mass);
+            welford = Welford::new(dim);
+            // Re-find a workable step size under the new metric and
+            // restart dual averaging around it.
+            let eps = find_initial_step_size(&mut ham, &mut rng, &state.q, da.step_size())?;
+            da = DualAveraging::new(eps, settings.target_accept);
+        }
+    }
+    let frozen_step_size = if settings.num_warmup > 0 {
+        da.averaged_step_size()
+    } else {
+        settings.initial_step_size
+    };
 
     // Sampling with frozen adaptation.
-    let ham = Hamiltonian::new(posterior, inv_mass.clone());
-    let mut state = ham.init_state(state_q)?;
+    let mut state = ham.init_state(state.q)?;
     let mut draws = Vec::with_capacity(settings.num_draws);
     let mut logp = Vec::with_capacity(settings.num_draws);
     let mut divergences = 0usize;
@@ -228,7 +224,7 @@ pub fn sample(
     let mut energy = Vec::with_capacity(settings.num_draws);
     for _ in 0..settings.num_draws {
         let result = transition(
-            &ham,
+            &mut ham,
             &mut rng,
             state.clone(),
             frozen_step_size,

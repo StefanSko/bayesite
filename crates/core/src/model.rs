@@ -255,6 +255,120 @@ struct FreeSlot {
     size: usize,
 }
 
+/// Parameter expressions of a distribution, for structural validation.
+fn distribution_exprs(dist: &Distribution) -> Vec<&Expr> {
+    match dist {
+        Distribution::Normal { loc, scale } => vec![loc, scale],
+        Distribution::HalfNormal { scale } => vec![scale],
+        Distribution::StudentT { df, loc, scale } => vec![df, loc, scale],
+        Distribution::Exponential { rate } => vec![rate],
+        Distribution::Uniform { low, high } => vec![low, high],
+        Distribution::Beta { alpha, beta } => vec![alpha, beta],
+        Distribution::Bernoulli { probs } => vec![probs],
+        Distribution::Poisson { rate } => vec![rate],
+        Distribution::Binomial { total_count, probs } => vec![total_count, probs],
+        Distribution::BetaBinomial {
+            total_count,
+            alpha,
+            beta,
+        } => vec![total_count, alpha, beta],
+        Distribution::NegativeBinomial {
+            mean,
+            overdispersion,
+        } => vec![mean, overdispersion],
+        Distribution::MultivariateNormal { mean, scale_tril } => vec![mean, scale_tril],
+        Distribution::OrderedLogistic { eta, cutpoints } => vec![eta, cutpoints],
+    }
+}
+
+/// Depth-check one expression with an explicit work stack (no recursion, so
+/// this is safe to run on arbitrarily deep programmatic input). Mirrors the
+/// decoder bound so decoded documents can never fail here.
+fn check_expr_depth(root: &Expr) -> Result<(), Error> {
+    enum Frame<'a> {
+        Expr(&'a Expr, usize),
+        Index(&'a IndexSpec, usize),
+    }
+    let mut stack = vec![Frame::Expr(root, 0)];
+    while let Some(frame) = stack.pop() {
+        match frame {
+            Frame::Expr(expr, depth) => {
+                if depth >= crate::ir::MAX_EXPR_DEPTH {
+                    return Err(crate::ir::expr_too_deep());
+                }
+                match expr {
+                    Expr::Param(_) | Expr::Data(_) | Expr::Const(_) => {}
+                    Expr::Bin { left, right, .. } => {
+                        stack.push(Frame::Expr(left, depth + 1));
+                        stack.push(Frame::Expr(right, depth + 1));
+                    }
+                    Expr::Unary { operand, .. } => stack.push(Frame::Expr(operand, depth + 1)),
+                    Expr::Index { base, index } => {
+                        stack.push(Frame::Expr(base, depth + 1));
+                        stack.push(Frame::Index(index, depth + 1));
+                    }
+                    Expr::VectorScatter {
+                        length,
+                        observed_idx,
+                        observed_values,
+                        missing_idx,
+                        missing_values,
+                    } => {
+                        for child in [
+                            length,
+                            observed_idx,
+                            observed_values,
+                            missing_idx,
+                            missing_values,
+                        ] {
+                            stack.push(Frame::Expr(child, depth + 1));
+                        }
+                    }
+                }
+            }
+            Frame::Index(spec, depth) => {
+                if depth >= crate::ir::MAX_EXPR_DEPTH {
+                    return Err(crate::ir::expr_too_deep());
+                }
+                match spec {
+                    IndexSpec::Full => {}
+                    IndexSpec::Scalar(expr) => stack.push(Frame::Expr(expr, depth + 1)),
+                    IndexSpec::Tuple(items) => {
+                        for item in items {
+                            stack.push(Frame::Index(item, depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Depth-check every expression a `ModelMeta` carries. Runs before anything
+/// recurses over the meta (evaluation, `Debug` formatting for the identity
+/// hash), so a hostile depth yields a typed error instead of a stack overflow.
+fn check_meta_expr_depth(meta: &ModelMeta) -> Result<(), Error> {
+    let mut exprs: Vec<&Expr> = Vec::new();
+    for (_, param) in &meta.params {
+        exprs.extend(distribution_exprs(&param.distribution));
+    }
+    for observed in &meta.observed_nodes {
+        exprs.extend(distribution_exprs(&observed.distribution));
+    }
+    for (_, expr) in &meta.expressions {
+        exprs.push(expr);
+    }
+    for site in &meta.stochastic_sites {
+        exprs.extend(distribution_exprs(&site.distribution));
+        exprs.push(&site.value);
+    }
+    for expr in exprs {
+        check_expr_depth(expr)?;
+    }
+    Ok(())
+}
+
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
@@ -297,6 +411,7 @@ pub struct Posterior {
 
 impl Posterior {
     pub fn new(meta: ModelMeta, data: Vec<(String, DataValue)>) -> Result<Posterior, Error> {
+        check_meta_expr_depth(&meta)?;
         let identity_hash = posterior_identity_hash(&meta, &data);
         let mut data_map: HashMap<String, DataValue> = HashMap::new();
         for (name, value) in data {
@@ -473,6 +588,28 @@ impl Posterior {
         Ok(())
     }
 
+    /// Build the logp graph once for repeated evaluation. The graph
+    /// structure of a bound model is point-independent (index expressions
+    /// are parameter-free by IR contract), so the compiled tape is replayed
+    /// in place per point instead of being rebuilt — this is what keeps the
+    /// per-leapfrog-step cost to a forward/backward sweep.
+    pub fn compile(&self) -> Result<CompiledLogp, Error> {
+        let q0 = vec![0.0; self.n_params];
+        let (tape, root, leaves) = self.build_logp(&q0)?;
+        Ok(CompiledLogp {
+            tape,
+            root,
+            leaves,
+            slots: self
+                .free
+                .iter()
+                .map(|slot| (slot.offset, slot.size))
+                .collect(),
+            n_params: self.n_params,
+            adjoints: Vec::new(),
+        })
+    }
+
     fn build_logp(&self, q: &[f64]) -> Result<(Tape, Var, Vec<Var>), Error> {
         self.validate_q(q)?;
         let mut tape = Tape::new();
@@ -511,6 +648,50 @@ impl Posterior {
             lp = env.tape.add(lp, total);
         }
         Ok((env.tape, lp, leaves))
+    }
+}
+
+/// A [`Posterior`]'s logp/gradient evaluator with a prebuilt tape: leaves
+/// are updated in place, the forward pass is replayed, and the backward pass
+/// reuses its adjoint slot buffer. Produces bit-identical results to
+/// [`Posterior::logp_grad`], without rebuilding the graph per point.
+pub struct CompiledLogp {
+    tape: Tape,
+    root: Var,
+    leaves: Vec<Var>,
+    /// (offset, size) into `q` per leaf, in packing order.
+    slots: Vec<(usize, usize)>,
+    n_params: usize,
+    adjoints: Vec<Option<Tensor>>,
+}
+
+impl CompiledLogp {
+    pub fn n_params(&self) -> usize {
+        self.n_params
+    }
+
+    /// Log density and gradient at the unconstrained point `q`.
+    pub fn logp_grad(&mut self, q: &[f64]) -> Result<(f64, Vec<f64>), Error> {
+        if q.len() != self.n_params {
+            return Err(mismatch(format!(
+                "unconstrained parameter vector q has wrong length: expected {}, got {}",
+                self.n_params,
+                q.len()
+            )));
+        }
+        for (leaf, (offset, size)) in self.leaves.iter().zip(&self.slots) {
+            self.tape.set_leaf(*leaf, &q[*offset..offset + size]);
+        }
+        self.tape.replay();
+        let logp = self.tape.value(self.root).data()[0];
+        let grads = self
+            .tape
+            .backward_into(self.root, &self.leaves, &mut self.adjoints);
+        let mut grad = Vec::with_capacity(self.n_params);
+        for tensor in grads {
+            grad.extend_from_slice(tensor.data());
+        }
+        Ok((logp, grad))
     }
 }
 
@@ -802,5 +983,46 @@ impl<'a> Env<'a> {
                 cutpoints: self.evaluate(cutpoints)?,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{BinOpKind, Distribution, Expr, ResolvedParam, Size};
+
+    #[test]
+    fn programmatic_deep_expressions_are_a_typed_error_not_a_crash() {
+        // Built iteratively, checked iteratively: depth 4096 must produce a
+        // typed error before anything (evaluation, Debug hashing) recurses.
+        let mut loc = Expr::Const(0.0);
+        for _ in 0..4096 {
+            loc = Expr::Bin {
+                op: BinOpKind::Add,
+                left: Box::new(loc),
+                right: Box::new(Expr::Const(1.0)),
+            };
+        }
+        let meta = ModelMeta {
+            params: vec![(
+                "x".to_string(),
+                ResolvedParam {
+                    distribution: Distribution::Normal {
+                        loc,
+                        scale: Expr::Const(1.0),
+                    },
+                    constraint: None,
+                    size: Size::Scalar,
+                },
+            )],
+            data: vec![],
+            observed_nodes: vec![],
+            expressions: vec![],
+            free_values: vec![],
+            stochastic_sites: vec![],
+        };
+        let err = Posterior::new(meta, vec![]).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::MalformedDocument);
+        assert!(err.message.contains("nesting"), "message: {}", err.message);
     }
 }

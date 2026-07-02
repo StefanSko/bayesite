@@ -5,8 +5,16 @@
 //! lexical identity is preserved: `1` parses to `Int(1)`, `1.0` to
 //! `Float(1.0)`. `NaN`/`Infinity` tokens are rejected — they are not JSON,
 //! and a non-finite constant in a log density is an upstream bug.
+//!
+//! Container nesting is bounded by [`MAX_DEPTH`] so untrusted input yields a
+//! typed `MalformedJson` error instead of exhausting the call stack.
 
 use crate::error::{Error, ErrorKind};
+
+/// Maximum container nesting depth accepted by [`parse`]. The parser recurses
+/// per nesting level, so this bound is what turns a hostile
+/// `[[[[...]]]]` document into a typed error instead of a stack overflow.
+pub const MAX_DEPTH: usize = 256;
 
 /// A parsed JSON value. Object entries keep document order.
 #[derive(Debug, Clone, PartialEq)]
@@ -107,11 +115,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_value(&mut self) -> Result<Value, Error> {
+    fn parse_value(&mut self, depth: usize) -> Result<Value, Error> {
         self.skip_ws();
         match self.peek() {
-            Some(b'{') => self.parse_object(),
-            Some(b'[') => self.parse_array(),
+            Some(b'{') => self.parse_object(depth),
+            Some(b'[') => self.parse_array(depth),
             Some(b'"') => Ok(Value::Str(self.parse_string()?)),
             Some(b't') => self.parse_keyword("true", Value::Bool(true)),
             Some(b'f') => self.parse_keyword("false", Value::Bool(false)),
@@ -139,7 +147,21 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_object(&mut self) -> Result<Value, Error> {
+    /// Bounds-check one container nesting level (`depth` enclosing containers
+    /// already open). Every container costs one recursion frame, so this is
+    /// the stack-overflow guard for hostile documents.
+    fn check_depth(&self, depth: usize) -> Result<(), Error> {
+        if depth >= MAX_DEPTH {
+            return Err(err(format!(
+                "container nesting exceeds the supported depth of {MAX_DEPTH}; \
+                 flatten the document"
+            )));
+        }
+        Ok(())
+    }
+
+    fn parse_object(&mut self, depth: usize) -> Result<Value, Error> {
+        self.check_depth(depth)?;
         self.expect(b'{')?;
         let mut entries: Vec<(String, Value)> = Vec::new();
         self.skip_ws();
@@ -152,7 +174,7 @@ impl<'a> Parser<'a> {
             let key = self.parse_string()?;
             self.skip_ws();
             self.expect(b':')?;
-            let value = self.parse_value()?;
+            let value = self.parse_value(depth + 1)?;
             entries.push((key, value));
             self.skip_ws();
             match self.bump() {
@@ -170,7 +192,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_array(&mut self) -> Result<Value, Error> {
+    fn parse_array(&mut self, depth: usize) -> Result<Value, Error> {
+        self.check_depth(depth)?;
         self.expect(b'[')?;
         let mut items = Vec::new();
         self.skip_ws();
@@ -179,7 +202,7 @@ impl<'a> Parser<'a> {
             return Ok(Value::Array(items));
         }
         loop {
-            items.push(self.parse_value()?);
+            items.push(self.parse_value(depth + 1)?);
             self.skip_ws();
             match self.bump() {
                 Some(b',') => continue,
@@ -381,7 +404,7 @@ pub fn parse(text: &str) -> Result<Value, Error> {
         bytes: text.as_bytes(),
         pos: 0,
     };
-    let value = parser.parse_value()?;
+    let value = parser.parse_value(0)?;
     parser.skip_ws();
     if parser.pos != parser.bytes.len() {
         return Err(err(format!(
@@ -585,6 +608,42 @@ mod tests {
         let text = write(&Value::Float(1.0)).unwrap();
         assert_eq!(text, "1.0");
         assert_eq!(parse(&text).unwrap(), Value::Float(1.0));
+    }
+
+    #[test]
+    fn nesting_at_the_depth_limit_parses() {
+        let text = format!("{}1{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+        let mut value = parse(&text).unwrap();
+        for _ in 0..MAX_DEPTH {
+            let Value::Array(items) = value else {
+                panic!("expected nested arrays")
+            };
+            value = items.into_iter().next().unwrap();
+        }
+        assert_eq!(value, Value::Int(1));
+    }
+
+    #[test]
+    fn nesting_beyond_the_depth_limit_is_a_typed_error_not_a_crash() {
+        // Far past the limit: without the bound this overflows the stack.
+        for text in [
+            format!(
+                "{}1{}",
+                "[".repeat(MAX_DEPTH + 1),
+                "]".repeat(MAX_DEPTH + 1)
+            ),
+            "[".repeat(100_000),
+            format!("{}{}", "[".repeat(100_000), "]".repeat(100_000)),
+            "{\"k\":".repeat(100_000),
+        ] {
+            let error = parse(&text).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::MalformedJson);
+            assert!(
+                error.message.contains("nesting"),
+                "unexpected message: {}",
+                error.message
+            );
+        }
     }
 
     #[test]

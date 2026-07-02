@@ -41,7 +41,10 @@ pub extern "C" fn bayesite_dealloc(ptr: *mut u8, len: usize) {
 
 /// Run one JSON request; returns the response buffer and writes its
 /// length to `out_len`. A malformed or non-UTF-8 request yields a JSON
-/// error object, never a trap.
+/// error object, never a trap. The recursive consumers behind this seam
+/// are depth-bounded (`json::MAX_DEPTH`, `ir::MAX_EXPR_DEPTH`), so deeply
+/// nested untrusted input yields a typed error instead of exhausting the
+/// stack.
 #[no_mangle]
 pub extern "C" fn bayesite_run(ptr: *const u8, len: usize, out_len: *mut u32) -> *mut u8 {
     let request_bytes = if ptr.is_null() {
