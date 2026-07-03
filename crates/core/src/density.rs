@@ -61,6 +61,11 @@ pub enum DistVars {
         eta: Var,
         cutpoints: Var,
     },
+    Truncated {
+        base: Box<DistVars>,
+        lower: Option<Var>,
+        upper: Option<Var>,
+    },
 }
 
 fn mismatch(message: impl Into<String>) -> Error {
@@ -373,6 +378,140 @@ pub fn log_prob(tape: &mut Tape, dist: &DistVars, value: Var) -> Result<Var, Err
         DistVars::OrderedLogistic { eta, cutpoints } => {
             ordered_logistic_log_prob(tape, *eta, *cutpoints, value)
         }
+        DistVars::Truncated { base, lower, upper } => {
+            // logp(x) = base_logp(x) - ln(base_cdf(upper) - base_cdf(lower)),
+            // masked to the truncation interval; the base builder already
+            // masks the base support.
+            let base_lp = log_prob(tape, base, value)?;
+            let log_z = truncation_log_normalizer(tape, base, *lower, *upper)?;
+            let lp = tape.sub(base_lp, log_z);
+            let support = match (lower, upper) {
+                (Some(l), Some(u)) => {
+                    let ge = tape.ge(value, *l)?;
+                    let le = tape.le(value, *u)?;
+                    Some(tape.and(ge, le)?)
+                }
+                (Some(l), None) => Some(tape.ge(value, *l)?),
+                (None, Some(u)) => Some(tape.le(value, *u)?),
+                (None, None) => None,
+            };
+            Ok(match support {
+                Some(support) => mask_support(tape, support, lp),
+                None => lp,
+            })
+        }
+    }
+}
+
+/// ln(base_cdf(upper) - base_cdf(lower)) as a tape graph, with a missing
+/// bound contributing CDF 0 / 1. Computed in log space (Normal) or clamped
+/// closed form (Uniform, Exponential) so the normalizer keeps relative
+/// precision when the retained mass sits far in a tail, and composed from
+/// differentiable ops so gradients flow through symbolic base parameters
+/// and bounds.
+fn truncation_log_normalizer(
+    tape: &mut Tape,
+    base: &DistVars,
+    lower: Option<Var>,
+    upper: Option<Var>,
+) -> Result<Var, Error> {
+    match base {
+        DistVars::Normal { loc, scale } => {
+            let standardize = |tape: &mut Tape, bound: Var| {
+                let delta = tape.sub(bound, *loc);
+                tape.div(delta, *scale)
+            };
+            match (lower, upper) {
+                (Some(l), None) => {
+                    // Z = 1 - Phi(a) = Phi(-a).
+                    let a = standardize(tape, l);
+                    let neg_a = tape.neg(a);
+                    Ok(tape.log_ndtr(neg_a))
+                }
+                (None, Some(u)) => {
+                    let b = standardize(tape, u);
+                    Ok(tape.log_ndtr(b))
+                }
+                (Some(l), Some(u)) => {
+                    // ln(Phi(b) - Phi(a)) = hi + log1p(-exp(lo - hi)). By
+                    // symmetry Phi(b) - Phi(a) = Phi(-a) - Phi(-b), and
+                    // log_ndtr keeps full relative precision only in the
+                    // left tail, so mirror when the interval sits right of
+                    // the mean (naively, Phi(9) - Phi(8) cancels to zero).
+                    let a = standardize(tape, l);
+                    let b = standardize(tape, u);
+                    let neg_a = tape.neg(a);
+                    let neg_b = tape.neg(b);
+                    let direct_hi = tape.log_ndtr(b);
+                    let direct_lo = tape.log_ndtr(a);
+                    let mirror_hi = tape.log_ndtr(neg_a);
+                    let mirror_lo = tape.log_ndtr(neg_b);
+                    let midpoint = tape.add(a, b);
+                    let zero = scalar(tape, 0.0);
+                    let mirror = tape.gt(midpoint, zero)?;
+                    let hi = tape.where_select(mirror, mirror_hi, direct_hi);
+                    let lo = tape.where_select(mirror, mirror_lo, direct_lo);
+                    let gap = tape.sub(lo, hi);
+                    let ratio = tape.exp(gap);
+                    let neg_ratio = tape.neg(ratio);
+                    let tail = tape.ln_1p(neg_ratio);
+                    Ok(tape.add(hi, tail))
+                }
+                (None, None) => Ok(scalar(tape, 0.0)),
+            }
+        }
+        DistVars::Uniform { low, high } => {
+            // Z = (min(u, high) - max(l, low)) / (high - low).
+            let eff_lower = match lower {
+                Some(l) => {
+                    let above = tape.ge(l, *low)?;
+                    tape.where_select(above, l, *low)
+                }
+                None => *low,
+            };
+            let eff_upper = match upper {
+                Some(u) => {
+                    let below = tape.le(u, *high)?;
+                    tape.where_select(below, u, *high)
+                }
+                None => *high,
+            };
+            let width = tape.sub(eff_upper, eff_lower);
+            let log_width = tape.ln(width);
+            let full = tape.sub(*high, *low);
+            let log_full = tape.ln(full);
+            Ok(tape.sub(log_width, log_full))
+        }
+        DistVars::Exponential { rate } => {
+            // CDF(t) = 1 - exp(-rate t) on t >= 0, so with l' = max(l, 0):
+            // ln Z = -rate l' + ln(1 - exp(-rate (u - l'))).
+            let zero = scalar(tape, 0.0);
+            let eff_lower = match lower {
+                Some(l) => {
+                    let positive = tape.ge(l, zero)?;
+                    tape.where_select(positive, l, zero)
+                }
+                None => zero,
+            };
+            let rate_lower = tape.mul(*rate, eff_lower);
+            let head = tape.neg(rate_lower);
+            match upper {
+                None => Ok(head),
+                Some(u) => {
+                    let span = tape.sub(u, eff_lower);
+                    let rate_span = tape.mul(*rate, span);
+                    let neg_rate_span = tape.neg(rate_span);
+                    let survival = tape.exp(neg_rate_span);
+                    let neg_survival = tape.neg(survival);
+                    let tail = tape.ln_1p(neg_survival);
+                    Ok(tape.add(head, tail))
+                }
+            }
+        }
+        _ => Err(mismatch(
+            "Truncated base must be a distribution with a scalar CDF and inverse CDF \
+             (Normal, Uniform, or Exponential)",
+        )),
     }
 }
 

@@ -5,28 +5,19 @@ use bayesite_core::ir::{decode_model, Constraint, Size};
 use bayesite_core::json;
 
 fn fixture(name: &str) -> json::Value {
-    // Corpus fixtures are the vendored bayeswire conformance corpus; names
-    // prefixed `cli_` are pre-Truncated engine test assets under tests/data/
-    // (see fixtures_eval.rs for the pinned Truncated gap).
-    let dir = if name.starts_with("cli_") {
-        format!("{}/tests/data/cli_models", env!("CARGO_MANIFEST_DIR"))
-    } else {
-        format!(
-            "{}/../../tests/golden_ir/fixtures",
-            env!("CARGO_MANIFEST_DIR")
-        )
-    };
-    let path = format!("{dir}/{name}.json");
+    let path = format!(
+        "{}/../../tests/golden_ir/fixtures/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read fixture {path}: {e}"));
     json::parse(&text).expect("fixture JSON parses")
 }
 
-/// Corpus fixtures whose documents decode on this backend today; the two
-/// Truncated-bearing corpus fixtures are pinned as explicit decode failures
-/// in fixtures_eval.rs.
-const DECODABLE_FIXTURES: [&str; 4] = [
+const DECODABLE_FIXTURES: [&str; 6] = [
+    "bounded_rates",
     "eight_schools_non_centered",
+    "linear_regression",
     "ordinal_regression",
     "partially_observed_mvn",
     "varying_intercepts_poisson",
@@ -55,7 +46,7 @@ fn packing_order_follows_free_values() {
 
 #[test]
 fn decodes_constraints() {
-    let doc = fixture("cli_bounded_rates");
+    let doc = fixture("bounded_rates");
     let meta = decode_model(doc.get("ir").unwrap()).unwrap();
     let free = meta.resolved_free_values();
     assert_eq!(free[0].1.constraint, Some(Constraint::UnitInterval));
@@ -70,7 +61,7 @@ fn decodes_constraints() {
 
 #[test]
 fn stochastic_sites_are_in_document_order() {
-    let doc = fixture("cli_linear_regression");
+    let doc = fixture("linear_regression");
     let meta = decode_model(doc.get("ir").unwrap()).unwrap();
     let sites = meta.resolved_stochastic_sites();
     let names: Vec<&str> = sites.iter().map(|s| s.name.as_str()).collect();

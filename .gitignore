@@ -1,3 +1,4 @@
 /target/
+/tools/bench/logp-grad/target/
 /demo/bayesite_core.wasm
 __pycache__/

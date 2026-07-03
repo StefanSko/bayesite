@@ -143,6 +143,14 @@ pub enum Distribution {
         eta: Expr,
         cutpoints: Expr,
     },
+    /// `base` restricted to distributions with a scalar CDF and inverse CDF
+    /// (Normal, Uniform, Exponential), mirroring `has_scalar_inverse_cdf`
+    /// in bayeswire; at least one bound is present.
+    Truncated {
+        base: Box<Distribution>,
+        lower: Option<Expr>,
+        upper: Option<Expr>,
+    },
 }
 
 /// A data-shape dimension: a literal or a reference to scalar integer data.
@@ -323,6 +331,15 @@ fn node_tag(value: &Value) -> Option<&str> {
 
 fn decode_expr(value: &Value) -> Result<Expr, Error> {
     decode_expr_at(value, 0)
+}
+
+/// A nullable expression field (`value` kind: scalar, node, or null).
+fn decode_optional_expr(value: &Value) -> Result<Option<Expr>, Error> {
+    if matches!(value, Value::Null) {
+        Ok(None)
+    } else {
+        decode_expr(value).map(Some)
+    }
 }
 
 fn decode_expr_at(value: &Value, depth: usize) -> Result<Expr, Error> {
@@ -555,6 +572,33 @@ fn decode_distribution(value: &Value) -> Result<Distribution, Error> {
             eta: expr(&mut node, "eta")?,
             cutpoints: expr(&mut node, "cutpoints")?,
         },
+        "Truncated" => {
+            let base_value = node.field("base")?;
+            // Check the tag before recursing so hostile nesting of Truncated
+            // bases cannot recurse the decoder.
+            match node_tag(base_value) {
+                Some("Normal") | Some("Uniform") | Some("Exponential") => {}
+                _ => {
+                    return Err(malformed(
+                        "Truncated base must be a distribution with a scalar CDF and \
+                         inverse CDF (Normal, Uniform, or Exponential)",
+                    ))
+                }
+            }
+            let base = decode_distribution(base_value)?;
+            let lower = decode_optional_expr(node.field("lower")?)?;
+            let upper = decode_optional_expr(node.field("upper")?)?;
+            if lower.is_none() && upper.is_none() {
+                return Err(malformed(
+                    "Truncated needs at least one of \"lower\"/\"upper\"; both are null",
+                ));
+            }
+            Distribution::Truncated {
+                base: Box::new(base),
+                lower,
+                upper,
+            }
+        }
         other => return Err(unknown_tag(other, "a distribution")),
     };
     node.finish()?;

@@ -18,6 +18,7 @@ use crate::ir::{
 use crate::json::{self, Value};
 use crate::model::{DataValue, Posterior};
 use crate::rng::Xoshiro256PlusPlus;
+use crate::special;
 use crate::tensor::{gather_map, IndexAtom, Tensor};
 
 #[derive(Debug, Clone)]
@@ -406,6 +407,21 @@ fn broadcast_param(param: &Tensor, shape: &[usize], name: &str) -> Result<Tensor
     })
 }
 
+fn broadcast_bound(
+    bound: &Option<Tensor>,
+    shape: &[usize],
+    name: &str,
+) -> Result<Option<Tensor>, Error> {
+    match bound {
+        Some(bound) => Ok(Some(broadcast_param(bound, shape, name)?)),
+        None => Ok(None),
+    }
+}
+
+fn bound_at(bound: &Option<Tensor>, index: usize) -> Option<f64> {
+    bound.as_ref().map(|bound| bound.data()[index])
+}
+
 fn ensure_finite(value: f64, context: &str) -> Result<f64, Error> {
     if value.is_finite() {
         Ok(value)
@@ -495,6 +511,139 @@ fn sample_binomial(
         }
     }
     Ok(count as f64)
+}
+
+fn truncation_bound(bound: Option<f64>, context: &str) -> Result<Option<f64>, Error> {
+    match bound {
+        Some(value) => Ok(Some(ensure_finite(value, context)?)),
+        None => Ok(None),
+    }
+}
+
+fn no_truncated_mass(lower: Option<f64>, upper: Option<f64>) -> Error {
+    nonfinite(format!(
+        "Truncated bounds leave no probability mass (lower {lower:?}, upper {upper:?})"
+    ))
+}
+
+/// Inverse-CDF truncated normal draw: u ~ U(Phi(alpha), Phi(beta)),
+/// x = loc + scale * ndtri_exp(ln u), mirrored into the left tail when the
+/// interval sits right of the mean so the CDF values keep relative
+/// precision (Phi(z) rounds to 1 for z beyond ~8, which would collapse a
+/// far right tail to a handful of representable draws), and computed in
+/// log-CDF space so tails past the f64 underflow horizon (|z| > ~38, where
+/// Phi has no representation at all) still sample correctly.
+fn sample_truncated_normal(
+    rng: &mut Xoshiro256PlusPlus,
+    loc: f64,
+    scale: f64,
+    lower: Option<f64>,
+    upper: Option<f64>,
+) -> Result<f64, Error> {
+    let loc = ensure_finite(loc, "Truncated Normal loc")?;
+    let scale = ensure_finite(scale, "Truncated Normal scale")?;
+    if scale <= 0.0 {
+        return Err(nonfinite(format!(
+            "Normal scale must be positive, got {scale}"
+        )));
+    }
+    let lower = truncation_bound(lower, "Truncated Normal lower bound")?;
+    let upper = truncation_bound(upper, "Truncated Normal upper bound")?;
+    let mut alpha = lower.map(|l| (l - loc) / scale);
+    let mut beta = upper.map(|u| (u - loc) / scale);
+    let flip = match (alpha, beta) {
+        (Some(alpha), Some(beta)) => alpha + beta > 0.0,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    if flip {
+        (alpha, beta) = (beta.map(|v| -v), alpha.map(|v| -v));
+    }
+    // Log-space CDF endpoints: raw Phi underflows to zero beyond ~38
+    // standardized units, which would report the interval as massless even
+    // though the log-density path evaluates the same model.
+    let log_hi = beta.map_or(0.0, special::log_ndtr);
+    // Head fraction r = Phi(alpha) / Phi(beta) in [0, 1).
+    let ratio = match alpha.map(special::log_ndtr) {
+        Some(log_lo) => (log_lo - log_hi).exp(),
+        None => 0.0,
+    };
+    if ratio.is_nan() || ratio >= 1.0 {
+        return Err(no_truncated_mass(lower, upper));
+    }
+    // u = Phi(alpha) + (Phi(beta) - Phi(alpha)) v with v in (0, 1], so
+    // log u = log_hi + ln(r + v (1 - r)) stays exact however deep the tail.
+    let v = 1.0 - rng.uniform();
+    let log_u = log_hi + (ratio + v * (1.0 - ratio)).ln();
+    let mut z = special::ndtri_exp(log_u);
+    if flip {
+        z = -z;
+    }
+    // Clamp fp overshoot onto the closed truncation interval.
+    let x = (loc + scale * z).clamp(
+        lower.unwrap_or(f64::NEG_INFINITY),
+        upper.unwrap_or(f64::INFINITY),
+    );
+    ensure_finite(x, "Truncated Normal draw")
+}
+
+/// Inverse-CDF truncated exponential draw on [max(l, 0), u]:
+/// x = l' - ln(1 - v (1 - exp(-rate (u - l')))) / rate with v ~ U[0, 1),
+/// using the memorylessness shift so the head factor never underflows.
+fn sample_truncated_exponential(
+    rng: &mut Xoshiro256PlusPlus,
+    rate: f64,
+    lower: Option<f64>,
+    upper: Option<f64>,
+) -> Result<f64, Error> {
+    let rate = ensure_finite(rate, "Exponential rate")?;
+    if rate <= 0.0 {
+        return Err(nonfinite(format!(
+            "Exponential rate must be positive, got {rate}"
+        )));
+    }
+    let lower = truncation_bound(lower, "Truncated Exponential lower bound")?;
+    let upper = truncation_bound(upper, "Truncated Exponential upper bound")?;
+    let eff_lower = lower.unwrap_or(0.0).max(0.0);
+    let x = match upper {
+        None => eff_lower - (1.0 - rng.uniform()).ln() / rate,
+        Some(u) => {
+            if u <= eff_lower {
+                return Err(no_truncated_mass(lower, upper));
+            }
+            // 1 - exp(-rate span) without cancellation.
+            let span_mass = -(-rate * (u - eff_lower)).exp_m1();
+            let x = eff_lower - (-(rng.uniform() * span_mass)).ln_1p() / rate;
+            x.clamp(eff_lower, u)
+        }
+    };
+    ensure_finite(x, "Truncated Exponential draw")
+}
+
+/// Truncated uniform draw on the clamped overlap of the truncation interval
+/// and the base support.
+fn sample_truncated_uniform(
+    rng: &mut Xoshiro256PlusPlus,
+    low: f64,
+    high: f64,
+    lower: Option<f64>,
+    upper: Option<f64>,
+) -> Result<f64, Error> {
+    let low = ensure_finite(low, "Uniform low")?;
+    let high = ensure_finite(high, "Uniform high")?;
+    if high <= low {
+        return Err(nonfinite(format!(
+            "Uniform high must be greater than low, got low={low}, high={high}"
+        )));
+    }
+    let lower = truncation_bound(lower, "Truncated Uniform lower bound")?;
+    let upper = truncation_bound(upper, "Truncated Uniform upper bound")?;
+    let eff_lower = lower.unwrap_or(low).max(low);
+    let eff_upper = upper.unwrap_or(high).min(high);
+    if eff_upper <= eff_lower {
+        return Err(no_truncated_mass(lower, upper));
+    }
+    Ok(eff_lower + (eff_upper - eff_lower) * rng.uniform())
 }
 
 fn sample_categorical(rng: &mut Xoshiro256PlusPlus, probs: &[f64]) -> Result<f64, Error> {
@@ -801,6 +950,88 @@ fn sample_distribution(
                 data.push(value);
             }
             Ok(Tensor::from_vec(shape, data))
+        }
+        Distribution::Truncated { base, lower, upper } => {
+            let lower_t = match lower {
+                Some(expr) => Some(env.evaluate(expr)?),
+                None => None,
+            };
+            let upper_t = match upper {
+                Some(expr) => Some(env.evaluate(expr)?),
+                None => None,
+            };
+            match base.as_ref() {
+                Distribution::Normal { loc, scale } => {
+                    let loc = env.evaluate(loc)?;
+                    let scale = env.evaluate(scale)?;
+                    let mut params: Vec<&Tensor> = vec![&loc, &scale];
+                    params.extend(lower_t.iter());
+                    params.extend(upper_t.iter());
+                    let shape = output_shape(&params, target_shape)?;
+                    let loc = broadcast_param(&loc, &shape, "Truncated Normal loc")?;
+                    let scale = broadcast_param(&scale, &shape, "Truncated Normal scale")?;
+                    let lower_b = broadcast_bound(&lower_t, &shape, "Truncated lower bound")?;
+                    let upper_b = broadcast_bound(&upper_t, &shape, "Truncated upper bound")?;
+                    let mut data = Vec::with_capacity(loc.len());
+                    for i in 0..loc.data().len() {
+                        data.push(sample_truncated_normal(
+                            rng,
+                            loc.data()[i],
+                            scale.data()[i],
+                            bound_at(&lower_b, i),
+                            bound_at(&upper_b, i),
+                        )?);
+                    }
+                    Ok(Tensor::from_vec(shape, data))
+                }
+                Distribution::Exponential { rate } => {
+                    let rate = env.evaluate(rate)?;
+                    let mut params: Vec<&Tensor> = vec![&rate];
+                    params.extend(lower_t.iter());
+                    params.extend(upper_t.iter());
+                    let shape = output_shape(&params, target_shape)?;
+                    let rate = broadcast_param(&rate, &shape, "Truncated Exponential rate")?;
+                    let lower_b = broadcast_bound(&lower_t, &shape, "Truncated lower bound")?;
+                    let upper_b = broadcast_bound(&upper_t, &shape, "Truncated upper bound")?;
+                    let mut data = Vec::with_capacity(rate.len());
+                    for i in 0..rate.data().len() {
+                        data.push(sample_truncated_exponential(
+                            rng,
+                            rate.data()[i],
+                            bound_at(&lower_b, i),
+                            bound_at(&upper_b, i),
+                        )?);
+                    }
+                    Ok(Tensor::from_vec(shape, data))
+                }
+                Distribution::Uniform { low, high } => {
+                    let low = env.evaluate(low)?;
+                    let high = env.evaluate(high)?;
+                    let mut params: Vec<&Tensor> = vec![&low, &high];
+                    params.extend(lower_t.iter());
+                    params.extend(upper_t.iter());
+                    let shape = output_shape(&params, target_shape)?;
+                    let low = broadcast_param(&low, &shape, "Truncated Uniform low")?;
+                    let high = broadcast_param(&high, &shape, "Truncated Uniform high")?;
+                    let lower_b = broadcast_bound(&lower_t, &shape, "Truncated lower bound")?;
+                    let upper_b = broadcast_bound(&upper_t, &shape, "Truncated upper bound")?;
+                    let mut data = Vec::with_capacity(low.len());
+                    for i in 0..low.data().len() {
+                        data.push(sample_truncated_uniform(
+                            rng,
+                            low.data()[i],
+                            high.data()[i],
+                            bound_at(&lower_b, i),
+                            bound_at(&upper_b, i),
+                        )?);
+                    }
+                    Ok(Tensor::from_vec(shape, data))
+                }
+                _ => Err(malformed(
+                    "Truncated base must be a distribution with a scalar CDF and inverse \
+                     CDF (Normal, Uniform, or Exponential)",
+                )),
+            }
         }
         Distribution::OrderedLogistic { eta, cutpoints } => {
             let eta = env.evaluate(eta)?;
@@ -2248,6 +2479,15 @@ fn posterior_predictive_target_shape(
         }
         Distribution::OrderedLogistic { eta, cutpoints: _ } => {
             include_expr_shape(env, &mut shape, eta)?;
+        }
+        Distribution::Truncated { base, lower, upper } => {
+            if let Some(lower) = lower {
+                include_expr_shape(env, &mut shape, lower)?;
+            }
+            if let Some(upper) = upper {
+                include_expr_shape(env, &mut shape, upper)?;
+            }
+            shape = posterior_predictive_target_shape(env, base, &shape)?;
         }
     }
     Ok(shape)

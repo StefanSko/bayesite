@@ -10,25 +10,12 @@ use bayesite_core::protocol::{diagnose_ndjson, handle_request, ndjson_lines};
 use bayesite_core::sampler::{sample, Settings};
 
 fn fixture_text(name: &str) -> String {
-    // Conformance fixtures come from the vendored bayeswire corpus. Names
-    // prefixed `cli_` are engine-behavior inputs kept under tests/data/
-    // because their models use `Truncated`, a core-profile tag this backend
-    // does not evaluate yet (see fixtures_eval.rs).
-    let corpus = format!(
+    // Conformance fixtures come from the vendored bayeswire corpus.
+    let path = format!(
         "{}/../../tests/golden_ir/fixtures/{}.json",
         env!("CARGO_MANIFEST_DIR"),
         name
     );
-    let local = format!(
-        "{}/tests/data/cli_models/{}.json",
-        env!("CARGO_MANIFEST_DIR"),
-        name
-    );
-    let path = if name.starts_with("cli_") {
-        local
-    } else {
-        corpus
-    };
     std::fs::read_to_string(path).expect("fixture readable")
 }
 
@@ -479,7 +466,7 @@ fn assert_diagnose_workflow_phases(value: &Value, field: &str) {
 
 #[test]
 fn sample_command_returns_single_chain_ndjson() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -605,8 +592,8 @@ fn sample_command_returns_single_chain_ndjson() {
 
 #[test]
 fn simulate_request_returns_plain_data_consumable_by_sample() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
-    let data = fixture_declared_data("cli_linear_regression", &["x"]);
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let data = fixture_declared_data("linear_regression", &["x"]);
     let truth = json::parse(r#"{"alpha": 1.5, "beta": 0.2, "sigma": 0.8}"#).unwrap();
     let request = Value::Object(vec![
         ("command".to_string(), Value::Str("simulate".to_string())),
@@ -647,8 +634,8 @@ fn simulate_request_returns_plain_data_consumable_by_sample() {
 
 #[test]
 fn recover_check_request_compares_fit_draws_to_supplied_truth() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
-    let data = fixture_declared_data("cli_linear_regression", &["x"]);
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let data = fixture_declared_data("linear_regression", &["x"]);
     let truth = json::parse(r#"{"alpha": 1.5, "beta": 0.2, "sigma": 0.8}"#).unwrap();
     let simulate_request = Value::Object(vec![
         ("command".to_string(), Value::Str("simulate".to_string())),
@@ -709,7 +696,7 @@ fn recover_check_request_compares_fit_draws_to_supplied_truth() {
 
 #[test]
 fn recover_check_request_supports_explicit_target_mapping() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -761,7 +748,7 @@ fn recover_check_request_supports_explicit_target_mapping() {
 
 #[test]
 fn simulate_request_allows_declared_data_refs_in_non_assignable_factors() {
-    let mut fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let mut fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let ir_doc = object_entry_mut(&mut fixture, "ir");
     let model = object_entry_mut(ir_doc, "model");
     let Value::Object(entries) = model else {
@@ -802,7 +789,7 @@ fn simulate_request_allows_declared_data_refs_in_non_assignable_factors() {
         ("model".to_string(), ir),
         (
             "data".to_string(),
-            fixture_declared_data("cli_linear_regression", &["x"]),
+            fixture_declared_data("linear_regression", &["x"]),
         ),
         (
             "truth".to_string(),
@@ -817,7 +804,7 @@ fn simulate_request_allows_declared_data_refs_in_non_assignable_factors() {
 
 #[test]
 fn recover_check_request_rejects_duplicate_truth_keys() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -854,13 +841,13 @@ fn recover_check_request_rejects_duplicate_truth_keys() {
 
 #[test]
 fn simulate_request_rejects_missing_free_value_truth() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let request = Value::Object(vec![
         ("command".to_string(), Value::Str("simulate".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
         (
             "data".to_string(),
-            fixture_declared_data("cli_linear_regression", &["x"]),
+            fixture_declared_data("linear_regression", &["x"]),
         ),
         (
             "truth".to_string(),
@@ -881,7 +868,7 @@ fn simulate_request_rejects_missing_free_value_truth() {
 
 #[test]
 fn posterior_predictive_request_returns_ndjson() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -922,7 +909,7 @@ fn posterior_predictive_request_returns_ndjson() {
 
 #[test]
 fn posterior_predictive_accepts_reordered_data_keys_for_same_fit() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -961,7 +948,7 @@ fn posterior_predictive_accepts_reordered_data_keys_for_same_fit() {
 
 #[test]
 fn posterior_predictive_rejects_stale_fit_for_different_data() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -1007,7 +994,7 @@ fn posterior_predictive_rejects_stale_fit_for_different_data() {
 
 #[test]
 fn posterior_predictive_rejects_partial_observed_site_coverage() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let mut model = fixture.get("ir").unwrap().clone();
     let model_meta = object_entry_mut(&mut model, "model");
     match object_entry_mut(model_meta, "observed_nodes") {
@@ -1113,7 +1100,7 @@ fn posterior_check_broadcasts_observed_values_to_replicated_shape() {
 
 #[test]
 fn posterior_predictive_uses_broadcast_likelihood_shape() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let mut data = fixture.get("data").unwrap().clone();
     if let Value::Object(entries) = &mut data {
         for (name, value) in entries {
@@ -1166,7 +1153,7 @@ fn posterior_predictive_uses_broadcast_likelihood_shape() {
 
 #[test]
 fn posterior_predictive_uses_distribution_integerness_not_observed_json_lexemes() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let mut data = fixture.get("data").unwrap().clone();
     if let Value::Object(entries) = &mut data {
         for (name, value) in entries {
@@ -1235,7 +1222,7 @@ fn posterior_predictive_uses_distribution_integerness_not_observed_json_lexemes(
 
 #[test]
 fn posterior_predictive_rejects_partial_fit_streams() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -1276,7 +1263,7 @@ fn posterior_predictive_rejects_partial_fit_streams() {
 
 #[test]
 fn posterior_check_handles_empty_observed_tensors() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let mut data = fixture.get("data").unwrap().clone();
     if let Value::Object(entries) = &mut data {
         for (name, value) in entries {
@@ -1347,7 +1334,7 @@ fn posterior_check_handles_empty_observed_tensors() {
 
 #[test]
 fn posterior_check_request_returns_factual_report() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -1386,7 +1373,7 @@ fn posterior_check_request_returns_factual_report() {
 
 #[test]
 fn diagnose_command_consumes_fit_ndjson() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let sample_request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -2316,7 +2303,7 @@ fn diagnostics_command_rejects_malformed_series_shape() {
 
 #[test]
 fn prior_predictive_command_returns_ndjson() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let request = Value::Object(vec![
         (
             "command".to_string(),
@@ -2325,7 +2312,7 @@ fn prior_predictive_command_returns_ndjson() {
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
         (
             "data".to_string(),
-            fixture_declared_data("cli_linear_regression", &["x"]),
+            fixture_declared_data("linear_regression", &["x"]),
         ),
         (
             "settings".to_string(),
@@ -2597,7 +2584,7 @@ fn prior_predictive_command_returns_ndjson() {
 
 #[test]
 fn prior_predictive_integer_sites_emit_integer_values() {
-    let fixture = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let fixture = json::parse(&fixture_text("bounded_rates")).unwrap();
     let request = Value::Object(vec![
         (
             "command".to_string(),
@@ -2702,7 +2689,7 @@ fn prior_predictive_declared_integer_data_emit_integer_values() {
 
 #[test]
 fn prior_predictive_sites_report_source_stochastic_site() {
-    let mut fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let mut fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let ir = object_entry_mut(&mut fixture, "ir");
     let model = object_entry_mut(ir, "model");
     let sites = object_entry_mut(model, "stochastic_sites");
@@ -2720,7 +2707,7 @@ fn prior_predictive_sites_report_source_stochastic_site() {
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
         (
             "data".to_string(),
-            fixture_declared_data("cli_linear_regression", &["x"]),
+            fixture_declared_data("linear_regression", &["x"]),
         ),
         (
             "settings".to_string(),
@@ -2745,7 +2732,7 @@ fn prior_predictive_sites_report_source_stochastic_site() {
 
 #[test]
 fn recover_command_returns_factual_report() {
-    let fixture = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let fixture = json::parse(&fixture_text("bounded_rates")).unwrap();
     let request = Value::Object(vec![
         ("command".to_string(), Value::Str("recover".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -3400,13 +3387,13 @@ fn workflow_commands_declared_integer_data_are_json_integers() {
 
 #[test]
 fn sbc_command_returns_rank_report_without_verdict() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let request = Value::Object(vec![
         ("command".to_string(), Value::Str("sbc".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
         (
             "data".to_string(),
-            fixture_declared_data("cli_linear_regression", &["x"]),
+            fixture_declared_data("linear_regression", &["x"]),
         ),
         (
             "settings".to_string(),
@@ -4338,7 +4325,7 @@ fn sbc_command_returns_rank_report_without_verdict() {
 
 #[test]
 fn sbc_command_integer_generated_observed_values_are_json_integers() {
-    let fixture = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let fixture = json::parse(&fixture_text("bounded_rates")).unwrap();
     let request = Value::Object(vec![
         ("command".to_string(), Value::Str("sbc".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -4379,7 +4366,7 @@ fn sbc_command_integer_generated_observed_values_are_json_integers() {
 
 #[test]
 fn workflow_requests_reject_unknown_fields() {
-    let fixture = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let fixture = json::parse(&fixture_text("bounded_rates")).unwrap();
     let request = Value::Object(vec![
         ("command".to_string(), Value::Str("recover".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -4423,7 +4410,7 @@ fn workflow_requests_reject_unknown_fields() {
 
 #[test]
 fn workflow_requests_report_data_field_shape() {
-    let fixture = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let fixture = json::parse(&fixture_text("bounded_rates")).unwrap();
     for (command, expected) in [
         ("recover", "recover request data must be an object"),
         ("sbc", "sbc request data must be an object"),
@@ -4466,11 +4453,11 @@ fn protocol_requests_reject_duplicate_control_fields() {
 
 #[test]
 fn artifact_requests_reject_unreportable_seed_values() {
-    let linear = json::parse(&fixture_text("cli_linear_regression")).unwrap();
-    let bounded = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let linear = json::parse(&fixture_text("linear_regression")).unwrap();
+    let bounded = json::parse(&fixture_text("bounded_rates")).unwrap();
     let linear_model = json::write(linear.get("ir").unwrap()).unwrap();
     let linear_data = json::write(linear.get("data").unwrap()).unwrap();
-    let linear_declared_data = json::write(&fixture_declared_data("cli_linear_regression", &["x"]))
+    let linear_declared_data = json::write(&fixture_declared_data("linear_regression", &["x"]))
         .expect("declared data writes");
     let bounded_model = json::write(bounded.get("ir").unwrap()).unwrap();
 
@@ -4519,11 +4506,11 @@ fn artifact_requests_reject_unreportable_seed_values() {
 
 #[test]
 fn artifact_requests_reject_unreportable_draw_counts() {
-    let linear = json::parse(&fixture_text("cli_linear_regression")).unwrap();
-    let bounded = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let linear = json::parse(&fixture_text("linear_regression")).unwrap();
+    let bounded = json::parse(&fixture_text("bounded_rates")).unwrap();
     let linear_model = json::write(linear.get("ir").unwrap()).unwrap();
     let linear_data = json::write(linear.get("data").unwrap()).unwrap();
-    let linear_declared_data = json::write(&fixture_declared_data("cli_linear_regression", &["x"]))
+    let linear_declared_data = json::write(&fixture_declared_data("linear_regression", &["x"]))
         .expect("declared data writes");
     let bounded_model = json::write(bounded.get("ir").unwrap()).unwrap();
 
@@ -4572,11 +4559,11 @@ fn artifact_requests_reject_unreportable_draw_counts() {
 
 #[test]
 fn artifact_requests_reject_unreportable_warmup_counts() {
-    let linear = json::parse(&fixture_text("cli_linear_regression")).unwrap();
-    let bounded = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let linear = json::parse(&fixture_text("linear_regression")).unwrap();
+    let bounded = json::parse(&fixture_text("bounded_rates")).unwrap();
     let linear_model = json::write(linear.get("ir").unwrap()).unwrap();
     let linear_data = json::write(linear.get("data").unwrap()).unwrap();
-    let linear_declared_data = json::write(&fixture_declared_data("cli_linear_regression", &["x"]))
+    let linear_declared_data = json::write(&fixture_declared_data("linear_regression", &["x"]))
         .expect("declared data writes");
     let bounded_model = json::write(bounded.get("ir").unwrap()).unwrap();
 
@@ -4619,11 +4606,11 @@ fn artifact_requests_reject_unreportable_warmup_counts() {
 
 #[test]
 fn artifact_requests_reject_unreportable_treedepth_bounds() {
-    let linear = json::parse(&fixture_text("cli_linear_regression")).unwrap();
-    let bounded = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let linear = json::parse(&fixture_text("linear_regression")).unwrap();
+    let bounded = json::parse(&fixture_text("bounded_rates")).unwrap();
     let linear_model = json::write(linear.get("ir").unwrap()).unwrap();
     let linear_data = json::write(linear.get("data").unwrap()).unwrap();
-    let linear_declared_data = json::write(&fixture_declared_data("cli_linear_regression", &["x"]))
+    let linear_declared_data = json::write(&fixture_declared_data("linear_regression", &["x"]))
         .expect("declared data writes");
     let bounded_model = json::write(bounded.get("ir").unwrap()).unwrap();
 
@@ -4664,10 +4651,10 @@ fn artifact_requests_reject_unreportable_treedepth_bounds() {
 
 #[test]
 fn workflow_requests_reject_unreportable_chain_counts() {
-    let linear = json::parse(&fixture_text("cli_linear_regression")).unwrap();
-    let bounded = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let linear = json::parse(&fixture_text("linear_regression")).unwrap();
+    let bounded = json::parse(&fixture_text("bounded_rates")).unwrap();
     let linear_model = json::write(linear.get("ir").unwrap()).unwrap();
-    let linear_declared_data = json::write(&fixture_declared_data("cli_linear_regression", &["x"]))
+    let linear_declared_data = json::write(&fixture_declared_data("linear_regression", &["x"]))
         .expect("declared data writes");
     let bounded_model = json::write(bounded.get("ir").unwrap()).unwrap();
 
@@ -4704,7 +4691,7 @@ fn workflow_requests_reject_unreportable_chain_counts() {
 
 #[test]
 fn recover_request_rejects_interval_with_request_path() {
-    let bounded = json::parse(&fixture_text("cli_bounded_rates")).unwrap();
+    let bounded = json::parse(&fixture_text("bounded_rates")).unwrap();
     let bounded_model = json::write(bounded.get("ir").unwrap()).unwrap();
     let request = format!(
         r#"{{"command":"recover","model":{bounded_model},"data":{{}},"settings":{{"interval":1.5,"chains":1,"num_warmup":0,"num_draws":4,"max_treedepth":4}},"seed":5}}"#
@@ -4726,9 +4713,9 @@ fn recover_request_rejects_interval_with_request_path() {
 
 #[test]
 fn sbc_request_rejects_unreportable_replicates() {
-    let linear = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let linear = json::parse(&fixture_text("linear_regression")).unwrap();
     let linear_model = json::write(linear.get("ir").unwrap()).unwrap();
-    let linear_declared_data = json::write(&fixture_declared_data("cli_linear_regression", &["x"]))
+    let linear_declared_data = json::write(&fixture_declared_data("linear_regression", &["x"]))
         .expect("declared data writes");
 
     let request = format!(
@@ -4749,7 +4736,7 @@ fn sbc_request_rejects_unreportable_replicates() {
 
 #[test]
 fn artifact_commands_reject_too_few_draws() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -4773,7 +4760,7 @@ fn artifact_commands_reject_too_few_draws() {
 
 #[test]
 fn prior_predictive_request_rejects_zero_draws() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let request = Value::Object(vec![
         (
             "command".to_string(),
@@ -4782,7 +4769,7 @@ fn prior_predictive_request_rejects_zero_draws() {
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
         (
             "data".to_string(),
-            fixture_declared_data("cli_linear_regression", &["x"]),
+            fixture_declared_data("linear_regression", &["x"]),
         ),
         (
             "settings".to_string(),
@@ -4803,7 +4790,7 @@ fn prior_predictive_request_rejects_zero_draws() {
 
 #[test]
 fn artifact_commands_reject_too_large_treedepth() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let request = Value::Object(vec![
         ("command".to_string(), Value::Str("sample".to_string())),
         ("model".to_string(), fixture.get("ir").unwrap().clone()),
@@ -4827,7 +4814,7 @@ fn artifact_commands_reject_too_large_treedepth() {
 
 #[test]
 fn ndjson_lines_rejects_too_few_draws() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
     let data = data_from_json(fixture.get("data").unwrap()).unwrap();
     let posterior = Posterior::new(meta, data).unwrap();
@@ -4848,7 +4835,7 @@ fn ndjson_lines_rejects_too_few_draws() {
 
 #[test]
 fn ndjson_lines_rejects_unreportable_chain_ids() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
     let data = data_from_json(fixture.get("data").unwrap()).unwrap();
     let posterior = Posterior::new(meta, data).unwrap();
@@ -4869,7 +4856,7 @@ fn ndjson_lines_rejects_unreportable_chain_ids() {
 
 #[test]
 fn ndjson_lines_rejects_unreportable_settings_counts() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
     let data = data_from_json(fixture.get("data").unwrap()).unwrap();
     let posterior = Posterior::new(meta, data).unwrap();
@@ -4906,7 +4893,7 @@ fn ndjson_lines_rejects_unreportable_settings_counts() {
 
 #[test]
 fn ndjson_lines_rejects_unreportable_chain_diagnostics() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
     let data = data_from_json(fixture.get("data").unwrap()).unwrap();
     let posterior = Posterior::new(meta, data).unwrap();
@@ -4939,7 +4926,7 @@ fn ndjson_lines_rejects_unreportable_chain_diagnostics() {
 
 #[test]
 fn ndjson_lines_rejects_mismatched_per_draw_sample_stats_lengths() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
     let data = data_from_json(fixture.get("data").unwrap()).unwrap();
     let posterior = Posterior::new(meta, data).unwrap();
@@ -4990,7 +4977,7 @@ fn ndjson_lines_rejects_mismatched_per_draw_sample_stats_lengths() {
 
 #[test]
 fn ndjson_lines_rejects_per_draw_stats_disagreeing_with_aggregates() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
     let data = data_from_json(fixture.get("data").unwrap()).unwrap();
     let posterior = Posterior::new(meta, data).unwrap();
@@ -5039,9 +5026,9 @@ fn ndjson_lines_rejects_per_draw_stats_disagreeing_with_aggregates() {
 
 #[test]
 fn prior_predictive_ndjson_rejects_unreportable_draw_count() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
-    let data = data_from_json(&fixture_declared_data("cli_linear_regression", &["x"])).unwrap();
+    let data = data_from_json(&fixture_declared_data("linear_regression", &["x"])).unwrap();
     let settings = PriorPredictiveSettings {
         num_draws: i64::MAX as usize + 1,
     };
@@ -5055,9 +5042,9 @@ fn prior_predictive_ndjson_rejects_unreportable_draw_count() {
 
 #[test]
 fn prior_predictive_ndjson_rejects_zero_draw_count() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
-    let data = data_from_json(&fixture_declared_data("cli_linear_regression", &["x"])).unwrap();
+    let data = data_from_json(&fixture_declared_data("linear_regression", &["x"])).unwrap();
     let settings = PriorPredictiveSettings { num_draws: 0 };
     let err = prior_predictive_ndjson_lines(meta, data, &settings, 13).unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidSettings);
@@ -5480,7 +5467,7 @@ fn diagnose_rejects_draw_line_stats_without_sample_stats_mode_marker() {
 
 #[test]
 fn ndjson_lines_rejects_per_draw_stats_out_of_parser_bounds() {
-    let fixture = json::parse(&fixture_text("cli_linear_regression")).unwrap();
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
     let data = data_from_json(fixture.get("data").unwrap()).unwrap();
     let posterior = Posterior::new(meta, data).unwrap();

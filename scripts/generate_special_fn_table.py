@@ -27,6 +27,9 @@ class _MpNumber(Protocol):
     def __rmul__(self, other: object) -> _MpNumber: ...
     def __sub__(self, other: object) -> _MpNumber: ...
     def __rsub__(self, other: object) -> _MpNumber: ...
+    def __neg__(self) -> _MpNumber: ...
+    def __pow__(self, other: object) -> _MpNumber: ...
+    def __lt__(self, other: object) -> bool: ...
 
 
 class _MpSettings(Protocol):
@@ -42,12 +45,20 @@ class _MpmathModule(Protocol):
 
     def mpf(self, value: object) -> _MpNumber: ...
     def sqrt(self, value: object) -> _MpNumber: ...
+    def log(self, value: _MpNumber) -> _MpNumber: ...
     def loggamma(self, value: _MpNumber) -> _MpNumber: ...
     def digamma(self, value: _MpNumber) -> _MpNumber: ...
     def erf(self, value: _MpNumber) -> _MpNumber: ...
     def erfc(self, value: _MpNumber) -> _MpNumber: ...
     def ncdf(self, value: _MpNumber) -> _MpNumber: ...
     def erfinv(self, value: _MpNumber) -> _MpNumber: ...
+    def findroot(
+        self,
+        f: object,
+        x0: _MpNumber,
+        tol: _MpNumber,
+        maxsteps: int,
+    ) -> _MpNumber: ...
 
 
 mp = cast(_MpmathModule, importlib.import_module("mpmath"))
@@ -157,6 +168,58 @@ NDTR_POINTS = [
     37.0,
 ]
 
+# Covers the three log_ndtr branches: asymptotic series (x < -26),
+# erfc-backed log (-26 <= x <= 8), and log1p right tail (x > 8).
+LOG_NDTR_POINTS = [
+    -500.0,
+    -100.0,
+    -37.0,
+    -30.0,
+    -26.5,
+    -26.0,
+    -25.5,
+    -20.0,
+    -14.0,
+    -8.0,
+    -5.0,
+    -2.0,
+    -1.0,
+    -0.5,
+    0.0,
+    0.5,
+    1.0,
+    2.0,
+    3.0,
+    5.0,
+    7.0,
+    8.0,
+    8.5,
+    10.0,
+    15.0,
+    20.0,
+    37.0,
+]
+
+# Covers both ndtri_exp branches: the exp+ndtri delegation (log_p >= -690)
+# and the asymptotic-plus-Newton left tail below the f64 underflow horizon.
+# Points right of log(0.5) are excluded: inverting through exp(log_p) loses
+# tail resolution near p = 1 and the sampler only queries the left half.
+NDTRI_EXP_POINTS = [
+    -1e6,
+    -1e4,
+    -1000.0,
+    -750.0,
+    -691.0,
+    -690.0,
+    -689.0,
+    -100.0,
+    -20.0,
+    -5.0,
+    -1.0,
+    -0.1,
+    -1e-3,
+]
+
 NDTRI_POINTS = [
     1e-300,
     1e-100,
@@ -189,6 +252,18 @@ def _f64(x: _MpNumber) -> float:
     return float(x)
 
 
+def _ndtri_exp(log_p: float) -> _MpNumber:
+    """The x with log(ncdf(x)) = log_p, via findroot at full precision."""
+    target = mp.mpf(log_p)
+    x0 = -mp.sqrt(-2 * target) if log_p < -1.0 else mp.mpf("0.5")
+    return mp.findroot(
+        lambda x: mp.log(mp.ncdf(x)) - target,
+        x0,
+        tol=mp.mpf(10) ** -50,
+        maxsteps=200,
+    )
+
+
 def main() -> None:
     table = {
         "gammaln": [[x, _f64(mp.loggamma(mp.mpf(x)))] for x in GAMMALN_POINTS],
@@ -196,10 +271,12 @@ def main() -> None:
         "erf": [[s * x, _f64(mp.erf(mp.mpf(s * x)))] for x in ERF_POINTS for s in (1.0, -1.0)],
         "erfc": [[s * x, _f64(mp.erfc(mp.mpf(s * x)))] for x in ERF_POINTS for s in (1.0, -1.0)],
         "ndtr": [[s * x, _f64(mp.ncdf(mp.mpf(s * x)))] for x in NDTR_POINTS for s in (1.0, -1.0)],
+        "log_ndtr": [[x, _f64(mp.log(mp.ncdf(mp.mpf(x))))] for x in LOG_NDTR_POINTS],
         # ndtri(p): invert the exact normal CDF at the exact f64 value of p
         # (mp.mpf(float) is exact; a decimal literal would shift the target
         # by ~1e-10 in the steep region near p = 1).
         "ndtri": [[p, _f64(mp.sqrt(2) * mp.erfinv(2 * mp.mpf(p) - 1))] for p in NDTRI_POINTS],
+        "ndtri_exp": [[lp, _f64(_ndtri_exp(lp))] for lp in NDTRI_EXP_POINTS],
     }
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / "special_fn_table.json"

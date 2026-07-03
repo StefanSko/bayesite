@@ -63,6 +63,30 @@ fn ndtr_matches_reference() {
 }
 
 #[test]
+fn log_ndtr_matches_reference() {
+    // The middle branch inherits ndtr's ~5e-12 relative error scaled by
+    // 1/|ln ndtr|; the atol absorbs the tiny magnitudes right of zero,
+    // where ln(1 - eps) is dominated by the last-bit rounding of ndtr.
+    check("log_ndtr", special::log_ndtr, 1e-11, 5e-16);
+}
+
+#[test]
+fn ndtri_exp_matches_reference() {
+    // The exp+ndtri branch inherits ndtri's tail accuracy; the Newton
+    // branch below log_p = -690 solves log_ndtr directly and stays at f64
+    // resolution down to log_p ~ -1e6.
+    check("ndtri_exp", special::ndtri_exp, 5e-12, 0.0);
+}
+
+#[test]
+fn ndtri_exp_boundaries() {
+    assert_eq!(special::ndtri_exp(0.0), f64::INFINITY);
+    assert_eq!(special::ndtri_exp(f64::NEG_INFINITY), f64::NEG_INFINITY);
+    assert!(special::ndtri_exp(0.1).is_nan());
+    assert!(special::ndtri_exp(f64::NAN).is_nan());
+}
+
+#[test]
 fn ndtri_matches_reference() {
     // Cephes ndtri peak relative error is ~1e-13 in the central region and
     // grows slowly in the far tail expansion; 5e-12 holds down to p=1e-300.
