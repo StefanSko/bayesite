@@ -19,11 +19,14 @@
 //!       [--out <report.json|->]
 //!   bayesite sbc --model <ir.json|-> --scenario <scenario.json|->
 //!       [--replicates N] [--out <report.json|->]
+//!   bayesite capabilities
 //!
 //! `sample` writes the v0-provisional NDJSON protocol (see `protocol.rs`).
 //! `diagnose`, `recover-check`, `recover`, and `sbc` write one v0-provisional
 //! JSON object; `simulate` writes a plain data document; `prior-predictive`
-//! writes v0-provisional NDJSON. `-` means stdout/stdin.
+//! writes v0-provisional NDJSON. `capabilities` writes one v0-provisional
+//! JSON document advertising the command set, IR version, and input schema
+//! versions (see `docs/capabilities-v0.md`). `-` means stdout/stdin.
 //! Errors are a single JSON object on stderr with a nonzero exit code; messages
 //! state what to change.
 //!
@@ -313,7 +316,41 @@ enum Command {
     RecoverCheck(RecoverCheckArgs),
     Recover(RecoverArgs),
     Sbc(SbcArgs),
+    Capabilities,
 }
+
+type ParseCommandFn = fn(&[String]) -> Result<Command, Error>;
+
+/// The CLI dispatch table. `capabilities` derives its `commands` list from
+/// this table, so adding a command here advertises it automatically.
+const COMMANDS: &[(&str, ParseCommandFn)] = &[
+    ("sample", |argv| {
+        parse_sample_args(argv).map(Command::Sample)
+    }),
+    ("diagnose", |argv| {
+        parse_diagnose_args(argv).map(Command::Diagnose)
+    }),
+    ("prior-predictive", |argv| {
+        parse_prior_predictive_args(argv).map(Command::PriorPredictive)
+    }),
+    ("posterior-predictive", |argv| {
+        parse_posterior_predictive_args(argv).map(Command::PosteriorPredictive)
+    }),
+    ("posterior-check", |argv| {
+        parse_posterior_check_args(argv).map(Command::PosteriorCheck)
+    }),
+    ("simulate", |argv| {
+        parse_simulate_args(argv).map(Command::Simulate)
+    }),
+    ("recover-check", |argv| {
+        parse_recover_check_args(argv).map(Command::RecoverCheck)
+    }),
+    ("recover", |argv| {
+        parse_recover_args(argv).map(Command::Recover)
+    }),
+    ("sbc", |argv| parse_sbc_args(argv).map(Command::Sbc)),
+    ("capabilities", parse_capabilities_args),
+];
 
 struct SampleArgs {
     model_path: String,
@@ -412,30 +449,30 @@ fn usage() -> &'static str {
      usage: bayesite recover --model <ir.json|-> --scenario <scenario.json|-> \
      [--out <report.json|->]\n\
      usage: bayesite sbc --model <ir.json|-> --scenario <scenario.json|-> \
-     [--replicates N] [--out <report.json|->]"
+     [--replicates N] [--out <report.json|->]\n\
+     usage: bayesite capabilities"
 }
 
 fn parse_args(argv: &[String]) -> Result<Command, Error> {
     let Some(command) = argv.first() else {
         return Err(usage_error(format!("missing command; {}", usage())));
     };
-    match command.as_str() {
-        "sample" => parse_sample_args(&argv[1..]).map(Command::Sample),
-        "diagnose" => parse_diagnose_args(&argv[1..]).map(Command::Diagnose),
-        "prior-predictive" => parse_prior_predictive_args(&argv[1..]).map(Command::PriorPredictive),
-        "posterior-predictive" => {
-            parse_posterior_predictive_args(&argv[1..]).map(Command::PosteriorPredictive)
-        }
-        "posterior-check" => parse_posterior_check_args(&argv[1..]).map(Command::PosteriorCheck),
-        "simulate" => parse_simulate_args(&argv[1..]).map(Command::Simulate),
-        "recover-check" => parse_recover_check_args(&argv[1..]).map(Command::RecoverCheck),
-        "recover" => parse_recover_args(&argv[1..]).map(Command::Recover),
-        "sbc" => parse_sbc_args(&argv[1..]).map(Command::Sbc),
-        other => Err(usage_error(format!(
-            "unknown command \"{other}\"; {}",
+    match COMMANDS.iter().find(|(name, _)| *name == command.as_str()) {
+        Some((_, parse)) => parse(&argv[1..]),
+        None => Err(usage_error(format!(
+            "unknown command \"{command}\"; {}",
             usage()
         ))),
     }
+}
+
+fn parse_capabilities_args(argv: &[String]) -> Result<Command, Error> {
+    if let Some(first) = argv.first() {
+        return Err(usage_error(format!(
+            "capabilities takes no arguments; remove {first}"
+        )));
+    }
+    Ok(Command::Capabilities)
 }
 
 fn validate_single_stdin_input(command: &str, inputs: &[(&str, &str)]) -> Result<(), Error> {
@@ -1370,6 +1407,52 @@ fn run_sbc(args: SbcArgs) -> Result<(), Error> {
     write_text(&args.out_path, &report)
 }
 
+/// The `capabilities` document is a wire contract (`capabilities_format`):
+/// field additions are compatible; renames or removals bump the version.
+fn capabilities_document() -> Value {
+    let commands = COMMANDS
+        .iter()
+        .map(|(name, _)| Value::Str((*name).to_string()))
+        .collect();
+    Value::Object(vec![
+        (
+            "capabilities_format".to_string(),
+            Value::Str("v0-provisional".to_string()),
+        ),
+        ("commands".to_string(), Value::Array(commands)),
+        (
+            "ir".to_string(),
+            Value::Object(vec![("bayeswire_ir".to_string(), Value::Int(1))]),
+        ),
+        (
+            "schemas".to_string(),
+            Value::Object(vec![
+                (
+                    "recover_scenario".to_string(),
+                    Value::Str("v0-provisional".to_string()),
+                ),
+                (
+                    "sbc_scenario".to_string(),
+                    Value::Str("v0-provisional".to_string()),
+                ),
+                (
+                    "recover_check_targets".to_string(),
+                    Value::Str("v0-provisional".to_string()),
+                ),
+                (
+                    "error_format".to_string(),
+                    Value::Str("v0-provisional".to_string()),
+                ),
+            ]),
+        ),
+    ])
+}
+
+fn run_capabilities() -> Result<(), Error> {
+    let text = json::write(&capabilities_document())?;
+    write_text("-", &text)
+}
+
 fn run() -> Result<(), Error> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match parse_args(&argv)? {
@@ -1382,6 +1465,7 @@ fn run() -> Result<(), Error> {
         Command::RecoverCheck(args) => run_recover_check(args),
         Command::Recover(args) => run_recover(args),
         Command::Sbc(args) => run_sbc(args),
+        Command::Capabilities => run_capabilities(),
     }
 }
 
