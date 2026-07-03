@@ -22,11 +22,10 @@ fn fixture(name: &str) -> json::Value {
     json::parse(&text).expect("fixture JSON parses")
 }
 
-/// Corpus fixtures whose documents decode on this backend today; the two
-/// Truncated-bearing corpus fixtures are pinned as explicit decode failures
-/// in fixtures_eval.rs.
-const DECODABLE_FIXTURES: [&str; 4] = [
+const DECODABLE_FIXTURES: [&str; 6] = [
+    "bounded_rates",
     "eight_schools_non_centered",
+    "linear_regression",
     "ordinal_regression",
     "partially_observed_mvn",
     "varying_intercepts_poisson",

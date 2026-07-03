@@ -14,21 +14,6 @@ const ALL_FIXTURES: [&str; 6] = [
     "varying_intercepts_poisson",
 ];
 
-/// Corpus fixtures this backend evaluates today. `Truncated` is a core-profile
-/// tag in the bayeswire spec that this backend does not implement yet; the
-/// fixtures carrying it are pinned below as explicit decode failures instead
-/// of being silently skipped. Closing that gap moves names back into this
-/// list and deletes the pin.
-const SUPPORTED_FIXTURES: [&str; 4] = [
-    "eight_schools_non_centered",
-    "ordinal_regression",
-    "partially_observed_mvn",
-    "varying_intercepts_poisson",
-];
-
-/// Corpus fixtures whose models use `Truncated`, not yet evaluable here.
-const UNSUPPORTED_TRUNCATED_FIXTURES: [&str; 2] = ["bounded_rates", "linear_regression"];
-
 fn fixture(name: &str) -> Value {
     let path = format!(
         "{}/../../tests/golden_ir/fixtures/{}.json",
@@ -70,35 +55,11 @@ fn every_golden_fixture_is_in_the_logp_gradient_gate() {
         .map(|name| (*name).to_string())
         .collect();
     assert_eq!(fixture_names, expected);
-
-    let mut partitioned: Vec<&str> = SUPPORTED_FIXTURES
-        .iter()
-        .chain(UNSUPPORTED_TRUNCATED_FIXTURES.iter())
-        .copied()
-        .collect();
-    partitioned.sort_unstable();
-    assert_eq!(partitioned, ALL_FIXTURES);
-}
-
-#[test]
-fn truncated_fixtures_fail_decode_explicitly() {
-    // Honest asymmetry, pinned: when Truncated support lands, this test goes
-    // red and the fixtures move into SUPPORTED_FIXTURES.
-    for name in UNSUPPORTED_TRUNCATED_FIXTURES {
-        let doc = fixture(name);
-        let err = decode_model(doc.get("ir").expect("ir")).expect_err("Truncated not implemented");
-        assert_eq!(err.kind, bayesite_core::error::ErrorKind::UnknownNodeTag);
-        assert!(
-            err.message.contains("Truncated"),
-            "{name}: error names the unsupported tag: {}",
-            err.message
-        );
-    }
 }
 
 #[test]
 fn logp_and_gradient_match_jax_at_committed_points() {
-    for name in SUPPORTED_FIXTURES {
+    for name in ALL_FIXTURES {
         let doc = fixture(name);
         let meta = decode_model(doc.get("ir").expect("ir")).expect("ir decodes");
         let data = data_from_json(doc.get("data").expect("data")).expect("data parses");
@@ -200,7 +161,7 @@ fn compiled_tape_replay_matches_per_point_rebuild_bitwise() {
     // The compiled evaluator (one graph, replayed in place per point) must
     // produce exactly the values of the rebuild-per-call path, including
     // when revisiting an earlier point after the masks flipped in between.
-    for name in SUPPORTED_FIXTURES {
+    for name in ALL_FIXTURES {
         let doc = fixture(name);
         let meta = decode_model(doc.get("ir").expect("ir")).expect("ir decodes");
         let data = data_from_json(doc.get("data").expect("data")).expect("data parses");
