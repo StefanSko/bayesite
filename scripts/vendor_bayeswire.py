@@ -46,6 +46,19 @@ def _source_commit(bayeswire_root: Path) -> str:
     return result.stdout.strip()
 
 
+def _source_ref(bayeswire_root: Path, commit: str) -> str:
+    """Return the release tag naming the pinned commit, or the commit itself."""
+    result = subprocess.run(
+        ["git", "-C", str(bayeswire_root), "describe", "--tags", "--exact-match", commit],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return commit
+    return result.stdout.strip()
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -86,12 +99,17 @@ def main() -> None:
         vendored[f"{CORPUS_DEST}/{rel}"] = _sha256(dest)
         print(f"vendored {CORPUS_DEST}/{rel}")
 
-    (REPO_ROOT / "BAYESWIRE_TAG").write_text(commit + "\n", encoding="utf-8")
-    manifest = {"bayeswire_commit": commit, "files": dict(sorted(vendored.items()))}
+    ref = _source_ref(bayeswire_root, commit)
+    (REPO_ROOT / "BAYESWIRE_TAG").write_text(ref + "\n", encoding="utf-8")
+    manifest = {
+        "bayeswire_ref": ref,
+        "bayeswire_commit": commit,
+        "files": dict(sorted(vendored.items())),
+    }
     (REPO_ROOT / "bayeswire-vendor.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
-    print(f"pinned bayeswire commit {commit}")
+    print(f"pinned bayeswire {ref} ({commit})")
 
 
 if __name__ == "__main__":

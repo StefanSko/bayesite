@@ -29,11 +29,11 @@ def _check_vendored_bayeswire() -> None:
     print("\n== G0 vendored bayeswire spec and corpus", flush=True)
     manifest = json.loads(VENDOR_MANIFEST.read_text(encoding="utf-8"))
     pinned = BAYESWIRE_TAG.read_text(encoding="utf-8").strip()
-    if manifest.get("bayeswire_commit") != pinned:
+    if manifest.get("bayeswire_ref") != pinned:
         sys.exit(
             "G0 vendored bayeswire failed: BAYESWIRE_TAG "
             f"({pinned}) does not match bayeswire-vendor.json "
-            f"({manifest.get('bayeswire_commit')}); re-run scripts/vendor_bayeswire.py"
+            f"({manifest.get('bayeswire_ref')}); re-run scripts/vendor_bayeswire.py"
         )
     files = manifest.get("files", {})
     if not files:
@@ -49,7 +49,10 @@ def _check_vendored_bayeswire() -> None:
                 "pinned bytes; vendored files are generated, never hand-edited. "
                 "Re-run scripts/vendor_bayeswire.py against the pinned checkout."
             )
-    print(f"{len(files)} vendored files match bayeswire {pinned}")
+    print(
+        f"{len(files)} vendored files match bayeswire {pinned} "
+        f"({manifest.get('bayeswire_commit')})"
+    )
 
 
 def _command_text(command: Sequence[str]) -> str:
