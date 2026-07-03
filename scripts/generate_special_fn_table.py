@@ -42,6 +42,7 @@ class _MpmathModule(Protocol):
 
     def mpf(self, value: object) -> _MpNumber: ...
     def sqrt(self, value: object) -> _MpNumber: ...
+    def log(self, value: _MpNumber) -> _MpNumber: ...
     def loggamma(self, value: _MpNumber) -> _MpNumber: ...
     def digamma(self, value: _MpNumber) -> _MpNumber: ...
     def erf(self, value: _MpNumber) -> _MpNumber: ...
@@ -157,6 +158,38 @@ NDTR_POINTS = [
     37.0,
 ]
 
+# Covers the three log_ndtr branches: asymptotic series (x < -26),
+# erfc-backed log (-26 <= x <= 8), and log1p right tail (x > 8).
+LOG_NDTR_POINTS = [
+    -500.0,
+    -100.0,
+    -37.0,
+    -30.0,
+    -26.5,
+    -26.0,
+    -25.5,
+    -20.0,
+    -14.0,
+    -8.0,
+    -5.0,
+    -2.0,
+    -1.0,
+    -0.5,
+    0.0,
+    0.5,
+    1.0,
+    2.0,
+    3.0,
+    5.0,
+    7.0,
+    8.0,
+    8.5,
+    10.0,
+    15.0,
+    20.0,
+    37.0,
+]
+
 NDTRI_POINTS = [
     1e-300,
     1e-100,
@@ -196,6 +229,7 @@ def main() -> None:
         "erf": [[s * x, _f64(mp.erf(mp.mpf(s * x)))] for x in ERF_POINTS for s in (1.0, -1.0)],
         "erfc": [[s * x, _f64(mp.erfc(mp.mpf(s * x)))] for x in ERF_POINTS for s in (1.0, -1.0)],
         "ndtr": [[s * x, _f64(mp.ncdf(mp.mpf(s * x)))] for x in NDTR_POINTS for s in (1.0, -1.0)],
+        "log_ndtr": [[x, _f64(mp.log(mp.ncdf(mp.mpf(x))))] for x in LOG_NDTR_POINTS],
         # ndtri(p): invert the exact normal CDF at the exact f64 value of p
         # (mp.mpf(float) is exact; a decimal literal would shift the target
         # by ~1e-10 in the steep region near p = 1).

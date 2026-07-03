@@ -47,6 +47,8 @@ enum Op {
     Sigmoid(Var),
     Softplus(Var),
     Gammaln(Var),
+    /// ln(Phi(x)), the log standard normal CDF.
+    LogNdtr(Var),
     /// x * ln(y) with xlogy(0, y) = 0
     Xlogy(Var, Var),
     /// Full reduction to a rank-0 scalar.
@@ -138,6 +140,7 @@ fn eval_op(nodes: &[Node], op: &Op) -> Tensor {
         Op::Sigmoid(a) => value(a).map(special::sigmoid),
         Op::Softplus(a) => value(a).map(special::softplus),
         Op::Gammaln(a) => value(a).map(special::gammaln),
+        Op::LogNdtr(a) => value(a).map(special::log_ndtr),
         Op::Xlogy(a, b) => value(a)
             .binary(value(b), special::xlogy)
             .expect("shapes broadcast"),
@@ -369,6 +372,7 @@ impl Tape {
             | Op::Sigmoid(a)
             | Op::Softplus(a)
             | Op::Gammaln(a)
+            | Op::LogNdtr(a)
             | Op::Sum(a)
             | Op::Gather(a, _)
             | Op::OrderedInverse(a)
@@ -509,6 +513,12 @@ impl Tape {
     pub fn gammaln(&mut self, a: Var) -> Var {
         let grad = self.requires_grad(a);
         self.push_op(Op::Gammaln(a), grad)
+    }
+
+    /// ln(Phi(x)), the log standard normal CDF.
+    pub fn log_ndtr(&mut self, a: Var) -> Var {
+        let grad = self.requires_grad(a);
+        self.push_op(Op::LogNdtr(a), grad)
     }
 
     pub fn xlogy(&mut self, a: Var, b: Var) -> Var {
@@ -809,6 +819,14 @@ impl Tape {
                 let da = adj
                     .binary(self.value(*a), |g, x| g * special::digamma(x))
                     .expect("same shape");
+                self.accumulate(adjoints, *a, da);
+            }
+            Op::LogNdtr(a) => {
+                let ratio = self
+                    .value(*a)
+                    .binary(&self.nodes[id].value, special::log_ndtr_grad)
+                    .expect("same shape");
+                let da = adj.binary(&ratio, |g, r| g * r).expect("same shape");
                 self.accumulate(adjoints, *a, da);
             }
             Op::Xlogy(a, b) => {
@@ -1151,6 +1169,20 @@ mod tests {
             },
             &[Tensor::from_vec(vec![3], vec![0.3, -0.8, 1.7])],
             1e-6,
+        );
+    }
+
+    #[test]
+    fn log_ndtr_gradient_matches_finite_difference() {
+        // Points cover the asymptotic far-left branch (-30), the erfc-backed
+        // middle, and the log1p right tail.
+        grad_check(
+            |t, v| {
+                let l = t.log_ndtr(v[0]);
+                t.sum(l)
+            },
+            &[Tensor::from_vec(vec![5], vec![-30.0, -3.0, -0.5, 1.5, 4.0])],
+            1e-5,
         );
     }
 

@@ -327,6 +327,48 @@ pub fn ndtri(p: f64) -> f64 {
     }
 }
 
+/// 0.5 * ln(2 pi).
+const LN_SQRT_2PI: f64 = 0.91893853320467274178032973640562;
+
+/// Log of the standard normal CDF, accurate over the whole real line.
+///
+/// Branches follow the standard float64 scheme (cf. `log_ndtr` in
+/// SciPy/JAX): the erfc-backed [`ndtr`] keeps full relative precision on
+/// [-26, 8]; the right tail uses log1p(-ndtr(-x)); the far left tail uses
+/// the asymptotic expansion
+/// ln Phi(x) = -x^2/2 - ln(-x) - ln sqrt(2 pi) + ln(1 - 1/x^2 + 3/x^4 - ...),
+/// whose alternating terms fall below f64 resolution well before the term
+/// cap at the branch cut.
+pub fn log_ndtr(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x > 8.0 {
+        (-ndtr(-x)).ln_1p()
+    } else if x >= -26.0 {
+        ndtr(x).ln()
+    } else {
+        let z2 = x * x;
+        let mut term = 1.0;
+        let mut series = 0.0;
+        for n in 1..=12u32 {
+            term *= -f64::from(2 * n - 1) / z2;
+            series += term;
+            if term.abs() < 1e-17 {
+                break;
+            }
+        }
+        -0.5 * z2 - (-x).ln() - LN_SQRT_2PI + series.ln_1p()
+    }
+}
+
+/// d/dx ln(ndtr(x)) = pdf(x) / Phi(x), evaluated as exp(ln pdf - ln Phi)
+/// from a precomputed `log_ndtr(x)` so the far left tail stays finite (the
+/// ratio tends to -x) and the right tail underflows cleanly to zero.
+pub fn log_ndtr_grad(x: f64, log_ndtr_x: f64) -> f64 {
+    (-0.5 * x * x - LN_SQRT_2PI - log_ndtr_x).exp()
+}
+
 /// x * ln(y) with the convention xlogy(0, y) = 0.
 pub fn xlogy(x: f64, y: f64) -> f64 {
     if x == 0.0 {

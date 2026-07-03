@@ -5,6 +5,10 @@
 //! far in a tail, symbolic base parameters/bounds, compiled-tape replay
 //! across support flips, and inverse-CDF prior simulation moments.
 
+// Reference constants keep the mpmath digits verbatim; rustc rounds them to
+// the nearest f64.
+#![allow(clippy::excessive_precision)]
+
 use bayesite_core::error::ErrorKind;
 use bayesite_core::ir::decode_model;
 use bayesite_core::json;
@@ -172,10 +176,8 @@ fn truncated_without_any_bound_is_a_typed_error() {
 
 #[test]
 fn truncated_with_unexpected_field_is_malformed() {
-    let doc = truncated_site_doc(&normal_base(0.0, 1.0), Some(0.0), None).replace(
-        r#""upper": null}"#,
-        r#""upper": null, "bogus": 1}"#,
-    );
+    let doc = truncated_site_doc(&normal_base(0.0, 1.0), Some(0.0), None)
+        .replace(r#""upper": null}"#, r#""upper": null, "bogus": 1}"#);
     let document = json::parse(&doc).expect("document parses");
     let err = decode_model(&document).expect_err("unexpected field must be rejected");
     assert_eq!(err.kind, ErrorKind::MalformedDocument);
@@ -271,7 +273,11 @@ fn truncated_normal_mass_deep_in_tail_normalizes_to_one() {
 fn truncated_normal_far_tail_one_sided_is_finite_and_correct() {
     // lower = 40: 1 - Phi(40) underflows to zero in a naive normalizer,
     // which would turn every in-support logp into +inf garbage.
-    let posterior = posterior_for(&truncated_site_doc(&normal_base(0.0, 1.0), Some(40.0), None));
+    let posterior = posterior_for(&truncated_site_doc(
+        &normal_base(0.0, 1.0),
+        Some(40.0),
+        None,
+    ));
     // norm_logpdf(40.5) - ln(Phi(-40)), mpmath at 60 digits.
     let (logp, grad) = posterior.logp_grad(&[40.5]).unwrap();
     assert_rel_close(logp, -16.4354965194508845751735, 1e-12, "far-tail logp");
@@ -354,7 +360,8 @@ fn truncated_normal_symbolic_lower_bound_differentiates_the_normalizer() {
         plus[i] += h;
         let mut minus = q;
         minus[i] -= h;
-        let numeric = (posterior.logp(&plus).unwrap() - posterior.logp(&minus).unwrap()) / (2.0 * h);
+        let numeric =
+            (posterior.logp(&plus).unwrap() - posterior.logp(&minus).unwrap()) / (2.0 * h);
         assert!(
             (numeric - grad[i]).abs() <= 1e-6 * (1.0 + numeric.abs()),
             "finite difference grad[{i}]: analytic {} vs numeric {numeric}",
@@ -368,12 +375,10 @@ fn truncated_normal_symbolic_loc_differentiates_the_standardized_bounds() {
     // mu ~ Normal(0, 1); x ~ Truncated(Normal(mu, 1), lower = 0):
     // logp = npdf(mu) + npdf(x - mu) - ln Phi(mu), so
     // dlogp/dmu = -mu + (x - mu) - phi(mu) / Phi(mu).
-    let trunc = format!(
-        r#"{{"node": "Truncated", "base": {{"node": "Normal",
-            "loc": {{"node": "ParamRef", "name": "mu"}},
-            "scale": {{"node": "ConstNode", "value": 1.0}}}},
-            "lower": {{"node": "ConstNode", "value": 0.0}}, "upper": null}}"#
-    );
+    let trunc = r#"{"node": "Truncated", "base": {"node": "Normal",
+            "loc": {"node": "ParamRef", "name": "mu"},
+            "scale": {"node": "ConstNode", "value": 1.0}},
+            "lower": {"node": "ConstNode", "value": 0.0}, "upper": null}"#;
     let doc = format!(
         r#"{{"bayeswire_ir": 1, "model": {{"node": "ModelMeta",
             "params": [
@@ -400,8 +405,7 @@ fn truncated_normal_symbolic_loc_differentiates_the_standardized_bounds() {
     let q = [1.3, 2.1]; // mu, x
     let (logp, grad) = posterior.logp_grad(&q).unwrap();
     let (mu, x) = (q[0], q[1]);
-    let want_logp =
-        norm_logpdf(mu, 0.0, 1.0) + norm_logpdf(x, mu, 1.0) - special::ndtr(mu).ln();
+    let want_logp = norm_logpdf(mu, 0.0, 1.0) + norm_logpdf(x, mu, 1.0) - special::ndtr(mu).ln();
     assert_rel_close(logp, want_logp, 1e-13, "symbolic-loc logp");
     let phi_mu = (-HALF_LOG_2PI - 0.5 * mu * mu).exp();
     let want_dmu = -mu + (x - mu) - phi_mu / special::ndtr(mu);
@@ -417,7 +421,8 @@ fn truncated_normal_symbolic_loc_differentiates_the_standardized_bounds() {
         plus[i] += h;
         let mut minus = q;
         minus[i] -= h;
-        let numeric = (posterior.logp(&plus).unwrap() - posterior.logp(&minus).unwrap()) / (2.0 * h);
+        let numeric =
+            (posterior.logp(&plus).unwrap() - posterior.logp(&minus).unwrap()) / (2.0 * h);
         assert!(
             (numeric - grad[i]).abs() <= 1e-6 * (1.0 + numeric.abs()),
             "finite difference grad[{i}]: analytic {} vs numeric {numeric}",
@@ -562,7 +567,11 @@ fn compiled_truncated_tape_replays_support_flips_bitwise() {
             want_logp.to_bits(),
             "compiled logp at {x}: {logp:e} vs {want_logp:e}"
         );
-        assert_eq!(grad[0].to_bits(), want_grad[0].to_bits(), "compiled grad at {x}");
+        assert_eq!(
+            grad[0].to_bits(),
+            want_grad[0].to_bits(),
+            "compiled grad at {x}"
+        );
     }
 }
 
@@ -588,11 +597,8 @@ fn simulate_scalar_draws(doc: &str, draws: usize, seed: u64) -> Vec<f64> {
 
 fn mean_and_sd(values: &[f64]) -> (f64, f64) {
     let mean = values.iter().sum::<f64>() / values.len() as f64;
-    let var = values
-        .iter()
-        .map(|v| (v - mean) * (v - mean))
-        .sum::<f64>()
-        / (values.len() - 1) as f64;
+    let var =
+        values.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / (values.len() - 1) as f64;
     (mean, var.sqrt())
 }
 
@@ -625,7 +631,9 @@ fn truncated_normal_far_tail_prior_simulation_is_finite_and_calibrated() {
     let doc = truncated_site_doc(&normal_base(0.0, 1.0), Some(8.0), None);
     let values = simulate_scalar_draws(&doc, 4096, 47);
     assert!(
-        values.iter().all(|&v| v.is_finite() && (8.0..10.0).contains(&v)),
+        values
+            .iter()
+            .all(|&v| v.is_finite() && (8.0..10.0).contains(&v)),
         "far-tail draws must be finite and near the bound"
     );
     let (mean, sd) = mean_and_sd(&values);

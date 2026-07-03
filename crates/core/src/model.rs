@@ -278,6 +278,12 @@ fn distribution_exprs(dist: &Distribution) -> Vec<&Expr> {
         } => vec![mean, overdispersion],
         Distribution::MultivariateNormal { mean, scale_tril } => vec![mean, scale_tril],
         Distribution::OrderedLogistic { eta, cutpoints } => vec![eta, cutpoints],
+        Distribution::Truncated { base, lower, upper } => {
+            let mut exprs = distribution_exprs(base);
+            exprs.extend(lower.iter());
+            exprs.extend(upper.iter());
+            exprs
+        }
     }
 }
 
@@ -981,6 +987,17 @@ impl<'a> Env<'a> {
             Distribution::OrderedLogistic { eta, cutpoints } => DistVars::OrderedLogistic {
                 eta: self.evaluate(eta)?,
                 cutpoints: self.evaluate(cutpoints)?,
+            },
+            Distribution::Truncated { base, lower, upper } => DistVars::Truncated {
+                base: Box::new(self.evaluate_distribution(base)?),
+                lower: match lower {
+                    Some(expr) => Some(self.evaluate(expr)?),
+                    None => None,
+                },
+                upper: match upper {
+                    Some(expr) => Some(self.evaluate(expr)?),
+                    None => None,
+                },
             },
         })
     }
