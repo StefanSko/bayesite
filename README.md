@@ -26,8 +26,7 @@ bayesite sbc
 
 Current runtime capabilities:
 
-- decodes the core `bayeswire_ir` v1 profile (the `Truncated` tag is a
-  known, explicitly-failing gap; see `crates/core/tests/fixtures_eval.rs`);
+- decodes the core `bayeswire_ir` v1 profile;
 - evaluates log density and gradients with in-tree reverse-mode AD;
 - samples posterior draws with NUTS only;
 - recomputes R-hat/ESS diagnostics from fit streams;

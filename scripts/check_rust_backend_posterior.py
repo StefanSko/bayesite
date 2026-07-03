@@ -68,9 +68,6 @@ MAX_DIVERGENCE_RATE = 0.02
 # in the hundreds on both sides, 0.25 sd separates real bias from noise.
 MEAN_TOLERANCE_SDS = 0.25
 
-# Corpus fixtures whose models use Truncated, which this backend does not
-# evaluate yet; mirrored from crates/core/tests/fixtures_eval.rs.
-UNSUPPORTED_TRUNCATED_FIXTURES = ("bounded_rates", "linear_regression")
 SD_RATIO_RANGE = (0.7, 1.4)
 
 
@@ -199,12 +196,6 @@ def main() -> None:
     for path in sorted(FIXTURE_DIR.glob("*.json")):
         fixture = json.loads(path.read_text())
         name = fixture["name"]
-        if name in UNSUPPORTED_TRUNCATED_FIXTURES:
-            print(
-                f"SKIP {name}: model uses Truncated, a core-profile tag this "
-                "backend does not evaluate yet (see fixtures_eval.rs)"
-            )
-            continue
         rust, trailer = run_rust_backend(
             binary,
             fixture,
