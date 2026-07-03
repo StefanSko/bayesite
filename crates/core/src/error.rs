@@ -12,7 +12,7 @@ pub enum ErrorKind {
     MalformedJson,
     /// The document structure violates the IR v1 format.
     MalformedDocument,
-    /// The `jaxstanv5_ir` version is missing or unknown.
+    /// The `bayeswire_ir` version is missing or unknown.
     UnsupportedIRVersion,
     /// A `"node"` tag is not in the core-profile registry.
     UnknownNodeTag,

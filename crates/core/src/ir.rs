@@ -725,11 +725,11 @@ fn decode_tuple<T>(
     items.iter().map(decode_item).collect()
 }
 
-/// Decode a versioned IR envelope `{"jaxstanv5_ir": 1, "model": {...}}`.
+/// Decode a versioned IR envelope `{"bayeswire_ir": 1, "model": {...}}`.
 pub fn decode_model(document: &Value) -> Result<ModelMeta, Error> {
     let Value::Object(entries) = document else {
         return Err(malformed(
-            "the IR document must be a JSON object {\"jaxstanv5_ir\": 1, \"model\": {...}}",
+            "the IR document must be a JSON object {\"bayeswire_ir\": 1, \"model\": {...}}",
         ));
     };
     let mut version_fields = 0usize;
@@ -737,7 +737,7 @@ pub fn decode_model(document: &Value) -> Result<ModelMeta, Error> {
     let mut unexpected_field: Option<&str> = None;
     for (name, _) in entries {
         match name.as_str() {
-            "jaxstanv5_ir" => version_fields += 1,
+            "bayeswire_ir" => version_fields += 1,
             "model" => model_fields += 1,
             _ => unexpected_field = Some(name),
         }
@@ -745,12 +745,12 @@ pub fn decode_model(document: &Value) -> Result<ModelMeta, Error> {
     if version_fields == 0 {
         return Err(Error::new(
             ErrorKind::UnsupportedIRVersion,
-            "missing \"jaxstanv5_ir\" version field; set it to 1",
+            "missing \"bayeswire_ir\" version field; set it to 1",
         ));
     }
     if version_fields > 1 {
         return Err(malformed(
-            "IR envelope must have exactly one \"jaxstanv5_ir\" version field; remove the duplicate \"jaxstanv5_ir\" field",
+            "IR envelope must have exactly one \"bayeswire_ir\" version field; remove the duplicate \"bayeswire_ir\" field",
         ));
     }
     if model_fields > 1 {
@@ -763,12 +763,12 @@ pub fn decode_model(document: &Value) -> Result<ModelMeta, Error> {
             "IR envelope has unexpected field \"{name}\"; remove it"
         )));
     }
-    match document.get("jaxstanv5_ir") {
+    match document.get("bayeswire_ir") {
         Some(Value::Int(1)) => {}
         Some(other) => {
             return Err(Error::new(
                 ErrorKind::UnsupportedIRVersion,
-                format!("unsupported jaxstanv5_ir version {other:?}; this backend reads version 1"),
+                format!("unsupported bayeswire_ir version {other:?}; this backend reads version 1"),
             ))
         }
         None => unreachable!("version field count was checked above"),

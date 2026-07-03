@@ -1,6 +1,6 @@
 //! Zero-dependency sampling core for Bayesite.
 //!
-//! Parses the `jaxstanv5_ir` v1 wire format (`docs/ir-format-v1.md`), evaluates
+//! Parses the `bayeswire_ir` v1 wire format (`docs/ir-format-v1.md`), evaluates
 //! the model log density and its gradient with built-in reverse-mode AD, and
 //! samples with multinomial NUTS using Stan-style warmup adaptation.
 //!

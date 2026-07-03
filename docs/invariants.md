@@ -38,7 +38,7 @@ Core invariants that should remain true as Bayesite evolves.
 - The serialized IR document is the model boundary. Decoding executes no
   producer or user code.
 - Current v1 compatibility uses the historical envelope
-  `{"jaxstanv5_ir": 1, "model": ...}`. Renaming the envelope is a versioned
+  `{"bayeswire_ir": 1, "model": ...}`. Renaming the envelope is a versioned
   format decision, not a cleanup. The two envelope fields each appear exactly
   once; extra or duplicate envelope fields are malformed.
 - Node tags and field lists are the wire contract. Producer class names are not
@@ -105,9 +105,14 @@ Bayesite keeps these phases explicit:
 
 ## Fixture and spec snapshots
 
-- `tests/golden_ir/` is the compatibility contract for the current IR snapshot.
-- Bayesite vendors IR docs and fixtures as explicit snapshots. While jaxstanv5
-  is the only producer, IR syncs should be visible commits from a named
-  jaxstanv5 source commit.
-- A future neutral spec repository is appropriate only when it has an owner,
-  release process, and real need, such as IR v2 or multiple producers.
+- `tests/golden_ir/` is the vendored bayeswire conformance corpus for the
+  pinned snapshot.
+- Bayesite vendors the spec docs and corpus as explicit snapshots from the
+  bayeswire repository at the commit recorded in `BAYESWIRE_TAG`
+  (`scripts/vendor_bayeswire.py`); `bayeswire-vendor.json` records a sha256
+  per vendored file and the validation ladder verifies the bytes on every
+  run. IR syncs are visible commits that update the pin, the manifest, and
+  the files together.
+- The neutral spec home exists: bayeswire owns the normative wire format.
+  Only the copies in bayeswire are normative; the copies here are generated
+  and must never be edited by hand.

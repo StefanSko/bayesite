@@ -1,5 +1,5 @@
 {
-  "jaxstanv5_ir": 1,
+  "bayeswire_ir": 1,
   "model": {
     "node": "ModelMeta",
     "params": [
@@ -29,14 +29,25 @@
         "value": {
           "node": "ResolvedParam",
           "distribution": {
-            "node": "Normal",
-            "loc": {
-              "node": "ConstNode",
-              "value": 1.0
+            "node": "Truncated",
+            "base": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 1.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
             },
-            "scale": {
+            "lower": {
               "node": "ConstNode",
-              "value": 1.0
+              "value": -1.0
+            },
+            "upper": {
+              "node": "ConstNode",
+              "value": 3.0
             }
           },
           "constraint": {
@@ -111,14 +122,25 @@
         "node": "ResolvedStochasticSite",
         "name": "level",
         "distribution": {
-          "node": "Normal",
-          "loc": {
-            "node": "ConstNode",
-            "value": 1.0
+          "node": "Truncated",
+          "base": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 1.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
           },
-          "scale": {
+          "lower": {
             "node": "ConstNode",
-            "value": 1.0
+            "value": -1.0
+          },
+          "upper": {
+            "node": "ConstNode",
+            "value": 3.0
           }
         },
         "value": {

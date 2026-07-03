@@ -32,7 +32,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Protocol, cast
 
 
 def _bootstrap_jaxstanv5_path() -> None:
@@ -56,8 +55,8 @@ import jax.numpy as jnp  # noqa: E402
 REPO_ROOT = Path(__file__).parent.parent
 
 from jaxstanv5.inference import sample  # noqa: E402
-from jaxstanv5.ir import bindable_from_meta, meta_from_dict  # noqa: E402
-from jaxstanv5.model.bound import BoundModel  # noqa: E402
+from bayeswire.ir import bindable_from_meta, meta_from_dict  # noqa: E402
+from jaxstanv5.model import bind_model  # noqa: E402
 
 FIXTURE_DIR = REPO_ROOT / "tests" / "golden_ir" / "fixtures"
 CRATE_DIR = REPO_ROOT / "crates" / "core"
@@ -68,11 +67,11 @@ MAX_DIVERGENCE_RATE = 0.02
 # Each backend's posterior mean carries MC error ~ sd/sqrt(ESS); with ESS
 # in the hundreds on both sides, 0.25 sd separates real bias from noise.
 MEAN_TOLERANCE_SDS = 0.25
+
+# Corpus fixtures whose models use Truncated, which this backend does not
+# evaluate yet; mirrored from crates/core/tests/fixtures_eval.rs.
+UNSUPPORTED_TRUNCATED_FIXTURES = ("bounded_rates", "linear_regression")
 SD_RATIO_RANGE = (0.7, 1.4)
-
-
-class _BindableModel(Protocol):
-    def bind(self, **values: object) -> BoundModel: ...
 
 
 def build_bayesite() -> Path:
@@ -146,7 +145,7 @@ def run_jax_backend(
     draws: int,
 ) -> dict[str, list[float]]:
     meta = meta_from_dict(fixture["ir"])
-    rebuilt = cast(_BindableModel, bindable_from_meta(meta))
+    rebuilt = bindable_from_meta(meta)
     bind_values = {
         name: (
             jnp.asarray(spec["values"]).reshape(spec["shape"])
@@ -155,7 +154,7 @@ def run_jax_backend(
         )
         for name, spec in fixture["data"].items()
     }
-    bound = rebuilt.bind(**bind_values)
+    bound = bind_model(rebuilt, bind_values)
     result = sample(
         bound,
         seed=seed,
@@ -200,6 +199,12 @@ def main() -> None:
     for path in sorted(FIXTURE_DIR.glob("*.json")):
         fixture = json.loads(path.read_text())
         name = fixture["name"]
+        if name in UNSUPPORTED_TRUNCATED_FIXTURES:
+            print(
+                f"SKIP {name}: model uses Truncated, a core-profile tag this "
+                "backend does not evaluate yet (see fixtures_eval.rs)"
+            )
+            continue
         rust, trailer = run_rust_backend(
             binary,
             fixture,

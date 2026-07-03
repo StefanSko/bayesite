@@ -1,7 +1,7 @@
 {
   "name": "varying_intercepts_poisson",
   "ir": {
-    "jaxstanv5_ir": 1,
+    "bayeswire_ir": 1,
     "model": {
       "node": "ModelMeta",
       "params": [

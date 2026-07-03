@@ -14,11 +14,18 @@ Current seed compatibility:
 
 - Source branch: `claude/confident-heisenberg-js7ltl`
 - Rust seed commit before extraction context: `561d4a9`
-- Compatible jaxstanv5 IR source: `main` at `1ecff85`
-- Current wire envelope: `{"jaxstanv5_ir": 1, "model": ...}`
+- Compatible IR source: `bayeswire` at the commit recorded in `BAYESWIRE_TAG`
+  (spec and corpus vendored byte-identically; see `bayeswire-vendor.json`)
+- Current wire envelope: `{"bayeswire_ir": 1, "model": ...}`
 
-Do not rename the v1 wire envelope casually. A neutral or Bayesite-branded
-envelope is a deliberate v2 format decision.
+The neutral-envelope rename this section once reserved as a deliberate format
+decision *was made*, deliberately, when the wire format moved to its own
+repository: the envelope became `{"bayeswire_ir": 1, "model": ...}` with no
+other encoding change (see the changelog in the bayeswire spec,
+`spec/ir-format-v1.md`, vendored here as `docs/ir-format-v1.md`). The retired
+`jaxstanv5_ir` key is not accepted; documents carrying it fail with the
+standard unsupported-version error. Any future envelope change remains a
+versioned format decision owned by bayeswire.
 
 ## Scope invariants
 
@@ -41,10 +48,10 @@ envelope is a deliberate v2 format decision.
 
 Read these before changing the decoder, evaluator, or fixtures:
 
-- `docs/ir-format-v1.md`
-- `docs/ir-v1-tags.md`
+- `docs/ir-format-v1.md` (vendored from bayeswire — normative copy lives there)
+- `docs/ir-v1-tags.md` (vendored from bayeswire)
 - `docs/invariants.md`
-- `tests/golden_ir/`
+- `tests/golden_ir/` (vendored bayeswire corpus, hash-checked)
 
 Important IR rules:
 

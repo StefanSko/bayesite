@@ -5,20 +5,28 @@ use bayesite_core::ir::{decode_model, Constraint, Size};
 use bayesite_core::json;
 
 fn fixture(name: &str) -> json::Value {
-    let path = format!(
-        "{}/../../tests/golden_ir/fixtures/{}.json",
-        env!("CARGO_MANIFEST_DIR"),
-        name
-    );
+    // Corpus fixtures are the vendored bayeswire conformance corpus; names
+    // prefixed `cli_` are pre-Truncated engine test assets under tests/data/
+    // (see fixtures_eval.rs for the pinned Truncated gap).
+    let dir = if name.starts_with("cli_") {
+        format!("{}/tests/data/cli_models", env!("CARGO_MANIFEST_DIR"))
+    } else {
+        format!(
+            "{}/../../tests/golden_ir/fixtures",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    };
+    let path = format!("{dir}/{name}.json");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read fixture {path}: {e}"));
     json::parse(&text).expect("fixture JSON parses")
 }
 
-const ALL_FIXTURES: [&str; 6] = [
-    "bounded_rates",
+/// Corpus fixtures whose documents decode on this backend today; the two
+/// Truncated-bearing corpus fixtures are pinned as explicit decode failures
+/// in fixtures_eval.rs.
+const DECODABLE_FIXTURES: [&str; 4] = [
     "eight_schools_non_centered",
-    "linear_regression",
     "ordinal_regression",
     "partially_observed_mvn",
     "varying_intercepts_poisson",
@@ -26,7 +34,7 @@ const ALL_FIXTURES: [&str; 6] = [
 
 #[test]
 fn decodes_every_golden_fixture_ir() {
-    for name in ALL_FIXTURES {
+    for name in DECODABLE_FIXTURES {
         let doc = fixture(name);
         let ir = doc.get("ir").expect("fixture has ir");
         decode_model(ir).unwrap_or_else(|e| panic!("decoding {name} failed: {e}"));
@@ -47,7 +55,7 @@ fn packing_order_follows_free_values() {
 
 #[test]
 fn decodes_constraints() {
-    let doc = fixture("bounded_rates");
+    let doc = fixture("cli_bounded_rates");
     let meta = decode_model(doc.get("ir").unwrap()).unwrap();
     let free = meta.resolved_free_values();
     assert_eq!(free[0].1.constraint, Some(Constraint::UnitInterval));
@@ -62,7 +70,7 @@ fn decodes_constraints() {
 
 #[test]
 fn stochastic_sites_are_in_document_order() {
-    let doc = fixture("linear_regression");
+    let doc = fixture("cli_linear_regression");
     let meta = decode_model(doc.get("ir").unwrap()).unwrap();
     let sites = meta.resolved_stochastic_sites();
     let names: Vec<&str> = sites.iter().map(|s| s.name.as_str()).collect();
@@ -78,7 +86,7 @@ fn missing_version_is_unsupported() {
 
 #[test]
 fn unknown_version_is_unsupported() {
-    let doc = json::parse(r#"{"jaxstanv5_ir": 2, "model": {"node": "ModelMeta"}}"#).unwrap();
+    let doc = json::parse(r#"{"bayeswire_ir": 2, "model": {"node": "ModelMeta"}}"#).unwrap();
     let err = decode_model(&doc).unwrap_err();
     assert_eq!(err.kind, ErrorKind::UnsupportedIRVersion);
 }
@@ -86,7 +94,7 @@ fn unknown_version_is_unsupported() {
 #[test]
 fn unexpected_envelope_field_is_malformed() {
     let doc =
-        json::parse(r#"{"jaxstanv5_ir": 1, "producer": "test", "model": {"node": "ModelMeta"}}"#)
+        json::parse(r#"{"bayeswire_ir": 1, "producer": "test", "model": {"node": "ModelMeta"}}"#)
             .unwrap();
     let err = decode_model(&doc).unwrap_err();
     assert_eq!(err.kind, ErrorKind::MalformedDocument);
@@ -96,15 +104,15 @@ fn unexpected_envelope_field_is_malformed() {
 #[test]
 fn duplicate_envelope_version_field_is_malformed() {
     let text = minimal_model(NORMAL_PARAM).replacen(
-        r#""jaxstanv5_ir": 1"#,
-        r#""jaxstanv5_ir": 1, "jaxstanv5_ir": 1"#,
+        r#""bayeswire_ir": 1"#,
+        r#""bayeswire_ir": 1, "bayeswire_ir": 1"#,
         1,
     );
     let doc = json::parse(&text).unwrap();
     let err = decode_model(&doc).unwrap_err();
     assert_eq!(err.kind, ErrorKind::MalformedDocument);
     assert!(
-        err.message.contains("duplicate \"jaxstanv5_ir\""),
+        err.message.contains("duplicate \"bayeswire_ir\""),
         "message: {}",
         err.message
     );
@@ -112,7 +120,7 @@ fn duplicate_envelope_version_field_is_malformed() {
 
 fn minimal_model(params_entry: &str) -> String {
     format!(
-        r#"{{"jaxstanv5_ir": 1, "model": {{"node": "ModelMeta",
+        r#"{{"bayeswire_ir": 1, "model": {{"node": "ModelMeta",
             "params": [{params_entry}],
             "data": [], "observed_nodes": [], "expressions": [],
             "free_values": [], "stochastic_sites": []}}}}"#

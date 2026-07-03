@@ -1,5 +1,5 @@
 {
-  "jaxstanv5_ir": 1,
+  "bayeswire_ir": 1,
   "model": {
     "node": "ModelMeta",
     "params": [
@@ -46,15 +46,23 @@
         "value": {
           "node": "ResolvedParam",
           "distribution": {
-            "node": "Normal",
-            "loc": {
+            "node": "Truncated",
+            "base": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "lower": {
               "node": "ConstNode",
               "value": 0.0
             },
-            "scale": {
-              "node": "ConstNode",
-              "value": 1.0
-            }
+            "upper": null
           },
           "constraint": {
             "node": "Positive"
@@ -204,15 +212,23 @@
         "node": "ResolvedStochasticSite",
         "name": "sigma",
         "distribution": {
-          "node": "Normal",
-          "loc": {
+          "node": "Truncated",
+          "base": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "lower": {
             "node": "ConstNode",
             "value": 0.0
           },
-          "scale": {
-            "node": "ConstNode",
-            "value": 1.0
-          }
+          "upper": null
         },
         "value": {
           "node": "ParamRef",

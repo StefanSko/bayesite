@@ -1,0 +1,20 @@
+{
+  "bayeswire_commit": "15cdc51e3e09bed56838248f9b3becd2bbaf8423",
+  "files": {
+    "docs/ir-format-v1.md": "3f069f9aee94806e5e1f5704ef7f43de775e6d6aa54a390bd4ec9fffe114605a",
+    "docs/ir-v1-tags.md": "5b574803e52e095c30ff2d26ca7d5afc785828deead9120191837e2afc5d3811",
+    "tests/golden_ir/bounded_rates.json": "18a255c4e68a656115f9a5b6f7177cbae33d632738323f5d8aaf7507d98afee4",
+    "tests/golden_ir/eight_schools_non_centered.json": "a6b16820d81a59e1c75074c8ceada83195cc00517b4d2e625c18af7e0642ead8",
+    "tests/golden_ir/fixtures/bounded_rates.json": "b8624df489ac31c098b5c2680520c526e645f677ae0cc0b80cc0226fe88a16da",
+    "tests/golden_ir/fixtures/eight_schools_non_centered.json": "7ec3cca8cac52f292256268a543925d3e6e65da8fe293b5037d8546097af6fd4",
+    "tests/golden_ir/fixtures/linear_regression.json": "e87c33314755efcb3f4944bc25a78e0acda72446fa93efc6b09cd6ea39604cd9",
+    "tests/golden_ir/fixtures/ordinal_regression.json": "9e36c2f71ce204675f9c40bcb6bdca567774cd7ed9bfa1d0af358f52885bd61e",
+    "tests/golden_ir/fixtures/partially_observed_mvn.json": "0634326bc05500737d741871baf10a491cd8f4b3018b1d5ad60d8e10b89e80fb",
+    "tests/golden_ir/fixtures/varying_intercepts_poisson.json": "6c9d28afa8c4e1322f201bd6d8c68a33e3fc1ef06fd900769d7230c0809ab94f",
+    "tests/golden_ir/hashes.json": "3336c5f0ae91184291d2db9e0c43fd8daca6a2c9eff99b30fbdec84d10323ee8",
+    "tests/golden_ir/linear_regression.json": "f86c113e406a67bdf80ecdef8aa8f9b3dbfb2dd8aafe273b5cac20e16304d2d0",
+    "tests/golden_ir/ordinal_regression.json": "1ee36867002c6526a7e13355d6a99a4387a71d931c63f711ae59ec1de685d316",
+    "tests/golden_ir/partially_observed_mvn.json": "b1db588e95d848a785aad6e122afd716b5a35bb764651b1f34c22ca94c9d126b",
+    "tests/golden_ir/varying_intercepts_poisson.json": "bb7b13875315aba73acb4d7742943672ef01f84642d10d0f83bead3f2c3ad5fd"
+  }
+}

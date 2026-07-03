@@ -10,6 +10,7 @@ for the agent execution path.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -19,6 +20,36 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CORE_MANIFEST = REPO_ROOT / "crates" / "core" / "Cargo.toml"
+VENDOR_MANIFEST = REPO_ROOT / "bayeswire-vendor.json"
+BAYESWIRE_TAG = REPO_ROOT / "BAYESWIRE_TAG"
+
+
+def _check_vendored_bayeswire() -> None:
+    """Verify vendored spec/corpus bytes against the pinned bayeswire manifest."""
+    print("\n== G0 vendored bayeswire spec and corpus", flush=True)
+    manifest = json.loads(VENDOR_MANIFEST.read_text(encoding="utf-8"))
+    pinned = BAYESWIRE_TAG.read_text(encoding="utf-8").strip()
+    if manifest.get("bayeswire_commit") != pinned:
+        sys.exit(
+            "G0 vendored bayeswire failed: BAYESWIRE_TAG "
+            f"({pinned}) does not match bayeswire-vendor.json "
+            f"({manifest.get('bayeswire_commit')}); re-run scripts/vendor_bayeswire.py"
+        )
+    files = manifest.get("files", {})
+    if not files:
+        sys.exit("G0 vendored bayeswire failed: manifest lists no files")
+    for rel_path, want in sorted(files.items()):
+        path = REPO_ROOT / rel_path
+        if not path.is_file():
+            sys.exit(f"G0 vendored bayeswire failed: missing vendored file {rel_path}")
+        got = hashlib.sha256(path.read_bytes()).hexdigest()
+        if got != want:
+            sys.exit(
+                f"G0 vendored bayeswire failed: {rel_path} does not match the "
+                "pinned bytes; vendored files are generated, never hand-edited. "
+                "Re-run scripts/vendor_bayeswire.py against the pinned checkout."
+            )
+    print(f"{len(files)} vendored files match bayeswire {pinned}")
 
 
 def _command_text(command: Sequence[str]) -> str:
@@ -144,6 +175,9 @@ def _posterior_command(args: argparse.Namespace) -> list[str]:
     command = [
         "uv",
         "run",
+        "--project",
+        str(args.jaxstanv5_path if args.jaxstanv5_path is not None else Path("../jaxstanv5")),
+        "python",
         "scripts/check_rust_backend_posterior.py",
         "--draws",
         str(args.posterior_draws),
@@ -191,6 +225,7 @@ def main() -> None:
     args = parser.parse_args()
 
     _check_zero_dependency_core()
+    _check_vendored_bayeswire()
     _run(
         "format",
         ["cargo", "fmt", "--check", "--manifest-path", str(CORE_MANIFEST)],

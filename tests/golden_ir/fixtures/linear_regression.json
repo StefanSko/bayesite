@@ -1,7 +1,7 @@
 {
   "name": "linear_regression",
   "ir": {
-    "jaxstanv5_ir": 1,
+    "bayeswire_ir": 1,
     "model": {
       "node": "ModelMeta",
       "params": [
@@ -48,15 +48,23 @@
           "value": {
             "node": "ResolvedParam",
             "distribution": {
-              "node": "Normal",
-              "loc": {
+              "node": "Truncated",
+              "base": {
+                "node": "Normal",
+                "loc": {
+                  "node": "ConstNode",
+                  "value": 0.0
+                },
+                "scale": {
+                  "node": "ConstNode",
+                  "value": 1.0
+                }
+              },
+              "lower": {
                 "node": "ConstNode",
                 "value": 0.0
               },
-              "scale": {
-                "node": "ConstNode",
-                "value": 1.0
-              }
+              "upper": null
             },
             "constraint": {
               "node": "Positive"
@@ -206,15 +214,23 @@
           "node": "ResolvedStochasticSite",
           "name": "sigma",
           "distribution": {
-            "node": "Normal",
-            "loc": {
+            "node": "Truncated",
+            "base": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "lower": {
               "node": "ConstNode",
               "value": 0.0
             },
-            "scale": {
-              "node": "ConstNode",
-              "value": 1.0
-            }
+            "upper": null
           },
           "value": {
             "node": "ParamRef",
@@ -294,7 +310,7 @@
         0.0,
         0.0
       ],
-      "log_density": -12.281508265637381,
+      "log_density": -11.588361085077436,
       "gradient": [
         1.8000000000000003,
         4.5,
@@ -307,7 +323,7 @@
         0.2,
         0.30000000000000004
       ],
-      "log_density": -11.367247519454676,
+      "log_density": -10.674100338894732,
       "gradient": [
         0.6134551269222345,
         1.9952465443761056,
@@ -318,9 +334,9 @@
       "q": [
         0.42073549240394825,
         0.4958324052262343,
-        0.3377315902755755
+        0.33773159027557553
       ],
-      "log_density": -11.011532035789003,
+      "log_density": -10.318384855229057,
       "gradient": [
         -0.5752832219019737,
         1.1634621248703376,
