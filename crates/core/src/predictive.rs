@@ -527,10 +527,12 @@ fn no_truncated_mass(lower: Option<f64>, upper: Option<f64>) -> Error {
 }
 
 /// Inverse-CDF truncated normal draw: u ~ U(Phi(alpha), Phi(beta)),
-/// x = loc + scale * ndtri(u), mirrored into the left tail when the
+/// x = loc + scale * ndtri_exp(ln u), mirrored into the left tail when the
 /// interval sits right of the mean so the CDF values keep relative
 /// precision (Phi(z) rounds to 1 for z beyond ~8, which would collapse a
-/// far right tail to a handful of representable draws).
+/// far right tail to a handful of representable draws), and computed in
+/// log-CDF space so tails past the f64 underflow horizon (|z| > ~38, where
+/// Phi has no representation at all) still sample correctly.
 fn sample_truncated_normal(
     rng: &mut Xoshiro256PlusPlus,
     loc: f64,
@@ -557,15 +559,23 @@ fn sample_truncated_normal(
     if flip {
         (alpha, beta) = (beta.map(|v| -v), alpha.map(|v| -v));
     }
-    let cdf_lower = alpha.map_or(0.0, special::ndtr);
-    let cdf_upper = beta.map_or(1.0, special::ndtr);
-    let mass = cdf_upper - cdf_lower;
-    if !mass.is_finite() || mass <= 0.0 {
+    // Log-space CDF endpoints: raw Phi underflows to zero beyond ~38
+    // standardized units, which would report the interval as massless even
+    // though the log-density path evaluates the same model.
+    let log_hi = beta.map_or(0.0, special::log_ndtr);
+    // Head fraction r = Phi(alpha) / Phi(beta) in [0, 1).
+    let ratio = match alpha.map(special::log_ndtr) {
+        Some(log_lo) => (log_lo - log_hi).exp(),
+        None => 0.0,
+    };
+    if ratio.is_nan() || ratio >= 1.0 {
         return Err(no_truncated_mass(lower, upper));
     }
-    // 1 - uniform() is in (0, 1], keeping u off the lower CDF endpoint.
-    let u = cdf_lower + mass * (1.0 - rng.uniform());
-    let mut z = special::ndtri(u);
+    // u = Phi(alpha) + (Phi(beta) - Phi(alpha)) v with v in (0, 1], so
+    // log u = log_hi + ln(r + v (1 - r)) stays exact however deep the tail.
+    let v = 1.0 - rng.uniform();
+    let log_u = log_hi + (ratio + v * (1.0 - ratio)).ln();
+    let mut z = special::ndtri_exp(log_u);
     if flip {
         z = -z;
     }

@@ -369,6 +369,39 @@ pub fn log_ndtr_grad(x: f64, log_ndtr_x: f64) -> f64 {
     (-0.5 * x * x - LN_SQRT_2PI - log_ndtr_x).exp()
 }
 
+/// Inverse of [`log_ndtr`]: the x with ln(Phi(x)) = log_p, for log_p <= 0.
+///
+/// Where exp(log_p) keeps full relative precision (log_p >= -690, i.e.
+/// p >= ~1e-300) this delegates to [`ndtri`]. Below that — probabilities
+/// with no f64 representation at all — it starts from the asymptotic left
+/// tail x ~ -sqrt(-2 log_p) and polishes with Newton steps on `log_ndtr`,
+/// whose derivative [`log_ndtr_grad`] is ~ -x there, so a handful of
+/// iterations reach f64 resolution even for log_p ~ -1e6.
+pub fn ndtri_exp(log_p: f64) -> f64 {
+    if log_p.is_nan() || log_p > 0.0 {
+        return f64::NAN;
+    }
+    if log_p == 0.0 {
+        return f64::INFINITY;
+    }
+    if log_p == f64::NEG_INFINITY {
+        return f64::NEG_INFINITY;
+    }
+    if log_p >= -690.0 {
+        return ndtri(log_p.exp());
+    }
+    let mut x = -(-2.0 * log_p).sqrt();
+    for _ in 0..8 {
+        let log_ndtr_x = log_ndtr(x);
+        let step = (log_ndtr_x - log_p) / log_ndtr_grad(x, log_ndtr_x);
+        x -= step;
+        if step.abs() <= 1e-16 * x.abs() {
+            break;
+        }
+    }
+    x
+}
+
 /// x * ln(y) with the convention xlogy(0, y) = 0.
 pub fn xlogy(x: f64, y: f64) -> f64 {
     if x == 0.0 {

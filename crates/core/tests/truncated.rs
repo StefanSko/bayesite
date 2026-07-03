@@ -643,6 +643,51 @@ fn truncated_normal_far_tail_prior_simulation_is_finite_and_calibrated() {
 }
 
 #[test]
+fn truncated_normal_extreme_tail_prior_simulation_survives_cdf_underflow() {
+    // lower = 40: Phi(-40) underflows f64 entirely, so any sampler that
+    // subtracts raw CDF values reports zero probability mass; the log
+    // density evaluates the same model without trouble, and simulation
+    // must too.
+    let doc = truncated_site_doc(&normal_base(0.0, 1.0), Some(40.0), None);
+    let values = simulate_scalar_draws(&doc, 4096, 61);
+    assert!(
+        values
+            .iter()
+            .all(|&v| v.is_finite() && (40.0..41.0).contains(&v)),
+        "extreme-tail draws must be finite and near the bound"
+    );
+    let (mean, sd) = mean_and_sd(&values);
+    // mpmath: E[X | X > 40] = 40.024969, sd = 0.024953.
+    assert!((mean - 40.02496884720726).abs() < 0.004, "mean {mean}");
+    assert!((sd - 0.024953323998846).abs() < 0.004, "sd {sd}");
+}
+
+#[test]
+fn truncated_normal_extreme_tail_two_sided_prior_simulation_is_calibrated() {
+    // Both CDF endpoints underflow: [40, 40.01] keeps a sliver of tail
+    // mass that only log-space sampling can resolve.
+    let doc = truncated_site_doc(&normal_base(0.0, 1.0), Some(40.0), Some(40.01));
+    let values = simulate_scalar_draws(&doc, 4096, 67);
+    assert!(values.iter().all(|&v| (40.0..=40.01).contains(&v)));
+    let (mean, sd) = mean_and_sd(&values);
+    // mpmath: E = 40.004668, sd = 0.0028754.
+    assert!((mean - 40.00466751192174).abs() < 0.0005, "mean {mean}");
+    assert!((sd - 0.002875445105096).abs() < 0.0005, "sd {sd}");
+}
+
+#[test]
+fn truncated_normal_extreme_left_tail_prior_simulation_mirrors() {
+    // upper = -40 is the mirror image of lower = 40.
+    let doc = truncated_site_doc(&normal_base(0.0, 1.0), None, Some(-40.0));
+    let values = simulate_scalar_draws(&doc, 4096, 71);
+    assert!(values
+        .iter()
+        .all(|&v| v.is_finite() && (-41.0..=-40.0).contains(&v)));
+    let (mean, _) = mean_and_sd(&values);
+    assert!((mean + 40.02496884720726).abs() < 0.004, "mean {mean}");
+}
+
+#[test]
 fn truncated_exponential_prior_simulation_matches_analytic_mean() {
     let doc = truncated_site_doc(&exponential_base(1.5), Some(1.0), Some(3.0));
     let values = simulate_scalar_draws(&doc, 8192, 53);
