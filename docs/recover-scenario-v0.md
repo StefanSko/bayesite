@@ -6,7 +6,7 @@ object; unknown or duplicate fields are rejected.
 ```json
 {
   "recover_scenario": "v0-provisional",
-  "data": {"n": 12, "x": {"dtype": "float64", "shape": [12], "values": [0.0, 0.1]}},
+  "data": {"n": 2, "x": {"dtype": "float64", "shape": [2], "values": [0.0, 0.1]}},
   "seed": 7,
   "interval": 0.8,
   "sample": {"chains": 4, "warmup": 1000, "draws": 1000, "max_treedepth": 10, "target_accept": 0.8}
