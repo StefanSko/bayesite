@@ -49,7 +49,18 @@ decision.
 - R-hat/ESS values that are unavailable for short or degenerate chains are JSON
   `null`, never `NaN`, `Infinity`, or a late serialization failure.
 - When present, `model_data_fingerprint` is `sha256:` plus the SHA-256 digest of
-  `b"bayescycle-model-data-v1\n" + model_ir_bytes + b"\n" + data_json_bytes`.
+  `b"bayescycle-model-data-v1\n" + model_file_bytes + b"\n" + data_file_bytes` —
+  the exact bytes of the model and data files as received, never a
+  re-serialization. Verifiers (`posterior-predictive`, `posterior-check`) hash
+  the files they are handed and compare; a byte-level change to either file
+  invalidates the fit. The normative definition lives in the bayeswire spec
+  (`model-data-fingerprint-v1.md`).
+- Data documents are accepted in the canonical wrapped form
+  `{"format": "bayescycle.data.json.v1", "variables": {...}}` (what bayescycle
+  writes at `run/data.json`) as well as the bare `{name: {dtype, shape,
+  values}}` map. The `format` key is reserved: any other value fails
+  explicitly. `dtype: "bool"` binds as integer-valued 0/1 and requires JSON
+  booleans in `values`.
 - Report objects are factual records. They do not add recovery, sampler-quality,
   or SBC uniformity verdicts.
 
