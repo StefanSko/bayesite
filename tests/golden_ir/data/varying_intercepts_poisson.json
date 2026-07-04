@@ -1,0 +1,54 @@
+{
+  "format": "bayescycle.data.json.v1",
+  "variables": {
+    "n_groups": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        3
+      ]
+    },
+    "group_idx": {
+      "dtype": "int64",
+      "shape": [
+        6
+      ],
+      "values": [
+        0,
+        0,
+        1,
+        1,
+        2,
+        2
+      ]
+    },
+    "x": {
+      "dtype": "float64",
+      "shape": [
+        6
+      ],
+      "values": [
+        -1.0,
+        -0.6,
+        -0.2,
+        0.2,
+        0.6,
+        1.0
+      ]
+    },
+    "y": {
+      "dtype": "int64",
+      "shape": [
+        6
+      ],
+      "values": [
+        0,
+        1,
+        2,
+        1,
+        3,
+        2
+      ]
+    }
+  }
+}
