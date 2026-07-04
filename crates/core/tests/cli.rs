@@ -3489,6 +3489,126 @@ fn data_artifact_commands_report_data_field_shape_as_json() {
 }
 
 #[test]
+fn capabilities_emits_versioned_document_matching_dispatch_table() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args(["capabilities"])
+        .output()
+        .expect("bayesite runs");
+    assert!(output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "capabilities should keep stderr empty"
+    );
+    let doc = json::parse(String::from_utf8(output.stdout).unwrap().trim()).unwrap();
+    assert_eq!(
+        doc.get("capabilities_format").and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    let commands: Vec<String> = match doc.get("commands").expect("commands field") {
+        Value::Array(entries) => entries
+            .iter()
+            .map(|entry| {
+                Value::as_str(entry)
+                    .expect("command is a string")
+                    .to_string()
+            })
+            .collect(),
+        _ => panic!("commands must be an array"),
+    };
+    assert_eq!(
+        commands,
+        [
+            "sample",
+            "diagnose",
+            "prior-predictive",
+            "posterior-predictive",
+            "posterior-check",
+            "simulate",
+            "recover-check",
+            "recover",
+            "sbc",
+            "capabilities",
+        ]
+    );
+    // Cross-check against the dispatch table through behavior: every
+    // advertised command must dispatch (no "unknown command"), and every
+    // advertised command must have a usage line.
+    let usage_probe = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args(["definitely-not-a-command"])
+        .output()
+        .expect("bayesite runs");
+    let usage_payload = json::parse(String::from_utf8(usage_probe.stderr).unwrap().trim()).unwrap();
+    let usage_text = usage_payload
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string();
+    for command in &commands {
+        assert!(
+            usage_text.contains(&format!("bayesite {command}")),
+            "usage text misses {command}"
+        );
+        let probe = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+            .args([command.as_str()])
+            .output()
+            .expect("bayesite runs");
+        if command == "capabilities" {
+            assert!(probe.status.success(), "{command}");
+            continue;
+        }
+        let payload = json::parse(String::from_utf8(probe.stderr).unwrap().trim()).unwrap();
+        let message = payload.get("message").and_then(Value::as_str).unwrap();
+        assert!(
+            !message.contains("unknown command"),
+            "{command} is advertised but not dispatched: {message}"
+        );
+    }
+    assert_eq!(
+        doc.get("ir")
+            .and_then(|ir| ir.get("bayeswire_ir"))
+            .and_then(Value::as_i64),
+        Some(1)
+    );
+    let schemas = doc.get("schemas").expect("schemas field");
+    for schema in [
+        "recover_scenario",
+        "sbc_scenario",
+        "recover_check_targets",
+        "error_format",
+    ] {
+        assert_eq!(
+            schemas.get(schema).and_then(Value::as_str),
+            Some("v0-provisional"),
+            "{schema}"
+        );
+    }
+}
+
+#[test]
+fn capabilities_rejects_arguments_with_json_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args(["capabilities", "--verbose"])
+        .output()
+        .expect("bayesite runs");
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "error path should keep stdout empty"
+    );
+    let payload = json::parse(String::from_utf8(output.stderr).unwrap().trim()).unwrap();
+    assert_eq!(
+        payload.get("error_format").and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    assert_eq!(
+        payload.get("error").and_then(Value::as_str),
+        Some("InvalidSettings")
+    );
+    let message = payload.get("message").and_then(Value::as_str).unwrap();
+    assert!(message.contains("capabilities takes no arguments"));
+}
+
+#[test]
 fn unknown_command_error_names_command_and_supported_commands() {
     let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
         .args(["recovr"])

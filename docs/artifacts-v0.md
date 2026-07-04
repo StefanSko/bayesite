@@ -27,6 +27,7 @@ Bayesite data documents, including `simulate` output, intentionally do not:
 | `recover-check` report | `recover_check_format: "v0-provisional"` |
 | `recover` report | `recover_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
 | `sbc` report | `sbc_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
+| `capabilities` document | `capabilities_format: "v0-provisional"` |
 | CLI/protocol errors | `error_format: "v0-provisional"` |
 
 The marker means the artifact is intentionally provisional. Do not build a
