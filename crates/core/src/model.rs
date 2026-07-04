@@ -34,17 +34,67 @@ fn malformed(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::MalformedDocument, message)
 }
 
+/// The canonical wrapped data-document marker shared across the toolchain.
+const DATA_DOCUMENT_FORMAT: &str = "bayescycle.data.json.v1";
+
 /// Parse the data document convention used by the fixture corpus and the
-/// CLI: `{"<name>": {"dtype": "...", "shape": [...], "values": [...]}}`.
-/// A bare number or array is accepted as float64 shorthand.
+/// CLI: either the canonical wrapped form
+/// `{"format": "bayescycle.data.json.v1", "variables": {...}}` or a bare
+/// map `{"<name>": {"dtype": "...", "shape": [...], "values": [...]}}`.
+/// A bare number or array is accepted as float64 shorthand. The `format`
+/// key is reserved at the top level: its presence selects the wrapped form,
+/// and any value other than the supported marker fails explicitly.
 pub fn data_from_json(document: &Value) -> Result<Vec<(String, DataValue)>, Error> {
     let Value::Object(entries) = document else {
         return Err(mismatch(
             "the data document must be a JSON object keyed by data name",
         ));
     };
+    if document.get("format").is_some() {
+        return wrapped_data_from_json(entries);
+    }
     let mut out = Vec::with_capacity(entries.len());
     for (name, spec) in entries {
+        out.push((name.clone(), data_value_from_json(name, spec)?));
+    }
+    Ok(out)
+}
+
+fn wrapped_data_from_json(entries: &[(String, Value)]) -> Result<Vec<(String, DataValue)>, Error> {
+    let format = entries
+        .iter()
+        .find(|(name, _)| name == "format")
+        .map(|(_, value)| value)
+        .expect("caller checked the format key exists");
+    let Value::Str(format) = format else {
+        return Err(malformed(
+            "data document \"format\" is reserved and must be a format marker string",
+        ));
+    };
+    if format != DATA_DOCUMENT_FORMAT {
+        return Err(malformed(format!(
+            "data document format {format:?} is unsupported; expected {DATA_DOCUMENT_FORMAT:?}"
+        )));
+    }
+    for (name, _) in entries {
+        if name != "format" && name != "variables" {
+            return Err(malformed(format!(
+                "data document has unexpected field {name:?}; \
+                 a {DATA_DOCUMENT_FORMAT:?} document carries exactly \"format\" and \"variables\""
+            )));
+        }
+    }
+    let Some(Value::Object(variables)) = entries
+        .iter()
+        .find(|(name, _)| name == "variables")
+        .map(|(_, value)| value)
+    else {
+        return Err(malformed(format!(
+            "data document with format {DATA_DOCUMENT_FORMAT:?} needs a \"variables\" object"
+        )));
+    };
+    let mut out = Vec::with_capacity(variables.len());
+    for (name, spec) in variables {
         out.push((name.clone(), data_value_from_json(name, spec)?));
     }
     Ok(out)
@@ -112,6 +162,18 @@ pub fn data_to_json(data: &[(String, DataValue)], context: &str) -> Result<Value
         ));
     }
     Ok(Value::Object(entries))
+}
+
+fn collect_booleans(name: &str, value: &Value, into: &mut Vec<f64>) -> Result<(), Error> {
+    match value {
+        Value::Bool(flag) => {
+            into.push(if *flag { 1.0 } else { 0.0 });
+            Ok(())
+        }
+        _ => Err(mismatch(format!(
+            "data value \"{name}\" with dtype \"bool\" must contain JSON booleans only"
+        ))),
+    }
 }
 
 fn collect_numbers(name: &str, value: &Value, into: &mut Vec<f64>) -> Result<(), Error> {
@@ -198,7 +260,8 @@ fn data_value_from_json(name: &str, spec: &Value) -> Result<DataValue, Error> {
                 .get("dtype")
                 .and_then(Value::as_str)
                 .ok_or_else(|| mismatch(format!("data value \"{name}\" needs a dtype string")))?;
-            let integer = dtype.starts_with("int") || dtype.starts_with("uint");
+            let boolean = dtype == "bool";
+            let integer = boolean || dtype.starts_with("int") || dtype.starts_with("uint");
             let shape: Vec<usize> = spec
                 .get("shape")
                 .and_then(Value::as_array)
@@ -218,14 +281,19 @@ fn data_value_from_json(name: &str, spec: &Value) -> Result<DataValue, Error> {
             let values_field = spec
                 .get("values")
                 .ok_or_else(|| mismatch(format!("data value \"{name}\" needs a values field")))?;
+            let collect: fn(&str, &Value, &mut Vec<f64>) -> Result<(), Error> = if boolean {
+                collect_booleans
+            } else {
+                collect_numbers
+            };
             let mut values = Vec::new();
             match values_field {
                 Value::Array(items) => {
                     for item in items {
-                        collect_numbers(name, item, &mut values)?;
+                        collect(name, item, &mut values)?;
                     }
                 }
-                other => collect_numbers(name, other, &mut values)?,
+                other => collect(name, other, &mut values)?,
             }
             let expected: usize = shape.iter().product();
             if values.len() != expected {

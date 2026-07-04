@@ -2833,6 +2833,135 @@ fn posterior_predictive_simulates_observed_sites_from_sample_fit() {
 }
 
 #[test]
+fn posterior_predictive_rejects_fit_when_data_bytes_change() {
+    // The fingerprint binds a fit to the exact model/data file bytes. A
+    // whitespace-only edit leaves the parsed data (and the structural
+    // identity hash) unchanged, so this pins the sha256 fingerprint path
+    // specifically.
+    let (model_path, data_path) = write_fixture_inputs("linear_regression");
+    let fit_path = model_path.with_file_name("fit.jsonl");
+    let yrep_path = model_path.with_file_name("yrep.jsonl");
+    let sample = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "sample",
+            "--model",
+            model_path.to_str().unwrap(),
+            "--data",
+            data_path.to_str().unwrap(),
+            "--seed",
+            "17",
+            "--chains",
+            "1",
+            "--warmup",
+            "10",
+            "--draws",
+            "4",
+            "--out",
+            fit_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite sample runs");
+    assert!(
+        sample.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&sample.stderr)
+    );
+
+    let mut data_text = std::fs::read_to_string(&data_path).unwrap();
+    data_text.push('\n');
+    std::fs::write(&data_path, data_text).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "posterior-predictive",
+            "--model",
+            model_path.to_str().unwrap(),
+            "--data",
+            data_path.to_str().unwrap(),
+            "--fit",
+            fit_path.to_str().unwrap(),
+            "--seed",
+            "23",
+            "--out",
+            yrep_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite posterior-predictive runs");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("model_data_fingerprint must match the supplied model and data"),
+        "stderr: {stderr}"
+    );
+    assert!(!yrep_path.exists());
+}
+
+#[test]
+fn wrapped_data_document_round_trips_sample_and_posterior_predictive() {
+    // The canonical bayescycle.data.json.v1 wrapper is what workflow runs
+    // pass for every command; the fingerprint must line up end to end.
+    let (model_path, data_path) = write_fixture_inputs("linear_regression");
+    let bare = std::fs::read_to_string(&data_path).unwrap();
+    let wrapped = format!("{{\"format\":\"bayescycle.data.json.v1\",\"variables\":{bare}}}");
+    std::fs::write(&data_path, wrapped).unwrap();
+    let fit_path = model_path.with_file_name("fit.jsonl");
+    let yrep_path = model_path.with_file_name("yrep.jsonl");
+    let sample = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "sample",
+            "--model",
+            model_path.to_str().unwrap(),
+            "--data",
+            data_path.to_str().unwrap(),
+            "--seed",
+            "17",
+            "--chains",
+            "1",
+            "--warmup",
+            "10",
+            "--draws",
+            "4",
+            "--out",
+            fit_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite sample runs");
+    assert!(
+        sample.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&sample.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "posterior-predictive",
+            "--model",
+            model_path.to_str().unwrap(),
+            "--data",
+            data_path.to_str().unwrap(),
+            "--fit",
+            fit_path.to_str().unwrap(),
+            "--seed",
+            "23",
+            "--out",
+            yrep_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("bayesite posterior-predictive runs");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = std::fs::read_to_string(&yrep_path).unwrap();
+    let header = json::parse(text.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        header.get("artifact_kind").and_then(Value::as_str),
+        Some("posterior_predictive_draws")
+    );
+}
+
+#[test]
 fn posterior_check_reports_factual_summaries_without_verdict() {
     let (model_path, data_path) = write_fixture_inputs("linear_regression");
     let fit_path = model_path.with_file_name("fit.jsonl");
