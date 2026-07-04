@@ -29,6 +29,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VENDORED_SPEC = {
     "spec/ir-format-v1.md": "docs/ir-format-v1.md",
     "spec/ir-v1-tags.md": "docs/ir-v1-tags.md",
+    "spec/data-document-v1.md": "docs/data-document-v1.md",
+    "spec/model-data-fingerprint-v1.md": "docs/model-data-fingerprint-v1.md",
 }
 CORPUS_SOURCE = "src/bayeswire/corpus"
 CORPUS_DEST = "tests/golden_ir"

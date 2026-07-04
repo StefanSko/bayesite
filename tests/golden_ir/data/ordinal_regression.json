@@ -1,0 +1,38 @@
+{
+  "format": "bayescycle.data.json.v1",
+  "variables": {
+    "n_cutpoints": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        2
+      ]
+    },
+    "x": {
+      "dtype": "float64",
+      "shape": [
+        5
+      ],
+      "values": [
+        -1.5,
+        -0.75,
+        0.0,
+        0.75,
+        1.5
+      ]
+    },
+    "y": {
+      "dtype": "int64",
+      "shape": [
+        5
+      ],
+      "values": [
+        0,
+        0,
+        1,
+        2,
+        2
+      ]
+    }
+  }
+}

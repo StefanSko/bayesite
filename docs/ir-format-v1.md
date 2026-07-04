@@ -187,9 +187,32 @@ This format serializes resolved model metadata only. It does not cover the
 declaration class, bound data arrays, bound-model state, or sampling
 results; the fit artifact is a separate format. Dimension labels travel in a
 separate sidecar document specified in
-[`dimension-sidecar-v1.md`](dimension-sidecar-v1.md).
+[`dimension-sidecar-v1.md`](dimension-sidecar-v1.md); concrete bind data
+travels in the canonical data document specified in
+[`data-document-v1.md`](data-document-v1.md), and the fingerprint binding a
+fit to its exact model and data bytes is specified in
+[`model-data-fingerprint-v1.md`](model-data-fingerprint-v1.md).
 
 ## Changelog
+
+### 1 — companion specs for the data document and model/data fingerprint
+
+`bayeswire_ir` is unchanged at 1: no tag, field list, or encoding rule
+moved, and every previously committed corpus document is byte-identical.
+This entry records additive corpus growth and two new companion formats.
+The canonical data document (the `bayescycle.data.json.v1` wrapper that
+bayescycle already wrote and every consumer now reads) is specified in
+[`data-document-v1.md`](data-document-v1.md), and the fit-to-inputs
+fingerprint that bayescycle and bayesite already computed — but over
+different data files, which made every cross-backend fit unverifiable — is
+specified in [`model-data-fingerprint-v1.md`](model-data-fingerprint-v1.md)
+with `model_data_fingerprint` in `bayeswire.ir` as the reference
+implementation. The corpus gained `data/<model>.json` (one canonical data
+document per reference model) and `fingerprints.json` (pinned test
+vectors); the artifact run directories were regenerated with wrapped
+`data.json` files, changing only their `data.json` bytes and the recorded
+fingerprints — the posterior draws are byte-identical (same seed, same
+parse).
 
 ### 1 — envelope renamed to `bayeswire_ir` (bayeswire extraction)
 

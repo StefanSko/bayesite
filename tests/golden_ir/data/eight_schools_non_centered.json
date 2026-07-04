@@ -1,0 +1,44 @@
+{
+  "format": "bayescycle.data.json.v1",
+  "variables": {
+    "n_schools": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        8
+      ]
+    },
+    "sigma": {
+      "dtype": "float64",
+      "shape": [
+        8
+      ],
+      "values": [
+        15.0,
+        10.0,
+        16.0,
+        11.0,
+        9.0,
+        11.0,
+        10.0,
+        18.0
+      ]
+    },
+    "y": {
+      "dtype": "float64",
+      "shape": [
+        8
+      ],
+      "values": [
+        28.0,
+        8.0,
+        -3.0,
+        7.0,
+        -1.0,
+        1.0,
+        18.0,
+        12.0
+      ]
+    }
+  }
+}

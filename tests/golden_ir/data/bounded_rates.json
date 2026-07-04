@@ -1,0 +1,18 @@
+{
+  "format": "bayescycle.data.json.v1",
+  "variables": {
+    "y": {
+      "dtype": "int64",
+      "shape": [
+        5
+      ],
+      "values": [
+        0,
+        1,
+        1,
+        0,
+        1
+      ]
+    }
+  }
+}

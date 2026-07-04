@@ -1,0 +1,8 @@
+{
+  "linear_regression": "sha256:7b46a2f4ce589014e676d3ac81061d5a5cdff640d5080833e02eac24d5505e8f",
+  "eight_schools_non_centered": "sha256:0717890116633e2a563e17ec82eff8f7d09e0a2a81c8a0c0515a5be05a529c97",
+  "varying_intercepts_poisson": "sha256:7ae5e3a06c5f976e591d75da0dc10faabf3a8d807a1b8d0050fc4b89d8a640bf",
+  "ordinal_regression": "sha256:8ca08fd7b1971fa571b05f7172e659e7ccc5187882f062ee12aaa95daa9cc2ff",
+  "partially_observed_mvn": "sha256:884d16783c5bec7bfe6e3383b9c6c5964cc0fd89043198e32b70874664a7af94",
+  "bounded_rates": "sha256:5ba6a3e09f8c3a5856d7ab897e00da8547b0a25bf3fcb8a2ce5618e1758a73c3"
+}
