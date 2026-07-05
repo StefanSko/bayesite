@@ -115,15 +115,21 @@ cargo install \
 python3 scripts/check_validation_ladder.py
 ```
 
-This self-contained default gate checks:
+This default development gate checks:
 
 - zero-dependency core via `cargo tree`;
+- vendored bayeswire spec/corpus byte hashes;
 - `cargo fmt --check`;
 - `cargo clippy -D warnings`;
 - release packaging helper tests;
 - release CLI build and JSON-error smoke test;
 - Rust tests;
-- wasm build.
+- wasm build;
+- G6 statistical agreement against a pinned `nuts-rs` checkout.
+
+By default, G6 expects `/tmp/nuts-rs` at the pinned revision documented in
+[`docs/validation-ladder.md`](docs/validation-ladder.md), or pass
+`--nuts-rs-path` explicitly.
 
 Equivalent `just` entry point, if installed:
 
@@ -140,7 +146,8 @@ python3 scripts/check_validation_ladder.py \
 ```
 
 The optional oracle path may use Python/JAX/BlackJAX. It is not part of the
-agent execution path.
+agent execution path. GitHub Actions also runs G6/G7 conformance on a schedule,
+manual dispatch, and release tags.
 
 ## CLI examples
 
