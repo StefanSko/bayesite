@@ -152,9 +152,10 @@ uv run scripts/check_rust_backend_posterior.py --jaxstanv5-path ../jaxstanv5
 This gate must not become part of the default agent path. The conformance CI
 workflow also runs it on a schedule, manual dispatch, and release tags when the
 same-owner `jaxstanv5` checkout is available, so cross-backend drift is visible
-without adding Python/JAX to the shipped binary. Private same-owner checkouts
-require the `BAYES_REPOS_TOKEN` repository secret, matching bayeswire's
-cross-repo workflow.
+without adding Python/JAX to the shipped binary. The CI checkout is pinned to
+jaxstanv5 commit `91826d24d11690057d31fb1be75f02075bd2c26d`. Private
+same-owner checkouts require the `BAYES_REPOS_TOKEN` repository secret,
+matching bayeswire's cross-repo workflow.
 
 ### G8 — CmdStan comparison
 

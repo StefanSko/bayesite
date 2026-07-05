@@ -16,6 +16,7 @@ permissions:
 
 env:
   NUTS_RS_REV: 5332136767cade60bdeec84cd5b2e0f273961d4c
+  JAXSTANV5_REV: 91826d24d11690057d31fb1be75f02075bd2c26d
 
 jobs:
   nuts-rs-oracle:
@@ -50,6 +51,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: StefanSko/jaxstanv5
+          ref: ${{ env.JAXSTANV5_REV }}
           token: ${{ secrets.BAYES_REPOS_TOKEN || github.token }}
           path: jaxstanv5
 
