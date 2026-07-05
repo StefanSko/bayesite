@@ -1,0 +1,74 @@
+name: conformance
+
+# Cross-engine agreement is a validation-time concern, not part of the shipped
+# binary. Run it on a schedule and before release tags so drift is visible
+# without adding Python/JAX/nuts-rs to the agent execution path.
+on:
+  schedule:
+    - cron: "37 4 * * *"
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NUTS_RS_REV: 5332136767cade60bdeec84cd5b2e0f273961d4c
+
+jobs:
+  nuts-rs-oracle:
+    name: G6 nuts-rs oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch pinned nuts-rs oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init /tmp/nuts-rs
+          git -C /tmp/nuts-rs remote add origin https://github.com/pymc-devs/nuts-rs
+          git -C /tmp/nuts-rs fetch --depth=1 origin "$NUTS_RS_REV"
+          git -C /tmp/nuts-rs checkout --detach FETCH_HEAD
+
+      - name: Run G6 independent NUTS oracle
+        shell: bash
+        run: python3 scripts/check_nuts_rs_oracle.py --nuts-rs-path /tmp/nuts-rs
+
+  posterior-oracle:
+    name: G7 jaxstanv5 posterior oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: bayesite
+
+      - uses: actions/checkout@v4
+        with:
+          repository: StefanSko/jaxstanv5
+          token: ${{ secrets.BAYES_REPOS_TOKEN || github.token }}
+          path: jaxstanv5
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Grant git read access to same-owner dependencies
+        env:
+          BAYES_REPOS_TOKEN: ${{ secrets.BAYES_REPOS_TOKEN || github.token }}
+        shell: bash
+        run: |
+          git config --global \
+            url."https://x-access-token:${BAYES_REPOS_TOKEN}@github.com/StefanSko/".insteadOf \
+            "https://github.com/StefanSko/"
+
+      - name: Run G7 cross-backend posterior oracle
+        working-directory: bayesite
+        shell: bash
+        run: |
+          uv run \
+            --project ../jaxstanv5 \
+            python scripts/check_rust_backend_posterior.py \
+            --jaxstanv5-path ../jaxstanv5
