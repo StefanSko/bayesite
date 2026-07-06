@@ -15,7 +15,6 @@ permissions:
   contents: read
 
 env:
-  NUTS_RS_REV: 5332136767cade60bdeec84cd5b2e0f273961d4c
   JAXSTANV5_REV: 91826d24d11690057d31fb1be75f02075bd2c26d
 
 jobs:
@@ -25,6 +24,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - name: Read pinned nuts-rs revision
+        shell: bash
+        run: echo "NUTS_RS_REV=$(cat NUTS_RS_REV)" >> "$GITHUB_ENV"
 
       - name: Fetch pinned nuts-rs oracle
         shell: bash

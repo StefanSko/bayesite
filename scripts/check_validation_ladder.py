@@ -202,6 +202,11 @@ def main() -> None:
         help="skip the wasm build gate when the target is not installed",
     )
     parser.add_argument(
+        "--skip-oracle",
+        action="store_true",
+        help="skip the mandatory nuts-rs statistical oracle gate (G6)",
+    )
+    parser.add_argument(
         "--nuts-rs-path",
         type=Path,
         default=Path("/tmp/nuts-rs"),
@@ -265,7 +270,8 @@ def main() -> None:
             ],
         )
 
-    _run("G6 nuts-rs NUTS statistical oracle", _nuts_rs_command(args))
+    if not args.skip_oracle:
+        _run("G6 nuts-rs NUTS statistical oracle", _nuts_rs_command(args))
 
     if args.posterior:
         if shutil.which("uv") is None:
