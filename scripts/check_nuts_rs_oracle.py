@@ -25,7 +25,8 @@ from typing import Callable, Sequence
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CORE_MANIFEST = REPO_ROOT / "crates" / "core" / "Cargo.toml"
 RUNNER_SRC = REPO_ROOT / "tools" / "oracles" / "nuts-rs-runner" / "src" / "main.rs"
-EXPECTED_NUTS_RS_REV = "5332136767cade60bdeec84cd5b2e0f273961d4c"
+NUTS_RS_REV = REPO_ROOT / "NUTS_RS_REV"
+EXPECTED_NUTS_RS_REV = NUTS_RS_REV.read_text(encoding="utf-8").strip()
 MAX_Z = 5.0
 MAX_RHAT = 1.05
 MAX_DIVERGENCE_RATE = 0.01
