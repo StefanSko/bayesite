@@ -3633,6 +3633,10 @@ fn capabilities_emits_versioned_document_matching_dispatch_table() {
         doc.get("capabilities_format").and_then(Value::as_str),
         Some("v0-provisional")
     );
+    assert_eq!(
+        doc.get("version").and_then(Value::as_str),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
     let commands: Vec<String> = match doc.get("commands").expect("commands field") {
         Value::Array(entries) => entries
             .iter()

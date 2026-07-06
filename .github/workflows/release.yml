@@ -24,6 +24,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Assert tag matches crate version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          crate_version=$(grep -m1 '^version' crates/core/Cargo.toml | sed -E 's/version = "([^"]+)"/\1/')
+          tag="${GITHUB_REF#refs/tags/}"
+          if [ "$tag" != "v${crate_version}" ]; then
+            echo "::error::Tag '${tag}' does not match crate version 'v${crate_version}' in crates/core/Cargo.toml" >&2
+            exit 1
+          fi
+
       - name: Install wasm target
         run: rustup target add wasm32-unknown-unknown
 
