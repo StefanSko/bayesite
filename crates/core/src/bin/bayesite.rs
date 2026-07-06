@@ -1308,6 +1308,10 @@ fn capabilities_document() -> Value {
             "capabilities_format".to_string(),
             Value::Str("v0-provisional".to_string()),
         ),
+        (
+            "version".to_string(),
+            Value::Str(env!("CARGO_PKG_VERSION").to_string()),
+        ),
         ("commands".to_string(), Value::Array(commands)),
         (
             "ir".to_string(),
