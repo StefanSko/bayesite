@@ -55,19 +55,9 @@ jobs:
         with:
           repository: StefanSko/jaxstanv5
           ref: ${{ env.JAXSTANV5_REV }}
-          token: ${{ secrets.BAYES_REPOS_TOKEN || github.token }}
           path: jaxstanv5
 
       - uses: astral-sh/setup-uv@v5
-
-      - name: Grant git read access to same-owner dependencies
-        env:
-          BAYES_REPOS_TOKEN: ${{ secrets.BAYES_REPOS_TOKEN || github.token }}
-        shell: bash
-        run: |
-          git config --global \
-            url."https://x-access-token:${BAYES_REPOS_TOKEN}@github.com/StefanSko/".insteadOf \
-            "https://github.com/StefanSko/"
 
       - name: Run G7 cross-backend posterior oracle
         working-directory: bayesite
