@@ -5,8 +5,10 @@ The goal is a SQLite-like Bayesian workflow binary: one executable an agent can
 run without Python, `uvx`, NumPy, or a runtime dependency graph.
 
 Bayesite is **not** a model declaration frontend. It consumes `bayeswire_ir` v1;
-[bayeswire](https://github.com/StefanSko/bayeswire) owns the language and is
-the reference Python producer.
+[bayeswire](https://github.com/StefanSko/bayescycle/tree/main/packages/bayeswire)
+owns the language and is the reference Python producer. bayeswire ships inside
+the [bayescycle](https://github.com/StefanSko/bayescycle) monorepo, with the
+normative wire-format spec at its repository root (`spec/`).
 
 ## Status
 

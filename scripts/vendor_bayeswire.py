@@ -3,9 +3,12 @@
 
 Bayesite stays zero-dependency and offline-capable: it consumes the wire
 format through byte-identical vendored files, never through package
-management. Run this against a bayeswire checkout at the pinned ref:
+management. bayeswire lives inside the bayescycle monorepo
+(https://github.com/StefanSko/bayescycle) as the ``packages/bayeswire``
+package, with the normative spec hoisted to the monorepo root (``spec/``).
+Run this against a bayescycle monorepo checkout at the pinned ref:
 
-    python3 scripts/vendor_bayeswire.py --bayeswire-path ../bayeswire
+    python3 scripts/vendor_bayeswire.py --bayeswire-path ../bayescycle
 
 It copies the normative spec docs and the golden corpus, records the source
 commit in ``BAYESWIRE_TAG``, and writes ``bayeswire-vendor.json`` with a
@@ -32,7 +35,7 @@ VENDORED_SPEC = {
     "spec/data-document-v1.md": "docs/data-document-v1.md",
     "spec/model-data-fingerprint-v1.md": "docs/model-data-fingerprint-v1.md",
 }
-CORPUS_SOURCE = "src/bayeswire/corpus"
+CORPUS_SOURCE = "packages/bayeswire/src/bayeswire/corpus"
 CORPUS_DEST = "tests/golden_ir"
 
 
@@ -67,13 +70,18 @@ def _sha256(path: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bayeswire-path", type=Path, required=True)
+    parser.add_argument(
+        "--bayeswire-path",
+        type=Path,
+        required=True,
+        help="path to a bayescycle monorepo checkout (contains spec/ and packages/bayeswire/)",
+    )
     args = parser.parse_args()
 
     bayeswire_root = args.bayeswire_path.resolve()
     corpus_root = bayeswire_root / CORPUS_SOURCE
     if not corpus_root.is_dir():
-        sys.exit(f"not a bayeswire checkout (no corpus): {bayeswire_root}")
+        sys.exit(f"not a bayescycle monorepo checkout (no corpus): {bayeswire_root}")
 
     commit = _source_commit(bayeswire_root)
     vendored: dict[str, str] = {}

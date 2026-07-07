@@ -1,6 +1,6 @@
 {
-  "bayeswire_ref": "v0.2.0",
-  "bayeswire_commit": "04b8cd71898c3356df1e9f41d5487f390315efd5",
+  "bayeswire_ref": "v0.3.0",
+  "bayeswire_commit": "75af59263ac3f69caaab5301c43ff5b51db8874e",
   "files": {
     "docs/data-document-v1.md": "7039fe5e895eaa072c25e97da344dd667424316144f8754b86f397c81a15a7f3",
     "docs/ir-format-v1.md": "5f66cc98ea95a8dd91348f576b44dc13de5ffa2802abab8bfe3eca0b6635fd7e",
