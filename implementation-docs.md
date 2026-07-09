@@ -79,6 +79,29 @@ changelog**, pinned only by the reference implementation:
   mirrors with an explicit unsupported error. Direct ParamRef sites with
   VectorBounds are likewise "not implemented" (mirrors domains.py).
 
+## WP2 review notes (transforms landed)
+
+- Pi's generalization came out cleaner than expected: the old scalar
+  `interval_constraint` now routes through a shared `bounded_constraint`
+  taking tape-valued bounds, so Interval/UnitInterval/VectorBounds-two-sided
+  are literally one code path; the nextafter clip is a flag only the
+  VectorBounds arm sets (the reference doesn't clip scalar Interval either —
+  faithfulness preserved down to that asymmetry).
+- A new `ResolvedConstraint` enum (bind-time twin of `Constraint`) keeps
+  DataRef resolution out of the hot path: `apply_constraint` never touches the
+  data map. This was the design freeze's intent and it fell out naturally.
+- The tape already had `ge`/`le`/`where_select`, so the clip needed no new
+  autodiff ops; clipped coordinates get gradient 0 through `where_select`,
+  matching JAX `clip` semantics.
+- Hand-checked the folding regression test: upper-only bound 2.0 on an
+  Exponential(1) base folds to [0, 2]; at u = 0, logp = -1 - ln 2 and
+  d(logp)/du = -0.5, both verified analytically. This is the case no golden
+  fixture pins — it exists purely because reading the reference surfaced
+  folding.
+- Full suite green on first Pi attempt: 8-fixture golden gate (logp rtol
+  1e-12, gradient rtol 1e-10) including both censored fixtures; clippy and
+  fmt clean. Zero review iterations needed.
+
 ## Design freeze for the Pi work orders
   - `Constraint::VectorBounds { lower: Option<String>, upper: Option<String> }`
     (DataRef names), at least one present; legal on free values.

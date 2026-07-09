@@ -13,10 +13,10 @@ use crate::artifact::{
 };
 use crate::error::{Error, ErrorKind};
 use crate::ir::{
-    BinOpKind, Constraint, DataSchema, Dim, Distribution, Expr, IndexSpec, ModelMeta, Size, UnaryFn,
+    BinOpKind, DataSchema, Dim, Distribution, Expr, IndexSpec, ModelMeta, Size, UnaryFn,
 };
 use crate::json::{self, Value};
-use crate::model::{DataValue, Posterior};
+use crate::model::{resolve_constraint, DataValue, Posterior, ResolvedConstraint};
 use crate::rng::Xoshiro256PlusPlus;
 use crate::special;
 use crate::tensor::{gather_map, IndexAtom, Tensor};
@@ -71,7 +71,7 @@ pub struct PriorPredictiveRun {
 #[derive(Debug, Clone)]
 struct FreeSpec {
     shape: Vec<usize>,
-    constraint: Option<Constraint>,
+    constraint: Option<ResolvedConstraint>,
 }
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -206,7 +206,8 @@ fn free_specs(
     meta: &ModelMeta,
     data: &HashMap<String, DataValue>,
 ) -> Result<HashMap<String, FreeSpec>, Error> {
-    let mut specs = HashMap::new();
+    let sites = meta.resolved_stochastic_sites();
+    let mut unresolved = Vec::new();
     for (name, free_value) in meta.resolved_free_values() {
         let shape = match &free_value.size {
             Size::Scalar => vec![],
@@ -228,13 +229,13 @@ fn free_specs(
                 vec![k as usize]
             }
         };
-        specs.insert(
-            name,
-            FreeSpec {
-                shape,
-                constraint: free_value.constraint,
-            },
-        );
+        unresolved.push((name, shape, free_value.constraint));
+    }
+
+    let mut specs = HashMap::with_capacity(unresolved.len());
+    for (name, shape, constraint) in unresolved {
+        let constraint = resolve_constraint(&name, constraint.as_ref(), &shape, &sites, data)?;
+        specs.insert(name, FreeSpec { shape, constraint });
     }
     Ok(specs)
 }
@@ -1068,19 +1069,174 @@ fn sample_distribution(
     }
 }
 
-fn satisfies_constraint(value: &Tensor, constraint: &Option<Constraint>) -> bool {
+fn scalar_distribution_parameter(
+    env: &ForwardEnv<'_>,
+    expr: &Expr,
+    context: &str,
+) -> Result<f64, Error> {
+    let value = env.evaluate(expr)?;
+    if value.rank() != 0 {
+        return Err(invalid(
+            "VectorBounds prior-predictive simulation requires iid scalar distributions",
+        ));
+    }
+    ensure_finite(value.data()[0], context)
+}
+
+fn sample_cdf_interval(
+    rng: &mut Xoshiro256PlusPlus,
+    lower: Option<&[f64]>,
+    upper: Option<&[f64]>,
+    cdf: impl Fn(f64) -> f64,
+    inverse_cdf: impl Fn(f64) -> f64,
+    length: usize,
+) -> Tensor {
+    let mut values = Vec::with_capacity(length);
+    for index in 0..length {
+        let lower_probability = lower.map_or(0.0, |bound| cdf(bound[index]));
+        let upper_probability = upper.map_or(1.0, |bound| cdf(bound[index]));
+        let probability =
+            lower_probability + (upper_probability - lower_probability) * rng.uniform();
+        values.push(inverse_cdf(probability));
+    }
+    Tensor::from_vec(vec![length], values)
+}
+
+fn sample_vector_bounds_restricted(
+    rng: &mut Xoshiro256PlusPlus,
+    env: &ForwardEnv<'_>,
+    dist: &Distribution,
+    lower: Option<&[f64]>,
+    upper: Option<&[f64]>,
+    length: usize,
+) -> Result<Tensor, Error> {
+    if lower.is_some_and(|bound| bound.len() != length)
+        || upper.is_some_and(|bound| bound.len() != length)
+    {
+        return Err(mismatch(
+            "VectorBounds length must match the PartiallyObserved missing index count",
+        ));
+    }
+
+    match dist {
+        Distribution::Normal { loc, scale } => {
+            let loc = scalar_distribution_parameter(env, loc, "Normal loc")?;
+            let scale = scalar_distribution_parameter(env, scale, "Normal scale")?;
+            if scale <= 0.0 {
+                return Err(nonfinite(format!(
+                    "Normal scale must be positive, got {scale}"
+                )));
+            }
+            Ok(sample_cdf_interval(
+                rng,
+                lower,
+                upper,
+                |bound| special::ndtr((bound - loc) / scale),
+                |probability| loc + scale * special::ndtri(probability),
+                length,
+            ))
+        }
+        Distribution::Exponential { rate } => {
+            let rate = scalar_distribution_parameter(env, rate, "Exponential rate")?;
+            if rate <= 0.0 {
+                return Err(nonfinite(format!(
+                    "Exponential rate must be positive, got {rate}"
+                )));
+            }
+            if let (Some(lower), None) = (lower, upper) {
+                let values = lower
+                    .iter()
+                    .map(|&bound| bound - (1.0 - rng.uniform()).ln() / rate)
+                    .collect();
+                return Ok(Tensor::from_vec(vec![length], values));
+            }
+            Ok(sample_cdf_interval(
+                rng,
+                lower,
+                upper,
+                |bound| {
+                    if bound <= 0.0 {
+                        0.0
+                    } else {
+                        -(-rate * bound).exp_m1()
+                    }
+                },
+                |probability| -(-probability).ln_1p() / rate,
+                length,
+            ))
+        }
+        Distribution::Uniform { low, high } => {
+            let low = scalar_distribution_parameter(env, low, "Uniform low")?;
+            let high = scalar_distribution_parameter(env, high, "Uniform high")?;
+            if high <= low {
+                return Err(nonfinite(format!(
+                    "Uniform high must be greater than low, got low={low}, high={high}"
+                )));
+            }
+            Ok(sample_cdf_interval(
+                rng,
+                lower,
+                upper,
+                |bound| ((bound - low) / (high - low)).clamp(0.0, 1.0),
+                |probability| low + (high - low) * probability,
+                length,
+            ))
+        }
+        Distribution::HalfNormal { .. }
+        | Distribution::StudentT { .. }
+        | Distribution::Beta { .. }
+        | Distribution::Bernoulli { .. }
+        | Distribution::Poisson { .. }
+        | Distribution::Binomial { .. }
+        | Distribution::BetaBinomial { .. }
+        | Distribution::NegativeBinomial { .. }
+        | Distribution::OrderedLogistic { .. }
+        | Distribution::Truncated { .. } => Err(invalid(format!(
+            "Unsupported bounded PartiallyObserved prior distribution: {}",
+            distribution_name(dist)
+        ))),
+        Distribution::MultivariateNormal { .. } => Err(invalid(
+            "bounded MVN PartiallyObserved sites are not supported by prior-predictive simulation",
+        )),
+    }
+}
+
+fn distribution_name(dist: &Distribution) -> &'static str {
+    match dist {
+        Distribution::Normal { .. } => "Normal",
+        Distribution::HalfNormal { .. } => "HalfNormal",
+        Distribution::StudentT { .. } => "StudentT",
+        Distribution::Exponential { .. } => "Exponential",
+        Distribution::Uniform { .. } => "Uniform",
+        Distribution::Beta { .. } => "Beta",
+        Distribution::Bernoulli { .. } => "Bernoulli",
+        Distribution::Poisson { .. } => "Poisson",
+        Distribution::Binomial { .. } => "Binomial",
+        Distribution::BetaBinomial { .. } => "BetaBinomial",
+        Distribution::NegativeBinomial { .. } => "NegativeBinomial",
+        Distribution::MultivariateNormal { .. } => "MultivariateNormal",
+        Distribution::OrderedLogistic { .. } => "OrderedLogistic",
+        Distribution::Truncated { .. } => "Truncated",
+    }
+}
+
+fn satisfies_constraint(value: &Tensor, constraint: &Option<ResolvedConstraint>) -> bool {
     match constraint {
         None => true,
-        Some(Constraint::Positive) => value.data().iter().all(|&v| v > 0.0),
-        Some(Constraint::UnitInterval) => value.data().iter().all(|&v| v > 0.0 && v < 1.0),
-        Some(Constraint::Interval { lower, upper }) => {
+        Some(ResolvedConstraint::Positive) => value.data().iter().all(|&v| v > 0.0),
+        Some(ResolvedConstraint::UnitInterval) => value.data().iter().all(|&v| v > 0.0 && v < 1.0),
+        Some(ResolvedConstraint::Interval { lower, upper }) => {
             value.data().iter().all(|&v| v > *lower && v < *upper)
         }
-        Some(Constraint::Ordered) => {
+        Some(ResolvedConstraint::Ordered) => {
             value.rank() == 1 && value.data().windows(2).all(|pair| pair[1] > pair[0])
         }
-        // DataRef bounds are unavailable to this value-only predicate.
-        Some(Constraint::VectorBounds { .. }) => false,
+        Some(ResolvedConstraint::VectorBounds { lower, upper }) => {
+            value.data().iter().enumerate().all(|(index, &entry)| {
+                lower.as_ref().is_none_or(|bound| entry > bound[index])
+                    && upper.as_ref().is_none_or(|bound| entry < bound[index])
+            })
+        }
     }
 }
 
@@ -1089,7 +1245,7 @@ fn sample_constrained_distribution(
     env: &ForwardEnv<'_>,
     dist: &Distribution,
     target_shape: Option<&[usize]>,
-    constraint: &Option<Constraint>,
+    constraint: &Option<ResolvedConstraint>,
     name: &str,
 ) -> Result<Tensor, Error> {
     for _ in 0..10_000 {
@@ -1391,6 +1547,14 @@ pub fn simulate_prior_predictive(
                             site.name
                         ))
                     })?;
+                    if matches!(
+                        free.constraint,
+                        Some(ResolvedConstraint::VectorBounds { .. })
+                    ) {
+                        return Err(invalid(format!(
+                            "VectorBounds prior simulation is not implemented for direct free value \"{name}\"; use a PartiallyObserved VectorScatter site"
+                        )));
+                    }
                     let value = sample_constrained_distribution(
                         &mut rng,
                         &env,
@@ -1430,9 +1594,96 @@ pub fn simulate_prior_predictive(
                     });
                     values.push((name.clone(), value));
                 }
-                _ => {
+                Expr::VectorScatter {
+                    length,
+                    observed_idx: _,
+                    observed_values: _,
+                    missing_idx,
+                    missing_values,
+                } => {
+                    let Expr::Param(free_name) = missing_values.as_ref() else {
+                        return Err(invalid(format!(
+                            "prior-predictive PartiallyObserved site \"{}\" must use a ParamRef for missing_values",
+                            site.name
+                        )));
+                    };
+                    let free = free_specs.get(free_name).ok_or_else(|| {
+                        malformed(format!(
+                            "stochastic site \"{}\" targets unknown free value \"{free_name}\"",
+                            site.name
+                        ))
+                    })?;
+                    let length_value = env.evaluate(length)?;
+                    if length_value.rank() != 0
+                        || !length_value.data()[0].is_finite()
+                        || length_value.data()[0].fract() != 0.0
+                        || length_value.data()[0] < 0.0
+                    {
+                        return Err(mismatch(format!(
+                            "PartiallyObserved site \"{}\" length must be a non-negative integer scalar",
+                            site.name
+                        )));
+                    }
+                    let length = length_value.data()[0] as usize;
+                    let missing_idx = env.index_vector(missing_idx)?;
+                    let bounds = match &free.constraint {
+                        Some(ResolvedConstraint::VectorBounds { lower, upper }) => {
+                            Some((lower.as_deref(), upper.as_deref()))
+                        }
+                        None
+                        | Some(ResolvedConstraint::Positive)
+                        | Some(ResolvedConstraint::Interval { .. })
+                        | Some(ResolvedConstraint::UnitInterval)
+                        | Some(ResolvedConstraint::Ordered) => None,
+                    };
+                    if bounds.is_some() {
+                        if let Distribution::MultivariateNormal { mean, scale_tril } =
+                            &site.distribution
+                        {
+                            env.evaluate(mean)?;
+                            env.evaluate(scale_tril)?;
+                            return Err(invalid(
+                                "bounded MVN PartiallyObserved sites are not supported by prior-predictive simulation",
+                            ));
+                        }
+                    }
+                    let mut value = sample_distribution(
+                        &mut rng,
+                        &env,
+                        &site.distribution,
+                        Some(&[length]),
+                    )?;
+                    if let Some((lower, upper)) = bounds {
+                        let missing = sample_vector_bounds_restricted(
+                            &mut rng,
+                            &env,
+                            &site.distribution,
+                            lower,
+                            upper,
+                            missing_idx.len(),
+                        )?;
+                        for (&index, &entry) in missing_idx.iter().zip(missing.data()) {
+                            let index = wrap_scatter_index(index, length)?;
+                            value.data_mut()[index] = entry;
+                        }
+                    }
+                    env.values.insert(site.name.clone(), value.clone());
+                    current_sites.push(PriorPredictiveSite {
+                        name: site.name.clone(),
+                        stochastic_site: site.name.clone(),
+                        role: PriorPredictiveRole::Observed,
+                        shape: value.shape().to_vec(),
+                        integer: value_is_integer(&value),
+                        integer_by_coordinate: integer_flags(&value),
+                    });
+                    values.push((site.name.clone(), value));
+                }
+                Expr::Const(_)
+                | Expr::Bin { .. }
+                | Expr::Unary { .. }
+                | Expr::Index { .. } => {
                     return Err(invalid(format!(
-                        "prior-predictive site \"{}\" has a non-assignable value expression; only ParamRef and DataRef sites are supported in v0-provisional output",
+                        "prior-predictive site \"{}\" has a non-assignable value expression; only ParamRef, DataRef, and PartiallyObserved VectorScatter sites are supported in v0-provisional output",
                         site.name
                     )))
                 }
@@ -1633,9 +1884,44 @@ pub fn simulate_data_from_truth(
                     },
                 ));
             }
-            other => {
+            Expr::VectorScatter { missing_values, .. } => {
+                if let Expr::Param(free_name) = missing_values.as_ref() {
+                    let bounded = free_specs.get(free_name).is_some_and(|free| {
+                        matches!(
+                            free.constraint,
+                            Some(ResolvedConstraint::VectorBounds { .. })
+                        )
+                    });
+                    if bounded {
+                        if let Distribution::MultivariateNormal { mean, scale_tril } =
+                            &site.distribution
+                        {
+                            env.evaluate(mean)?;
+                            env.evaluate(scale_tril)?;
+                            return Err(invalid(
+                                "bounded MVN PartiallyObserved sites are not supported by prior-predictive simulation",
+                            ));
+                        }
+                    }
+                }
                 let mut refs = Vec::new();
-                collect_expr_data_refs(other, &mut refs);
+                collect_expr_data_refs(&site.value, &mut refs);
+                refs.sort();
+                refs.dedup();
+                let unbound = refs
+                    .into_iter()
+                    .filter(|name| !data.contains_key(name) && !env.values.contains_key(name))
+                    .collect::<Vec<_>>();
+                if !unbound.is_empty() {
+                    return Err(invalid(format!(
+                        "simulate stochastic site \"{}\" has a non-assignable observed value expression referencing ungenerated data {unbound:?}; only direct DataRef observed sites are supported in v0-provisional simulation",
+                        site.name
+                    )));
+                }
+            }
+            Expr::Const(_) | Expr::Bin { .. } | Expr::Unary { .. } | Expr::Index { .. } => {
+                let mut refs = Vec::new();
+                collect_expr_data_refs(&site.value, &mut refs);
                 refs.sort();
                 refs.dedup();
                 let unbound = refs

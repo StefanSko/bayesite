@@ -323,8 +323,8 @@ struct FreeSlot {
     size: usize,
 }
 
-#[derive(Debug)]
-enum ResolvedConstraint {
+#[derive(Debug, Clone)]
+pub(crate) enum ResolvedConstraint {
     Positive,
     Interval {
         lower: f64,
@@ -813,7 +813,7 @@ fn scalar_int_data(data: &HashMap<String, DataValue>, name: &str) -> Result<i64,
     Ok(value.values[0] as i64)
 }
 
-fn resolve_constraint(
+pub(crate) fn resolve_constraint(
     free_name: &str,
     constraint: Option<&Constraint>,
     shape: &[usize],

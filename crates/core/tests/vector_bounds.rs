@@ -4,6 +4,9 @@ use bayesite_core::ir::{
     ResolvedStochasticSite, Size,
 };
 use bayesite_core::model::{DataValue, Posterior};
+use bayesite_core::predictive::{
+    simulate_data_from_truth, simulate_prior_predictive, PriorPredictiveSettings,
+};
 
 fn data(name: &str, values: Vec<f64>) -> (String, DataValue) {
     (
@@ -63,6 +66,55 @@ fn exponential() -> Distribution {
     Distribution::Exponential {
         rate: Expr::Const(1.0),
     }
+}
+
+fn partially_observed_model(distribution: Distribution, length: i64) -> ModelMeta {
+    ModelMeta {
+        params: vec![],
+        data: ["lower", "missing_idx", "observed_idx", "observed_values"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    ResolvedData {
+                        schema: DataSchema::Rank(1),
+                    },
+                )
+            })
+            .collect(),
+        observed_nodes: vec![],
+        expressions: vec![],
+        free_values: vec![(
+            "y".to_string(),
+            ResolvedFreeValue {
+                constraint: Some(Constraint::VectorBounds {
+                    lower: Some("lower".to_string()),
+                    upper: None,
+                }),
+                size: Size::Fixed(1),
+            },
+        )],
+        stochastic_sites: vec![ResolvedStochasticSite {
+            name: "y".to_string(),
+            distribution,
+            value: Expr::VectorScatter {
+                length: Box::new(Expr::Const(length as f64)),
+                observed_idx: Box::new(Expr::Data("observed_idx".to_string())),
+                observed_values: Box::new(Expr::Data("observed_values".to_string())),
+                missing_idx: Box::new(Expr::Data("missing_idx".to_string())),
+                missing_values: Box::new(Expr::Param("y".to_string())),
+            },
+        }],
+    }
+}
+
+fn partially_observed_data(lower: f64) -> Vec<(String, DataValue)> {
+    vec![
+        data("lower", vec![lower]),
+        data("missing_idx", vec![0.0]),
+        data("observed_idx", vec![]),
+        data("observed_values", vec![]),
+    ]
 }
 
 #[test]
@@ -208,4 +260,151 @@ fn normal_lower_only_bound_remains_one_sided() {
     let posterior = Posterior::new(model, vec![data("lower", vec![-1.5])]).unwrap();
     let constrained = posterior.constrain(&[0.0]).unwrap();
     assert_eq!(constrained[0].1.data(), &[-0.5]);
+}
+
+#[test]
+fn unbounded_vector_scatter_draws_the_full_vector_as_observed() {
+    let mut model = partially_observed_model(normal(), 2);
+    model.free_values[0].1.constraint = None;
+    let declared_data = vec![
+        data("lower", vec![0.0]),
+        data("missing_idx", vec![1.0]),
+        data("observed_idx", vec![0.0]),
+        data("observed_values", vec![999.0]),
+    ];
+    let run = simulate_prior_predictive(
+        model,
+        declared_data,
+        &PriorPredictiveSettings { num_draws: 1 },
+        199,
+    )
+    .expect("unbounded PartiallyObserved simulation succeeds");
+
+    assert_eq!(run.sites.len(), 1);
+    assert_eq!(run.sites[0].name, "y");
+    assert_eq!(run.sites[0].role.as_str(), "observed");
+    let value = &run.draws[0].values[0].1;
+    assert_eq!(value.shape(), &[2]);
+    assert_ne!(value.data()[0], 999.0, "observed data must not be inserted");
+}
+
+#[test]
+fn lower_only_exponential_vector_scatter_is_exact_in_the_extreme_tail() {
+    let model = partially_observed_model(exponential(), 1);
+    let settings = PriorPredictiveSettings { num_draws: 256 };
+    let run = simulate_prior_predictive(model, partially_observed_data(500.0), &settings, 211)
+        .expect("memorylessness keeps extreme-tail draws finite");
+
+    for draw in run.draws {
+        let value = draw.values[0].1.data()[0];
+        assert!(value.is_finite(), "{value}");
+        assert!(value >= 500.0, "{value}");
+    }
+}
+
+#[test]
+fn bounded_mvn_vector_scatter_is_explicitly_unsupported_by_forward_simulation() {
+    let mut model = partially_observed_model(
+        Distribution::MultivariateNormal {
+            mean: Expr::Data("mean".to_string()),
+            scale_tril: Expr::Data("scale_tril".to_string()),
+        },
+        2,
+    );
+    model.free_values[0].1.size = Size::Fixed(2);
+    model.data.extend([
+        (
+            "mean".to_string(),
+            ResolvedData {
+                schema: DataSchema::Rank(1),
+            },
+        ),
+        (
+            "scale_tril".to_string(),
+            ResolvedData {
+                schema: DataSchema::Rank(2),
+            },
+        ),
+    ]);
+    let declared_data = vec![
+        data("lower", vec![0.0, 0.0]),
+        data("missing_idx", vec![0.0, 1.0]),
+        data("observed_idx", vec![]),
+        data("observed_values", vec![]),
+        data("mean", vec![0.0, 0.0]),
+        (
+            "scale_tril".to_string(),
+            DataValue {
+                shape: vec![2, 2],
+                values: vec![1.0, 0.0, 0.0, 1.0],
+                integer: false,
+            },
+        ),
+    ];
+    let message =
+        "bounded MVN PartiallyObserved sites are not supported by prior-predictive simulation";
+
+    let prior_err = simulate_prior_predictive(
+        model.clone(),
+        declared_data.clone(),
+        &PriorPredictiveSettings { num_draws: 1 },
+        223,
+    )
+    .unwrap_err();
+    assert_eq!(prior_err.message, message);
+
+    let simulate_err =
+        simulate_data_from_truth(model, declared_data, vec![data("y", vec![1.0, 1.0])], 227)
+            .unwrap_err();
+    assert_eq!(simulate_err.message, message);
+}
+
+#[test]
+fn simulate_truth_checks_resolved_vector_bounds_by_free_value_name() {
+    let model = partially_observed_model(normal(), 1);
+    let declared_data = partially_observed_data(1.5);
+
+    simulate_data_from_truth(
+        model.clone(),
+        declared_data.clone(),
+        vec![data("y", vec![2.0])],
+        229,
+    )
+    .expect("truth strictly inside bounds succeeds");
+
+    let err = simulate_data_from_truth(model, declared_data, vec![data("y", vec![1.5])], 233)
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::DataShapeMismatch);
+    assert!(err.message.contains("free value \"y\""), "{}", err.message);
+    assert!(
+        err.message.contains("violates constraint"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn direct_vector_bounds_prior_simulation_fails_without_rejection_loop() {
+    let model = vector_model(
+        Constraint::VectorBounds {
+            lower: Some("lower".to_string()),
+            upper: None,
+        },
+        Size::Fixed(1),
+        normal(),
+        &["lower"],
+    );
+    let err = simulate_prior_predictive(
+        model,
+        vec![data("lower", vec![0.0])],
+        &PriorPredictiveSettings { num_draws: 1 },
+        239,
+    )
+    .unwrap_err();
+    assert!(
+        err.message
+            .contains("VectorBounds prior simulation is not implemented"),
+        "{}",
+        err.message
+    );
 }

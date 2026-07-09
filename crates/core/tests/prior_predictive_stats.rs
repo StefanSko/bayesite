@@ -2,14 +2,30 @@
 
 use bayesite_core::error::ErrorKind;
 use bayesite_core::ir::{
-    DataSchema, Dim, Distribution, Expr, ModelMeta, ResolvedData, ResolvedFreeValue, ResolvedParam,
-    ResolvedStochasticSite, Size,
+    decode_model, DataSchema, Dim, Distribution, Expr, ModelMeta, ResolvedData, ResolvedFreeValue,
+    ResolvedParam, ResolvedStochasticSite, Size,
 };
 use bayesite_core::json::{self, Value};
-use bayesite_core::model::DataValue;
+use bayesite_core::model::{data_from_json, DataValue};
 use bayesite_core::predictive::{
     prior_predictive_ndjson_lines, simulate_prior_predictive, PriorPredictiveSettings,
 };
+
+fn golden_model_and_data(name: &str) -> (ModelMeta, Vec<(String, DataValue)>) {
+    let root = format!("{}/../../tests/golden_ir", env!("CARGO_MANIFEST_DIR"));
+    let model_document = json::parse(
+        &std::fs::read_to_string(format!("{root}/{name}.json")).expect("golden model readable"),
+    )
+    .expect("golden model parses");
+    let data_document = json::parse(
+        &std::fs::read_to_string(format!("{root}/data/{name}.json")).expect("golden data readable"),
+    )
+    .expect("golden data parses");
+    (
+        decode_model(&model_document).expect("golden model decodes"),
+        data_from_json(&data_document).expect("golden data binds"),
+    )
+}
 
 fn scalar_normal_model(loc: f64, scale: f64) -> ModelMeta {
     let distribution = Distribution::Normal {
@@ -133,6 +149,47 @@ fn scalar_normal_prior_predictive_matches_analytic_moments() {
         "variance {variance} should be close to {}",
         scale * scale
     );
+}
+
+#[test]
+fn censored_exponential_prior_predictive_samples_shifted_missing_values() {
+    let (meta, data) = golden_model_and_data("censored_exponential");
+    let settings = PriorPredictiveSettings { num_draws: 8192 };
+    let run = simulate_prior_predictive(meta, data, &settings, 113)
+        .expect("censored Exponential prior predictive succeeds");
+
+    assert_eq!(run.sites[0].name, "rate");
+    assert_eq!(run.sites[1].name, "y");
+    assert_eq!(run.sites[1].role.as_str(), "observed");
+    let mut standardized_residual_sum = 0.0;
+    for draw in &run.draws {
+        let rate = draw.values[0].1.data()[0];
+        let y = draw.values[1].1.data();
+        assert!(y[2] >= 1.5, "{}", y[2]);
+        assert!(y[4] >= 2.0, "{}", y[4]);
+        standardized_residual_sum += rate * (y[2] - 1.5);
+        standardized_residual_sum += rate * (y[4] - 2.0);
+    }
+    let mean = standardized_residual_sum / (2 * settings.num_draws) as f64;
+    assert!(
+        (mean - 1.0).abs() < 0.04,
+        "standardized shifted-Exponential mean {mean} should be close to 1"
+    );
+}
+
+#[test]
+fn interval_censored_normal_prior_predictive_stays_strictly_inside_bounds() {
+    let (meta, data) = golden_model_and_data("interval_censored_normal");
+    let settings = PriorPredictiveSettings { num_draws: 4096 };
+    let run = simulate_prior_predictive(meta, data, &settings, 127)
+        .expect("interval-censored Normal prior predictive succeeds");
+
+    assert_eq!(run.sites[1].name, "y");
+    for draw in &run.draws {
+        let y = draw.values[1].1.data();
+        assert!(y[1] > -1.0 && y[1] < 0.5, "{}", y[1]);
+        assert!(y[3] > 0.25 && y[3] < 1.75, "{}", y[3]);
+    }
 }
 
 #[test]
