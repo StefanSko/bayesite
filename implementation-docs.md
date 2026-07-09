@@ -125,6 +125,29 @@ changelog**, pinned only by the reference implementation:
 - Extreme-tail evidence: lower bound 500 on Exponential(1) produces finite
   draws >= 500 (the CDF-space path would saturate; the shift is exact).
 
+## WP4 review notes (statistical validation landed) + end-to-end run
+
+- The conjugate gate passed on the first run: posterior mean 1.8955 vs
+  analytic Gamma(27, 14.2482) mean 1.8950 (margin 5·MCSE = 0.0285), variance
+  0.1341 vs 0.1330 (margin 6·MCSE = 0.0186), ESS 4115, zero divergences.
+- Negative control separated exactly as the theory predicts: the complete-case
+  fit lands at 4.816 (analytic complete-case posterior mean 4.799) — dropping
+  censored rows more than doubles the rate estimate because short waits are
+  overrepresented. The censored model recovers 1.896 against true rate 2.0.
+- Draw reporting (the reference backend's historical silently-wrong-answer
+  site) is pinned three ways: every reported y draw exceeds its coordinate's
+  censoring time across all 4000 draws; `packing()` reports the `(24,)` slot;
+  and the NDJSON header advertises the constrained shapes.
+- End-to-end CLI run (release binary, golden model document + frozen dataset):
+  `bayesite sample` → 4000 draws, 0 divergences, rate mean 1.8901;
+  `bayesite diagnose` → max split-R̂ 1.0006, min coordinate ESS 4658. The
+  minimum reported y_0 draw is 0.414756 against bound 0.4144217687 — the
+  sampler genuinely explores down to the censoring boundary and the transform
+  keeps it (strictly) inside.
+- All four Pi work orders landed with zero review-fix iterations — the
+  frozen-spec + normative-reference-files prompt pattern worked well for this
+  codebase.
+
 ## Design freeze for the Pi work orders
   - `Constraint::VectorBounds { lower: Option<String>, upper: Option<String> }`
     (DataRef names), at least one present; legal on free values.
