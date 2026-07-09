@@ -303,6 +303,80 @@ fn lower_only_exponential_vector_scatter_is_exact_in_the_extreme_tail() {
 }
 
 #[test]
+fn two_sided_normal_vector_bounds_are_finite_in_the_extreme_tail() {
+    let mut model = partially_observed_model(normal(), 1);
+    model.data.push((
+        "upper".to_string(),
+        ResolvedData {
+            schema: DataSchema::Rank(1),
+        },
+    ));
+    model.free_values[0].1.constraint = Some(Constraint::VectorBounds {
+        lower: Some("lower".to_string()),
+        upper: Some("upper".to_string()),
+    });
+    let mut declared_data = partially_observed_data(9.0);
+    declared_data.push(data("upper", vec![10.0]));
+    let run = simulate_prior_predictive(
+        model,
+        declared_data,
+        &PriorPredictiveSettings { num_draws: 512 },
+        219,
+    )
+    .expect("stable truncated-Normal simulation succeeds in a saturated tail");
+
+    for draw in run.draws {
+        let value = draw.values[0].1.data()[0];
+        assert!(value.is_finite(), "{value}");
+        assert!(value > 9.0 && value < 10.0, "{value}");
+    }
+}
+
+#[test]
+fn vector_scatter_propagates_the_missing_free_value_to_later_sites() {
+    let mut model = partially_observed_model(normal(), 3);
+    model.stochastic_sites.push(ResolvedStochasticSite {
+        name: "z_site".to_string(),
+        distribution: Distribution::Normal {
+            loc: Expr::Param("y".to_string()),
+            scale: Expr::Const(1e-9),
+        },
+        value: Expr::Data("z".to_string()),
+    });
+    let declared_data = vec![
+        data("lower", vec![0.0]),
+        data("missing_idx", vec![1.0]),
+        data("observed_idx", vec![0.0, 2.0]),
+        data("observed_values", vec![-10.0, 10.0]),
+    ];
+    let run = simulate_prior_predictive(
+        model,
+        declared_data,
+        &PriorPredictiveSettings { num_draws: 128 },
+        221,
+    )
+    .expect("later ParamRef resolves the missing-coordinate free value");
+
+    assert_eq!(run.sites.len(), 2);
+    assert_eq!(run.sites[0].name, "y");
+    assert_eq!(run.sites[0].shape, vec![3]);
+    assert_eq!(run.sites[1].name, "z");
+    assert_eq!(run.sites[1].shape, vec![1]);
+    for draw in run.draws {
+        let assembled = &draw.values[0].1;
+        let consumer = &draw.values[1].1;
+        assert_eq!(assembled.shape(), &[3]);
+        assert_eq!(consumer.shape(), &[1]);
+        assert!(
+            (consumer.data()[0] - assembled.data()[1]).abs() < 1e-7,
+            "consumer {:?} should be centered on missing value {:?}",
+            consumer.data(),
+            assembled.data()[1]
+        );
+    }
+}
+
+#[test]
 fn bounded_mvn_vector_scatter_is_explicitly_unsupported_by_forward_simulation() {
     let mut model = partially_observed_model(
         Distribution::MultivariateNormal {

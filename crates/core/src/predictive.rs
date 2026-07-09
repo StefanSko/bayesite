@@ -1083,25 +1083,6 @@ fn scalar_distribution_parameter(
     ensure_finite(value.data()[0], context)
 }
 
-fn sample_cdf_interval(
-    rng: &mut Xoshiro256PlusPlus,
-    lower: Option<&[f64]>,
-    upper: Option<&[f64]>,
-    cdf: impl Fn(f64) -> f64,
-    inverse_cdf: impl Fn(f64) -> f64,
-    length: usize,
-) -> Tensor {
-    let mut values = Vec::with_capacity(length);
-    for index in 0..length {
-        let lower_probability = lower.map_or(0.0, |bound| cdf(bound[index]));
-        let upper_probability = upper.map_or(1.0, |bound| cdf(bound[index]));
-        let probability =
-            lower_probability + (upper_probability - lower_probability) * rng.uniform();
-        values.push(inverse_cdf(probability));
-    }
-    Tensor::from_vec(vec![length], values)
-}
-
 fn sample_vector_bounds_restricted(
     rng: &mut Xoshiro256PlusPlus,
     env: &ForwardEnv<'_>,
@@ -1122,19 +1103,17 @@ fn sample_vector_bounds_restricted(
         Distribution::Normal { loc, scale } => {
             let loc = scalar_distribution_parameter(env, loc, "Normal loc")?;
             let scale = scalar_distribution_parameter(env, scale, "Normal scale")?;
-            if scale <= 0.0 {
-                return Err(nonfinite(format!(
-                    "Normal scale must be positive, got {scale}"
-                )));
+            let mut values = Vec::with_capacity(length);
+            for index in 0..length {
+                values.push(sample_truncated_normal(
+                    rng,
+                    loc,
+                    scale,
+                    lower.map(|bound| bound[index]),
+                    upper.map(|bound| bound[index]),
+                )?);
             }
-            Ok(sample_cdf_interval(
-                rng,
-                lower,
-                upper,
-                |bound| special::ndtr((bound - loc) / scale),
-                |probability| loc + scale * special::ndtri(probability),
-                length,
-            ))
+            Ok(Tensor::from_vec(vec![length], values))
         }
         Distribution::Exponential { rate } => {
             let rate = scalar_distribution_parameter(env, rate, "Exponential rate")?;
@@ -1143,44 +1122,45 @@ fn sample_vector_bounds_restricted(
                     "Exponential rate must be positive, got {rate}"
                 )));
             }
-            if let (Some(lower), None) = (lower, upper) {
-                let values = lower
-                    .iter()
-                    .map(|&bound| bound - (1.0 - rng.uniform()).ln() / rate)
-                    .collect();
-                return Ok(Tensor::from_vec(vec![length], values));
-            }
-            Ok(sample_cdf_interval(
-                rng,
-                lower,
-                upper,
-                |bound| {
-                    if bound <= 0.0 {
-                        0.0
-                    } else {
-                        -(-rate * bound).exp_m1()
+            match (lower, upper) {
+                (Some(lower), None) => {
+                    let values = lower
+                        .iter()
+                        .map(|&bound| bound - (1.0 - rng.uniform()).ln() / rate)
+                        .collect();
+                    Ok(Tensor::from_vec(vec![length], values))
+                }
+                (lower, Some(upper)) => {
+                    let mut values = Vec::with_capacity(length);
+                    for index in 0..length {
+                        values.push(sample_truncated_exponential(
+                            rng,
+                            rate,
+                            lower.map(|bound| bound[index]),
+                            Some(upper[index]),
+                        )?);
                     }
-                },
-                |probability| -(-probability).ln_1p() / rate,
-                length,
-            ))
+                    Ok(Tensor::from_vec(vec![length], values))
+                }
+                (None, None) => Err(mismatch(
+                    "resolved VectorBounds require at least one bound side",
+                )),
+            }
         }
         Distribution::Uniform { low, high } => {
             let low = scalar_distribution_parameter(env, low, "Uniform low")?;
             let high = scalar_distribution_parameter(env, high, "Uniform high")?;
-            if high <= low {
-                return Err(nonfinite(format!(
-                    "Uniform high must be greater than low, got low={low}, high={high}"
-                )));
+            let mut values = Vec::with_capacity(length);
+            for index in 0..length {
+                values.push(sample_truncated_uniform(
+                    rng,
+                    low,
+                    high,
+                    lower.map(|bound| bound[index]),
+                    upper.map(|bound| bound[index]),
+                )?);
             }
-            Ok(sample_cdf_interval(
-                rng,
-                lower,
-                upper,
-                |bound| ((bound - low) / (high - low)).clamp(0.0, 1.0),
-                |probability| low + (high - low) * probability,
-                length,
-            ))
+            Ok(Tensor::from_vec(vec![length], values))
         }
         Distribution::HalfNormal { .. }
         | Distribution::StudentT { .. }
@@ -1653,7 +1633,7 @@ pub fn simulate_prior_predictive(
                         &site.distribution,
                         Some(&[length]),
                     )?;
-                    if let Some((lower, upper)) = bounds {
+                    let missing = if let Some((lower, upper)) = bounds {
                         let missing = sample_vector_bounds_restricted(
                             &mut rng,
                             &env,
@@ -1666,8 +1646,18 @@ pub fn simulate_prior_predictive(
                             let index = wrap_scatter_index(index, length)?;
                             value.data_mut()[index] = entry;
                         }
-                    }
-                    env.values.insert(site.name.clone(), value.clone());
+                        missing
+                    } else {
+                        let entries = missing_idx
+                            .iter()
+                            .map(|&index| {
+                                wrap_scatter_index(index, length)
+                                    .map(|index| value.data()[index])
+                            })
+                            .collect::<Result<Vec<_>, Error>>()?;
+                        Tensor::from_vec(vec![missing_idx.len()], entries)
+                    };
+                    env.values.insert(free_name.clone(), missing);
                     current_sites.push(PriorPredictiveSite {
                         name: site.name.clone(),
                         stochastic_site: site.name.clone(),

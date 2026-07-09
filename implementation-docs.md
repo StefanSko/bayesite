@@ -148,6 +148,41 @@ changelog**, pinned only by the reference implementation:
   frozen-spec + normative-reference-files prompt pattern worked well for this
   codebase.
 
+## Codex review loop (PR #27)
+
+Round 1 (one P2): Uniform support-edge alignment rejected negative
+`missing_idx` while the scatter evaluators (and JAX's native negative
+indexing in the reference) wrap them — an internal-consistency bug only
+reachable via VectorBounds + vector Uniform support. Fixed with the same
+wrapping the density path uses; regression test folds support through
+`missing_idx = [-1]`.
+
+Round 2 (two P2s, both real):
+
+- **Tail-bounded Normal draws could emit +inf**: bounds like [9, 10] on a
+  standard Normal saturate both CDF endpoints to 1.0, and `ndtri(1.0)` is
+  +inf. Notably my own WP3 work order *caused* this: it demanded mirroring
+  the reference's plain CDF-space restriction and explicitly forbade
+  stable-tail refinements, on cross-engine-parity grounds. That reasoning was
+  wrong for sampling: RNG streams never match across engines anyway, so
+  parity is distributional, and any correct truncated sampler is
+  distributionally identical — the stable one is simply better. Lesson:
+  "mirror the reference exactly" is the right bar for *density* semantics,
+  but for *stochastic* paths the bar is distributional equivalence plus the
+  engine's own numerical standards. Fix: reuse the engine's existing stable
+  truncated samplers (already battle-tested by Distribution::Truncated).
+- **The generated missing free value never reached the forward env**: the
+  VectorScatter arm inserted the assembled full vector under the site name.
+  With site name == free-value name (the typical case), a later site
+  referencing `ParamRef(y)` would silently see the full-length vector
+  instead of the declared `(n_mis,)` slot — a silent-wrong-shape hazard the
+  reference avoids only by erroring. Fix: env carries the free value (missing
+  draws) under the free name; the assembled vector stays output-only.
+
+Both were review-only catches: the golden gates and statistical suite
+couldn't see them (one needs a saturated tail, one needs a downstream
+consumer of the free value). Adversarial review earns its keep exactly here.
+
 ## Design freeze for the Pi work orders
   - `Constraint::VectorBounds { lower: Option<String>, upper: Option<String> }`
     (DataRef names), at least one present; legal on free values.
