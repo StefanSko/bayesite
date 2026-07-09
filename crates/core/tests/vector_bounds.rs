@@ -573,3 +573,33 @@ fn constrained_scatter_free_values_are_explicitly_unsupported_in_prior_draws() {
         err.message
     );
 }
+
+#[test]
+fn recover_rejects_partially_observed_free_values_before_drawing() {
+    use bayesite_core::sampler::Settings;
+    use bayesite_core::workflow::{recover_report, RecoverSettings};
+
+    let model = partially_observed_model(exponential(), 1);
+    let settings = RecoverSettings {
+        chains: 1,
+        sampler: Settings {
+            num_warmup: 10,
+            num_draws: 10,
+            ..Settings::default()
+        },
+        interval: 0.8,
+    };
+    let err = recover_report(model, partially_observed_data(1.0), &settings, 23).unwrap_err();
+    assert!(
+        err.message
+            .contains("cannot report truth for free value \"y\""),
+        "{}",
+        err.message
+    );
+    assert!(
+        err.message
+            .contains("directly simulated stochastic site for every free value"),
+        "{}",
+        err.message
+    );
+}
