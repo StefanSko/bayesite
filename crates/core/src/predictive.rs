@@ -1069,6 +1069,11 @@ fn sample_distribution(
     }
 }
 
+/// The iid-scalar restriction is wire-contract parity, not a shortcut: the
+/// reference backend raises the same error for any non-scalar batch/event
+/// shape in `_sample_vector_bounds_restricted`, so accepting vector
+/// parameters here would let this engine forward-sample models the
+/// reference rejects.
 fn scalar_distribution_parameter(
     env: &ForwardEnv<'_>,
     expr: &Expr,
