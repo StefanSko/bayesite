@@ -317,10 +317,30 @@ fn data_value_from_json(name: &str, spec: &Value) -> Result<DataValue, Error> {
 #[derive(Debug)]
 struct FreeSlot {
     name: String,
-    constraint: Option<Constraint>,
+    constraint: Option<ResolvedConstraint>,
     shape: Vec<usize>,
     offset: usize,
     size: usize,
+}
+
+#[derive(Debug)]
+enum ResolvedConstraint {
+    Positive,
+    Interval {
+        lower: f64,
+        upper: f64,
+    },
+    UnitInterval,
+    Ordered,
+    VectorBounds {
+        lower: Option<Vec<f64>>,
+        upper: Option<Vec<f64>>,
+    },
+}
+
+struct VectorSupportEdges {
+    lower: Option<Vec<f64>>,
+    upper: Option<Vec<f64>>,
 }
 
 /// Parameter expressions of a distribution, for structural validation.
@@ -557,7 +577,8 @@ impl Posterior {
         }
 
         // Free-value shapes per the packing-order guarantee.
-        let mut free = Vec::new();
+        let sites = meta.resolved_stochastic_sites();
+        let mut unresolved_free = Vec::new();
         let mut offset = 0usize;
         for (name, free_value) in meta.resolved_free_values() {
             let shape: Vec<usize> = match &free_value.size {
@@ -582,19 +603,25 @@ impl Posterior {
                 }
             };
             let size: usize = shape.iter().product::<usize>().max(1);
+            unresolved_free.push((name, free_value.constraint, shape, offset, size));
+            offset += size;
+        }
+        let mut free = Vec::with_capacity(unresolved_free.len());
+        for (name, constraint, shape, slot_offset, size) in unresolved_free {
+            let constraint =
+                resolve_constraint(&name, constraint.as_ref(), &shape, &sites, &data_map)?;
             free.push(FreeSlot {
                 name,
-                constraint: free_value.constraint,
+                constraint,
                 shape,
-                offset,
+                offset: slot_offset,
                 size,
             });
-            offset += size;
         }
 
         Ok(Posterior {
             free,
-            sites: meta.resolved_stochastic_sites(),
+            sites,
             data: data_map,
             n_params: offset,
             identity_hash,
@@ -786,6 +813,425 @@ fn scalar_int_data(data: &HashMap<String, DataValue>, name: &str) -> Result<i64,
     Ok(value.values[0] as i64)
 }
 
+fn resolve_constraint(
+    free_name: &str,
+    constraint: Option<&Constraint>,
+    shape: &[usize],
+    sites: &[ResolvedStochasticSite],
+    data: &HashMap<String, DataValue>,
+) -> Result<Option<ResolvedConstraint>, Error> {
+    let Some(constraint) = constraint else {
+        return Ok(None);
+    };
+    Ok(Some(match constraint {
+        Constraint::Positive => ResolvedConstraint::Positive,
+        Constraint::Interval { lower, upper } => ResolvedConstraint::Interval {
+            lower: *lower,
+            upper: *upper,
+        },
+        Constraint::UnitInterval => ResolvedConstraint::UnitInterval,
+        Constraint::Ordered => ResolvedConstraint::Ordered,
+        Constraint::VectorBounds { lower, upper } => {
+            if shape.len() != 1 {
+                return Err(mismatch(format!(
+                    "VectorBounds for free value {free_name:?} require a rank-1 free value"
+                )));
+            }
+            let expected_length = shape[0];
+            let mut lower = resolve_vector_bound_side(
+                free_name,
+                "lower",
+                lower.as_deref(),
+                data,
+                expected_length,
+            )?;
+            let mut upper = resolve_vector_bound_side(
+                free_name,
+                "upper",
+                upper.as_deref(),
+                data,
+                expected_length,
+            )?;
+            let support = vector_bounds_support_edges(free_name, sites, data, expected_length)?;
+            if lower.is_none() {
+                lower = support.lower.clone();
+            }
+            if upper.is_none() {
+                upper = support.upper.clone();
+            }
+            if let (Some(lower), Some(upper)) = (&lower, &upper) {
+                if lower.iter().zip(upper).any(|(&lo, &hi)| lo >= hi) {
+                    return Err(mismatch(format!(
+                        "VectorBounds for free value {free_name:?} require lower < upper after \
+                         folding finite base support edges"
+                    )));
+                }
+            }
+            validate_vector_bounds_support(
+                free_name,
+                lower.as_deref(),
+                upper.as_deref(),
+                support.lower.as_deref(),
+                support.upper.as_deref(),
+            )?;
+            ResolvedConstraint::VectorBounds { lower, upper }
+        }
+    }))
+}
+
+fn resolve_vector_bound_side(
+    free_name: &str,
+    side_name: &str,
+    data_name: Option<&str>,
+    data: &HashMap<String, DataValue>,
+    expected_length: usize,
+) -> Result<Option<Vec<f64>>, Error> {
+    let Some(data_name) = data_name else {
+        return Ok(None);
+    };
+    let value = data.get(data_name).ok_or_else(|| {
+        mismatch(format!(
+            "VectorBounds for free value {free_name:?} reference missing {side_name} data \
+             {data_name:?}"
+        ))
+    })?;
+    if value.shape.len() != 1 {
+        return Err(mismatch(format!(
+            "VectorBounds for free value {free_name:?} {side_name} data {data_name:?} must be a \
+             rank-1 vector"
+        )));
+    }
+    if value.shape[0] != expected_length {
+        return Err(mismatch(format!(
+            "VectorBounds for free value {free_name:?} {side_name} data {data_name:?} has wrong \
+             length: expected {expected_length}, got {}",
+            value.shape[0]
+        )));
+    }
+    if value.values.iter().any(|entry| !entry.is_finite()) {
+        return Err(mismatch(format!(
+            "VectorBounds for free value {free_name:?} {side_name} data {data_name:?} must \
+             contain only finite values"
+        )));
+    }
+    Ok(Some(value.values.clone()))
+}
+
+fn vector_bounds_support_edges(
+    free_name: &str,
+    sites: &[ResolvedStochasticSite],
+    data: &HashMap<String, DataValue>,
+    expected_length: usize,
+) -> Result<VectorSupportEdges, Error> {
+    let Some(site) = sites
+        .iter()
+        .find(|site| expr_references_free_value(&site.value, free_name))
+    else {
+        return Ok(VectorSupportEdges {
+            lower: None,
+            upper: None,
+        });
+    };
+    let missing_idx = vector_scatter_missing_idx(&site.value, free_name, data)?;
+    match &site.distribution {
+        Distribution::Exponential { .. } | Distribution::HalfNormal { .. } => {
+            Ok(VectorSupportEdges {
+                lower: Some(vec![0.0; expected_length]),
+                upper: None,
+            })
+        }
+        Distribution::Beta { .. } => Ok(VectorSupportEdges {
+            lower: Some(vec![0.0; expected_length]),
+            upper: Some(vec![1.0; expected_length]),
+        }),
+        Distribution::Uniform { low, high } => Ok(VectorSupportEdges {
+            lower: uniform_support_edge(low, data, missing_idx.as_deref(), expected_length)?,
+            upper: uniform_support_edge(high, data, missing_idx.as_deref(), expected_length)?,
+        }),
+        Distribution::Normal { .. }
+        | Distribution::StudentT { .. }
+        | Distribution::Bernoulli { .. }
+        | Distribution::Poisson { .. }
+        | Distribution::Binomial { .. }
+        | Distribution::BetaBinomial { .. }
+        | Distribution::NegativeBinomial { .. }
+        | Distribution::MultivariateNormal { .. }
+        | Distribution::OrderedLogistic { .. }
+        | Distribution::Truncated { .. } => Ok(VectorSupportEdges {
+            lower: None,
+            upper: None,
+        }),
+    }
+}
+
+fn expr_references_free_value(expr: &Expr, free_name: &str) -> bool {
+    match expr {
+        Expr::Param(name) => name == free_name,
+        Expr::Data(_) | Expr::Const(_) => false,
+        Expr::Bin { left, right, .. } => {
+            expr_references_free_value(left, free_name)
+                || expr_references_free_value(right, free_name)
+        }
+        Expr::Unary { operand, .. } => expr_references_free_value(operand, free_name),
+        Expr::Index { base, index } => {
+            expr_references_free_value(base, free_name)
+                || index_references_free_value(index, free_name)
+        }
+        Expr::VectorScatter {
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        } => [
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        ]
+        .into_iter()
+        .any(|child| expr_references_free_value(child, free_name)),
+    }
+}
+
+fn index_references_free_value(index: &IndexSpec, free_name: &str) -> bool {
+    match index {
+        IndexSpec::Scalar(expr) => expr_references_free_value(expr, free_name),
+        IndexSpec::Full => false,
+        IndexSpec::Tuple(items) => items
+            .iter()
+            .any(|item| index_references_free_value(item, free_name)),
+    }
+}
+
+fn vector_scatter_missing_idx(
+    expr: &Expr,
+    free_name: &str,
+    data: &HashMap<String, DataValue>,
+) -> Result<Option<Vec<i64>>, Error> {
+    let Expr::VectorScatter {
+        missing_idx,
+        missing_values,
+        ..
+    } = expr
+    else {
+        return Ok(None);
+    };
+    if !expr_references_free_value(missing_values, free_name) {
+        return Ok(None);
+    }
+    let index = evaluate_required_data_expr(missing_idx, data)?;
+    if index.rank() != 1 {
+        return Err(mismatch(format!(
+            "VectorBounds scatter missing_idx must be rank-1, got shape {:?}",
+            index.shape()
+        )));
+    }
+    index
+        .data()
+        .iter()
+        .map(|&entry| {
+            if !entry.is_finite() || entry.fract() != 0.0 {
+                Err(mismatch(format!(
+                    "VectorBounds scatter missing_idx values must be integers, got {entry}"
+                )))
+            } else {
+                Ok(entry as i64)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+fn uniform_support_edge(
+    expr: &Expr,
+    data: &HashMap<String, DataValue>,
+    missing_idx: Option<&[i64]>,
+    expected_length: usize,
+) -> Result<Option<Vec<f64>>, Error> {
+    let Some(mut support) = evaluate_optional_data_expr(expr, data)? else {
+        return Ok(None);
+    };
+    if support.rank() != 0 {
+        if let Some(missing_idx) = missing_idx {
+            if support.rank() != 1 {
+                return Err(mismatch(format!(
+                    "Uniform support used by VectorBounds must be scalar or rank-1, got shape {:?}",
+                    support.shape()
+                )));
+            }
+            let mut aligned = Vec::with_capacity(missing_idx.len());
+            for &index in missing_idx {
+                if index < 0 || index as usize >= support.len() {
+                    return Err(mismatch(format!(
+                        "VectorBounds scatter missing_idx {index} is out of bounds for Uniform \
+                         support length {}",
+                        support.len()
+                    )));
+                }
+                aligned.push(support.data()[index as usize]);
+            }
+            support = Tensor::from_vec(vec![aligned.len()], aligned);
+        }
+    }
+    if support.rank() == 0 {
+        return Ok(Some(vec![support.data()[0]; expected_length]));
+    }
+    if support.shape() != [expected_length] {
+        return Err(mismatch(format!(
+            "Uniform support used by VectorBounds has wrong shape: expected [{expected_length}], \
+             got {:?}",
+            support.shape()
+        )));
+    }
+    Ok(Some(support.data().to_vec()))
+}
+
+fn evaluate_required_data_expr(
+    expr: &Expr,
+    data: &HashMap<String, DataValue>,
+) -> Result<Tensor, Error> {
+    evaluate_optional_data_expr(expr, data)?.ok_or_else(|| {
+        malformed("VectorBounds support/index expressions must depend only on data or constants")
+    })
+}
+
+fn evaluate_optional_data_expr(
+    expr: &Expr,
+    data: &HashMap<String, DataValue>,
+) -> Result<Option<Tensor>, Error> {
+    match expr {
+        Expr::Param(_) | Expr::VectorScatter { .. } => Ok(None),
+        Expr::Data(name) => data
+            .get(name)
+            .map(|value| Tensor::from_vec(value.shape.clone(), value.values.clone()))
+            .map(Some)
+            .ok_or_else(|| mismatch(format!("data value {name:?} is referenced but not bound"))),
+        Expr::Const(value) => Ok(Some(Tensor::scalar(*value))),
+        Expr::Bin { op, left, right } => {
+            let Some(left) = evaluate_optional_data_expr(left, data)? else {
+                return Ok(None);
+            };
+            let Some(right) = evaluate_optional_data_expr(right, data)? else {
+                return Ok(None);
+            };
+            Ok(Some(match op {
+                BinOpKind::Add => left.binary(&right, |x, y| x + y)?,
+                BinOpKind::Sub => left.binary(&right, |x, y| x - y)?,
+                BinOpKind::Mul => left.binary(&right, |x, y| x * y)?,
+                BinOpKind::Div => left.binary(&right, |x, y| x / y)?,
+            }))
+        }
+        Expr::Unary { function, operand } => {
+            let Some(operand) = evaluate_optional_data_expr(operand, data)? else {
+                return Ok(None);
+            };
+            Ok(Some(match function {
+                UnaryFn::Exp => operand.map(f64::exp),
+                UnaryFn::Neg => operand.map(|value| -value),
+                UnaryFn::Sigmoid => operand.map(crate::special::sigmoid),
+            }))
+        }
+        Expr::Index { base, index } => {
+            let Some(base) = evaluate_optional_data_expr(base, data)? else {
+                return Ok(None);
+            };
+            let Some(atoms) = evaluate_optional_data_index(index, data)? else {
+                return Ok(None);
+            };
+            let map = gather_map(base.shape(), &atoms)?;
+            let values = map.map.iter().map(|&i| base.data()[i]).collect();
+            Ok(Some(Tensor::from_vec(map.out_shape, values)))
+        }
+    }
+}
+
+fn evaluate_optional_data_index(
+    index: &IndexSpec,
+    data: &HashMap<String, DataValue>,
+) -> Result<Option<Vec<IndexAtom>>, Error> {
+    match index {
+        IndexSpec::Full => Ok(Some(vec![IndexAtom::Full])),
+        IndexSpec::Scalar(expr) => {
+            let Some(value) = evaluate_optional_data_expr(expr, data)? else {
+                return Ok(None);
+            };
+            let mut integers = Vec::with_capacity(value.len());
+            for &entry in value.data() {
+                if !entry.is_finite() || entry.fract() != 0.0 {
+                    return Err(mismatch(format!(
+                        "VectorBounds support index values must be integers, got {entry}"
+                    )));
+                }
+                integers.push(entry as i64);
+            }
+            Ok(Some(vec![if value.rank() == 0 {
+                IndexAtom::Scalar(integers[0])
+            } else {
+                IndexAtom::Array {
+                    shape: value.shape().to_vec(),
+                    values: integers,
+                }
+            }]))
+        }
+        IndexSpec::Tuple(items) => {
+            let mut atoms = Vec::with_capacity(items.len());
+            for item in items {
+                if matches!(item, IndexSpec::Tuple(_)) {
+                    return Err(malformed("nested index tuples are not supported"));
+                }
+                let Some(mut item_atoms) = evaluate_optional_data_index(item, data)? else {
+                    return Ok(None);
+                };
+                atoms.append(&mut item_atoms);
+            }
+            Ok(Some(atoms))
+        }
+    }
+}
+
+fn validate_vector_bounds_support(
+    free_name: &str,
+    lower: Option<&[f64]>,
+    upper: Option<&[f64]>,
+    support_lower: Option<&[f64]>,
+    support_upper: Option<&[f64]>,
+) -> Result<(), Error> {
+    let outside = if let Some(support_lower) = support_lower {
+        lower.is_some_and(|bound| bound.iter().zip(support_lower).any(|(&b, &s)| b < s))
+            || upper.is_some_and(|bound| bound.iter().zip(support_lower).any(|(&b, &s)| b < s))
+    } else {
+        false
+    } || if let Some(support_upper) = support_upper {
+        lower.is_some_and(|bound| bound.iter().zip(support_upper).any(|(&b, &s)| b > s))
+            || upper.is_some_and(|bound| bound.iter().zip(support_upper).any(|(&b, &s)| b > s))
+    } else {
+        false
+    } || match (support_lower, support_upper) {
+        (Some(support_lower), Some(support_upper)) => {
+            lower.is_some_and(|bound| {
+                bound
+                    .iter()
+                    .zip(support_upper)
+                    .any(|(&bound, &support)| bound >= support)
+            }) || upper.is_some_and(|bound| {
+                bound
+                    .iter()
+                    .zip(support_lower)
+                    .any(|(&bound, &support)| bound <= support)
+            })
+        }
+        (Some(_), None) | (None, Some(_)) | (None, None) => false,
+    };
+    if outside {
+        return Err(mismatch(format!(
+            "VectorBounds for free value {free_name:?} must be within base distribution support"
+        )));
+    }
+    Ok(())
+}
+
 /// Constrained variable and optional elementwise log-Jacobian.
 fn apply_constraint(
     tape: &mut Tape,
@@ -794,15 +1240,15 @@ fn apply_constraint(
 ) -> Result<(Var, Option<Var>), Error> {
     match &slot.constraint {
         None => Ok((leaf, None)),
-        Some(Constraint::Positive) => {
+        Some(ResolvedConstraint::Positive) => {
             let constrained = tape.exp(leaf);
             Ok((constrained, Some(leaf)))
         }
-        Some(Constraint::UnitInterval) => Ok(interval_constraint(tape, leaf, 0.0, 1.0)),
-        Some(Constraint::Interval { lower, upper }) => {
+        Some(ResolvedConstraint::UnitInterval) => Ok(interval_constraint(tape, leaf, 0.0, 1.0)),
+        Some(ResolvedConstraint::Interval { lower, upper }) => {
             Ok(interval_constraint(tape, leaf, *lower, *upper))
         }
-        Some(Constraint::Ordered) => {
+        Some(ResolvedConstraint::Ordered) => {
             if tape.value(leaf).rank() != 1 {
                 return Err(mismatch(format!(
                     "Ordered constraint on \"{}\" requires vector values",
@@ -814,28 +1260,75 @@ fn apply_constraint(
             let tail = tape.gather(leaf, slice_last_map(&[n], 1, n));
             Ok((constrained, Some(tail)))
         }
-        Some(Constraint::VectorBounds { .. }) => Err(mismatch(
-            "VectorBounds constraint is not yet supported at bind time",
-        )),
+        Some(ResolvedConstraint::VectorBounds { lower, upper }) => {
+            vector_bounds_constraint(tape, leaf, lower.as_deref(), upper.as_deref())
+        }
     }
 }
 
 fn interval_constraint(tape: &mut Tape, leaf: Var, lower: f64, upper: f64) -> (Var, Option<Var>) {
-    let width = upper - lower;
-    // inverse: lower + width * sigmoid(y)
+    let lower = tape.constant(Tensor::scalar(lower));
+    let upper = tape.constant(Tensor::scalar(upper));
+    bounded_constraint(tape, leaf, lower, upper, false)
+        .expect("scalar interval bounds always broadcast")
+}
+
+fn bounded_constraint(
+    tape: &mut Tape,
+    leaf: Var,
+    lower: Var,
+    upper: Var,
+    clip_open_interval: bool,
+) -> Result<(Var, Option<Var>), Error> {
+    let width = tape.sub(upper, lower);
     let sig = tape.sigmoid(leaf);
-    let width_c = tape.constant(Tensor::scalar(width));
-    let scaled = tape.mul(width_c, sig);
-    let lower_c = tape.constant(Tensor::scalar(lower));
-    let constrained = tape.add(lower_c, scaled);
-    // log|J|: log(width) - softplus(-y) - softplus(y)
-    let log_width = tape.constant(Tensor::scalar(width.ln()));
+    let scaled = tape.mul(width, sig);
+    let mut constrained = tape.add(lower, scaled);
+    if clip_open_interval {
+        let lower_inside = tape.constant(tape.value(lower).map(f64::next_up));
+        let above_lower = tape.ge(constrained, lower_inside)?;
+        constrained = tape.where_select(above_lower, constrained, lower_inside);
+        let upper_inside = tape.constant(tape.value(upper).map(f64::next_down));
+        let below_upper = tape.le(constrained, upper_inside)?;
+        constrained = tape.where_select(below_upper, constrained, upper_inside);
+    }
+
+    let log_width = tape.ln(width);
     let neg_leaf = tape.neg(leaf);
     let sp_neg = tape.softplus(neg_leaf);
     let term = tape.sub(log_width, sp_neg);
     let sp_pos = tape.softplus(leaf);
     let jacobian = tape.sub(term, sp_pos);
-    (constrained, Some(jacobian))
+    Ok((constrained, Some(jacobian)))
+}
+
+fn vector_bounds_constraint(
+    tape: &mut Tape,
+    leaf: Var,
+    lower: Option<&[f64]>,
+    upper: Option<&[f64]>,
+) -> Result<(Var, Option<Var>), Error> {
+    let shape = tape.value(leaf).shape().to_vec();
+    match (lower, upper) {
+        (Some(lower), None) => {
+            let lower = tape.constant(Tensor::from_vec(shape, lower.to_vec()));
+            let offset = tape.exp(leaf);
+            Ok((tape.add(lower, offset), Some(leaf)))
+        }
+        (None, Some(upper)) => {
+            let upper = tape.constant(Tensor::from_vec(shape, upper.to_vec()));
+            let offset = tape.exp(leaf);
+            Ok((tape.sub(upper, offset), Some(leaf)))
+        }
+        (Some(lower), Some(upper)) => {
+            let lower = tape.constant(Tensor::from_vec(shape.clone(), lower.to_vec()));
+            let upper = tape.constant(Tensor::from_vec(shape, upper.to_vec()));
+            bounded_constraint(tape, leaf, lower, upper, true)
+        }
+        (None, None) => Err(mismatch(
+            "resolved VectorBounds require at least one bound side",
+        )),
+    }
 }
 
 /// Expression evaluation environment over one tape.

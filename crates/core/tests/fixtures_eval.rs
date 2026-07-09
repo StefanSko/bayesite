@@ -5,9 +5,11 @@ use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, Posterior};
 
-const ALL_FIXTURES: [&str; 6] = [
+const ALL_FIXTURES: [&str; 8] = [
     "bounded_rates",
+    "censored_exponential",
     "eight_schools_non_centered",
+    "interval_censored_normal",
     "linear_regression",
     "ordinal_regression",
     "partially_observed_mvn",

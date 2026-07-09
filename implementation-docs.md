@@ -56,6 +56,29 @@ changelog**, pinned only by the reference implementation:
   length equal to the (rank-1) free value's length, and be entirely finite;
   the free value itself must be rank-1.
 
+## Forward-sampling semantics pinned by the reference (for WP3)
+
+- The engine's prior-predictive currently rejects VectorScatter sites outright
+  ("only ParamRef and DataRef sites are supported in v0-provisional output") —
+  the "directly assignable sites only" restriction #23 flagged. #26 mandates
+  supporting them, so WP3 adds a VectorScatterOp arm to the site dispatch, which
+  incidentally enables prior-predictive for *unbounded* partially-observed
+  models (e.g. partially_observed_mvn) too.
+- Reference (`simulation/core.py`) draws the FULL vector fresh from the base
+  distribution (observed data values are not inserted — it is prior-predictive),
+  then overwrites missing_idx coordinates with restricted draws, and records
+  the assembled vector under the site name among observed values; the free
+  value never appears as a parameter draw.
+- Restricted draws: Exponential + lower-only uses the memorylessness shift
+  `lower + Exp(rate)` (exact even at extreme bounds); every other scalar
+  inverse-CDF base uses a plain CDF-space uniform on [cdf(lb), cdf(ub)] then
+  inverse CDF. Notably the reference does NOT use complementary/CCDF forms, so
+  extreme-tail Normal restrictions share its float64 saturation limitation —
+  we mirror it anyway: cross-engine parity beats a unilateral "improvement".
+- Bounded MVN forward sampling raises TypeError in the reference; the engine
+  mirrors with an explicit unsupported error. Direct ParamRef sites with
+  VectorBounds are likewise "not implemented" (mirrors domains.py).
+
 ## Design freeze for the Pi work orders
   - `Constraint::VectorBounds { lower: Option<String>, upper: Option<String> }`
     (DataRef names), at least one present; legal on free values.
