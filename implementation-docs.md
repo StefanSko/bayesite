@@ -102,6 +102,29 @@ changelog**, pinned only by the reference implementation:
   1e-12, gradient rtol 1e-10) including both censored fixtures; clippy and
   fmt clean. Zero review iterations needed.
 
+## WP3 review notes (forward sampling landed)
+
+- Pi one-shotted this too — full suite green, zero review iterations. The
+  restricted CDF-space sampler uses `exp_m1`/`ln_1p` forms for the
+  Exponential CDF/ICDF (better float behavior than the naive `1 - exp`), and
+  the reference's exact memorylessness shift for lower-only Exponential.
+- Pi's statistical test is sharper than the work order asked for: instead of
+  asserting raw draw means (which depend on the drawn rate), it standardizes
+  residuals — `rate * (y - lower) ~ Exp(1)` for every rate draw — and pins
+  the pooled mean at 1.0 within ~5 standard errors. Rate-independent, so the
+  margin math is exact.
+- The old "only ParamRef and DataRef sites" restriction in prior-predictive is
+  gone: VectorScatter sites now forward-sample (full fresh vector, restricted
+  draws only at missing coordinates — observed data values are NOT inserted,
+  pinned by a test asserting the 999.0 sentinel never appears). Unbounded
+  partially-observed models get prior-predictive support as a side effect.
+- Truth validation (simulate-from-truth) now checks resolved bounds
+  elementwise and strictly: truth exactly equal to a bound is rejected —
+  consistent with the open-interval transform (a boundary value has no
+  unconstrained preimage).
+- Extreme-tail evidence: lower bound 500 on Exponential(1) produces finite
+  draws >= 500 (the CDF-space path would saturate; the shift is exact).
+
 ## Design freeze for the Pi work orders
   - `Constraint::VectorBounds { lower: Option<String>, upper: Option<String> }`
     (DataRef names), at least one present; legal on free values.
