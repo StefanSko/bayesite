@@ -630,3 +630,43 @@ fn scatter_free_value_shape_must_match_missing_idx_length_in_prior_draws() {
     );
     assert!(err.message.contains("shape [2]"), "{}", err.message);
 }
+
+#[test]
+fn uniform_support_folding_defers_for_data_generated_by_earlier_sites() {
+    let mut model = partially_observed_model(
+        Distribution::Uniform {
+            low: Expr::Data("a".to_string()),
+            high: Expr::Const(4.0),
+        },
+        1,
+    );
+    model.stochastic_sites.insert(
+        0,
+        ResolvedStochasticSite {
+            name: "a".to_string(),
+            distribution: Distribution::Uniform {
+                low: Expr::Const(1.0),
+                high: Expr::Const(2.0),
+            },
+            value: Expr::Data("a".to_string()),
+        },
+    );
+    let run = simulate_prior_predictive(
+        model,
+        partially_observed_data(2.5),
+        &PriorPredictiveSettings { num_draws: 64 },
+        263,
+    )
+    .expect("support folding defers for the generated Uniform low bound");
+
+    for draw in run.draws {
+        let y = draw
+            .values
+            .iter()
+            .find(|(name, _)| name == "y")
+            .expect("scatter site draw present")
+            .1
+            .data()[0];
+        assert!((2.5..4.0).contains(&y), "{y}");
+    }
+}
