@@ -1063,14 +1063,20 @@ fn uniform_support_edge(
             }
             let mut aligned = Vec::with_capacity(missing_idx.len());
             for &index in missing_idx {
-                if index < 0 || index as usize >= support.len() {
+                // Negative indices wrap, matching the scatter evaluators.
+                let wrapped = if index < 0 {
+                    index + support.len() as i64
+                } else {
+                    index
+                };
+                if wrapped < 0 || wrapped >= support.len() as i64 {
                     return Err(mismatch(format!(
                         "VectorBounds scatter missing_idx {index} is out of bounds for Uniform \
                          support length {}",
                         support.len()
                     )));
                 }
-                aligned.push(support.data()[index as usize]);
+                aligned.push(support.data()[wrapped as usize]);
             }
             support = Tensor::from_vec(vec![aligned.len()], aligned);
         }

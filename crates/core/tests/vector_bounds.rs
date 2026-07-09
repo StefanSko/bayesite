@@ -408,3 +408,69 @@ fn direct_vector_bounds_prior_simulation_fails_without_rejection_loop() {
         err.message
     );
 }
+
+#[test]
+fn uniform_support_alignment_wraps_negative_missing_indices() {
+    let model = ModelMeta {
+        params: vec![],
+        data: [
+            "lower",
+            "missing_idx",
+            "observed_idx",
+            "observed_values",
+            "low",
+            "high",
+        ]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                ResolvedData {
+                    schema: DataSchema::Rank(1),
+                },
+            )
+        })
+        .collect(),
+        observed_nodes: vec![],
+        expressions: vec![],
+        free_values: vec![(
+            "y".to_string(),
+            ResolvedFreeValue {
+                constraint: Some(Constraint::VectorBounds {
+                    lower: Some("lower".to_string()),
+                    upper: None,
+                }),
+                size: Size::Fixed(1),
+            },
+        )],
+        stochastic_sites: vec![ResolvedStochasticSite {
+            name: "y".to_string(),
+            distribution: Distribution::Uniform {
+                low: Expr::Data("low".to_string()),
+                high: Expr::Data("high".to_string()),
+            },
+            value: Expr::VectorScatter {
+                length: Box::new(Expr::Const(2.0)),
+                observed_idx: Box::new(Expr::Data("observed_idx".to_string())),
+                observed_values: Box::new(Expr::Data("observed_values".to_string())),
+                missing_idx: Box::new(Expr::Data("missing_idx".to_string())),
+                missing_values: Box::new(Expr::Param("y".to_string())),
+            },
+        }],
+    };
+    let declared_data = vec![
+        data("lower", vec![0.5]),
+        // -1 wraps to coordinate 1, matching the scatter evaluators.
+        data("missing_idx", vec![-1.0]),
+        data("observed_idx", vec![0.0]),
+        data("observed_values", vec![0.6]),
+        data("low", vec![0.0, 0.25]),
+        data("high", vec![1.0, 2.25]),
+    ];
+    let posterior = Posterior::new(model, declared_data).unwrap();
+
+    // The missing upper side folds to high[1] = 2.25, so u = 0 lands at the
+    // interval midpoint of [0.5, 2.25].
+    let constrained = posterior.constrain(&[0.0]).unwrap();
+    assert_eq!(constrained[0].1.data(), &[1.375]);
+}
