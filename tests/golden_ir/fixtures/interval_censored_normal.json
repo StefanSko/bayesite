@@ -1,0 +1,345 @@
+{
+  "name": "interval_censored_normal",
+  "ir": {
+    "bayeswire_ir": 1,
+    "model": {
+      "node": "ModelMeta",
+      "params": [
+        {
+          "name": "mu",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "ConstNode",
+                "value": 0.0
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": null,
+            "size": null
+          }
+        }
+      ],
+      "data": [
+        {
+          "name": "n",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        },
+        {
+          "name": "n_obs",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        },
+        {
+          "name": "n_mis",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        },
+        {
+          "name": "observed_idx",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": [
+                {
+                  "node": "DataDimRef",
+                  "name": "n_obs"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "missing_idx",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": [
+                {
+                  "node": "DataDimRef",
+                  "name": "n_mis"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "observed_values",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": [
+                {
+                  "node": "DataDimRef",
+                  "name": "n_obs"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "missing_lower",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": [
+                {
+                  "node": "DataDimRef",
+                  "name": "n_mis"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "missing_upper",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": [
+                {
+                  "node": "DataDimRef",
+                  "name": "n_mis"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "observed_nodes": [],
+      "expressions": [],
+      "free_values": [
+        {
+          "name": "mu",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "y",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": {
+              "node": "VectorBounds",
+              "lower": {
+                "node": "DataRef",
+                "name": "missing_lower"
+              },
+              "upper": {
+                "node": "DataRef",
+                "name": "missing_upper"
+              }
+            },
+            "size": {
+              "node": "DataRef",
+              "name": "n_mis"
+            }
+          }
+        }
+      ],
+      "stochastic_sites": [
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "mu",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "mu"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "y",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ParamRef",
+              "name": "mu"
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "VectorScatterOp",
+            "length": {
+              "node": "DataRef",
+              "name": "n"
+            },
+            "observed_idx": {
+              "node": "DataRef",
+              "name": "observed_idx"
+            },
+            "observed_values": {
+              "node": "DataRef",
+              "name": "observed_values"
+            },
+            "missing_idx": {
+              "node": "DataRef",
+              "name": "missing_idx"
+            },
+            "missing_values": {
+              "node": "ParamRef",
+              "name": "y"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "data": {
+    "n": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        5
+      ]
+    },
+    "n_obs": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        3
+      ]
+    },
+    "n_mis": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        2
+      ]
+    },
+    "observed_idx": {
+      "dtype": "int64",
+      "shape": [
+        3
+      ],
+      "values": [
+        0,
+        2,
+        4
+      ]
+    },
+    "missing_idx": {
+      "dtype": "int64",
+      "shape": [
+        2
+      ],
+      "values": [
+        1,
+        3
+      ]
+    },
+    "observed_values": {
+      "dtype": "float64",
+      "shape": [
+        3
+      ],
+      "values": [
+        -0.3,
+        0.8,
+        1.1
+      ]
+    },
+    "missing_lower": {
+      "dtype": "float64",
+      "shape": [
+        2
+      ],
+      "values": [
+        -1.0,
+        0.25
+      ]
+    },
+    "missing_upper": {
+      "dtype": "float64",
+      "shape": [
+        2
+      ],
+      "values": [
+        0.5,
+        1.75
+      ]
+    }
+  },
+  "evaluations": [
+    {
+      "q": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "log_density": -8.976539705251488,
+      "gradient": [
+        2.35,
+        0.09375,
+        -0.375
+      ]
+    },
+    {
+      "q": [
+        0.1,
+        0.2,
+        0.30000000000000004
+      ],
+      "log_density": -8.887302014865702,
+      "gradient": [
+        1.9364147711862052,
+        0.00252504055530842,
+        -0.5198494613558482
+      ]
+    },
+    {
+      "q": [
+        0.42073549240394825,
+        0.4958324052262343,
+        0.33773159027557553
+      ],
+      "log_density": -8.5830155343308,
+      "gradient": [
+        0.13326528510191293,
+        -0.07057897408701279,
+        -0.42415524576867386
+      ]
+    }
+  ]
+}

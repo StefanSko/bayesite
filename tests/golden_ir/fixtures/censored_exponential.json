@@ -1,0 +1,311 @@
+{
+  "name": "censored_exponential",
+  "ir": {
+    "bayeswire_ir": 1,
+    "model": {
+      "node": "ModelMeta",
+      "params": [
+        {
+          "name": "rate",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Exponential",
+              "rate": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": {
+              "node": "Positive"
+            },
+            "size": null
+          }
+        }
+      ],
+      "data": [
+        {
+          "name": "n",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        },
+        {
+          "name": "n_obs",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        },
+        {
+          "name": "n_mis",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        },
+        {
+          "name": "observed_idx",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": [
+                {
+                  "node": "DataDimRef",
+                  "name": "n_obs"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "missing_idx",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": [
+                {
+                  "node": "DataDimRef",
+                  "name": "n_mis"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "observed_values",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": [
+                {
+                  "node": "DataDimRef",
+                  "name": "n_obs"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "missing_lower",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": [
+                {
+                  "node": "DataDimRef",
+                  "name": "n_mis"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "observed_nodes": [],
+      "expressions": [],
+      "free_values": [
+        {
+          "name": "rate",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": {
+              "node": "Positive"
+            },
+            "size": null
+          }
+        },
+        {
+          "name": "y",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": {
+              "node": "VectorBounds",
+              "lower": {
+                "node": "DataRef",
+                "name": "missing_lower"
+              },
+              "upper": null
+            },
+            "size": {
+              "node": "DataRef",
+              "name": "n_mis"
+            }
+          }
+        }
+      ],
+      "stochastic_sites": [
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "rate",
+          "distribution": {
+            "node": "Exponential",
+            "rate": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "rate"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "y",
+          "distribution": {
+            "node": "Exponential",
+            "rate": {
+              "node": "ParamRef",
+              "name": "rate"
+            }
+          },
+          "value": {
+            "node": "VectorScatterOp",
+            "length": {
+              "node": "DataRef",
+              "name": "n"
+            },
+            "observed_idx": {
+              "node": "DataRef",
+              "name": "observed_idx"
+            },
+            "observed_values": {
+              "node": "DataRef",
+              "name": "observed_values"
+            },
+            "missing_idx": {
+              "node": "DataRef",
+              "name": "missing_idx"
+            },
+            "missing_values": {
+              "node": "ParamRef",
+              "name": "y"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "data": {
+    "n": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        6
+      ]
+    },
+    "n_obs": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        4
+      ]
+    },
+    "n_mis": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        2
+      ]
+    },
+    "observed_idx": {
+      "dtype": "int64",
+      "shape": [
+        4
+      ],
+      "values": [
+        0,
+        1,
+        3,
+        5
+      ]
+    },
+    "missing_idx": {
+      "dtype": "int64",
+      "shape": [
+        2
+      ],
+      "values": [
+        2,
+        4
+      ]
+    },
+    "observed_values": {
+      "dtype": "float64",
+      "shape": [
+        4
+      ],
+      "values": [
+        0.25,
+        0.9,
+        0.4,
+        1.2
+      ]
+    },
+    "missing_lower": {
+      "dtype": "float64",
+      "shape": [
+        2
+      ],
+      "values": [
+        1.5,
+        2.0
+      ]
+    }
+  },
+  "evaluations": [
+    {
+      "q": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "log_density": -9.25,
+      "gradient": [
+        -2.25,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "q": [
+        0.1,
+        0.2,
+        0.30000000000000004
+      ],
+      "log_density": -9.654172661265719,
+      "gradient": [
+        -3.8541726612657192,
+        -0.34985880757600324,
+        -0.4918246976412705
+      ]
+    },
+    {
+      "q": [
+        0.42073549240394825,
+        0.4958324052262343,
+        0.33773159027557553
+      ],
+      "log_density": -11.899321348329941,
+      "gradient": [
+        -8.678033790659388,
+        -1.5006930104250114,
+        -1.1350009308579312
+      ]
+    }
+  ]
+}
