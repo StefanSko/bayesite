@@ -1615,11 +1615,19 @@ pub fn simulate_prior_predictive(
                         Some(ResolvedConstraint::VectorBounds { lower, upper }) => {
                             Some((lower.as_deref(), upper.as_deref()))
                         }
-                        None
-                        | Some(ResolvedConstraint::Positive)
+                        None => None,
+                        // The density path constrains these slots before
+                        // assembling the scatter; an unrestricted draw here
+                        // would silently leave the model's support.
+                        Some(ResolvedConstraint::Positive)
                         | Some(ResolvedConstraint::Interval { .. })
                         | Some(ResolvedConstraint::UnitInterval)
-                        | Some(ResolvedConstraint::Ordered) => None,
+                        | Some(ResolvedConstraint::Ordered) => {
+                            return Err(invalid(format!(
+                                "prior-predictive PartiallyObserved site \"{}\" has a constrained missing_values free value; only VectorBounds or unconstrained free values are supported",
+                                site.name
+                            )))
+                        }
                     };
                     if bounds.is_some() {
                         if let Distribution::MultivariateNormal { mean, scale_tril } =

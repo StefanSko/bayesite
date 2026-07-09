@@ -548,3 +548,28 @@ fn uniform_support_alignment_wraps_negative_missing_indices() {
     let constrained = posterior.constrain(&[0.0]).unwrap();
     assert_eq!(constrained[0].1.data(), &[1.375]);
 }
+
+#[test]
+fn constrained_scatter_free_values_are_explicitly_unsupported_in_prior_draws() {
+    let mut model = partially_observed_model(normal(), 2);
+    model.free_values[0].1.constraint = Some(Constraint::Positive);
+    let declared_data = vec![
+        data("lower", vec![0.0]),
+        data("missing_idx", vec![1.0]),
+        data("observed_idx", vec![0.0]),
+        data("observed_values", vec![0.5]),
+    ];
+    let err = simulate_prior_predictive(
+        model,
+        declared_data,
+        &PriorPredictiveSettings { num_draws: 1 },
+        241,
+    )
+    .unwrap_err();
+    assert!(
+        err.message
+            .contains("constrained missing_values free value"),
+        "{}",
+        err.message
+    );
+}
