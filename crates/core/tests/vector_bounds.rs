@@ -603,3 +603,30 @@ fn recover_rejects_partially_observed_free_values_before_drawing() {
         err.message
     );
 }
+
+#[test]
+fn scatter_free_value_shape_must_match_missing_idx_length_in_prior_draws() {
+    let mut model = partially_observed_model(normal(), 3);
+    model.free_values[0].1.constraint = None;
+    model.free_values[0].1.size = Size::Fixed(2);
+    let declared_data = vec![
+        data("lower", vec![0.0]),
+        data("missing_idx", vec![1.0]),
+        data("observed_idx", vec![0.0, 2.0]),
+        data("observed_values", vec![0.1, 0.2]),
+    ];
+    let err = simulate_prior_predictive(
+        model,
+        declared_data,
+        &PriorPredictiveSettings { num_draws: 1 },
+        251,
+    )
+    .unwrap_err();
+    assert!(
+        err.message
+            .contains("scatter values must match their index vectors in length"),
+        "{}",
+        err.message
+    );
+    assert!(err.message.contains("shape [2]"), "{}", err.message);
+}

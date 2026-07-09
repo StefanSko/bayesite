@@ -1611,6 +1611,14 @@ pub fn simulate_prior_predictive(
                     }
                     let length = length_value.data()[0] as usize;
                     let missing_idx = env.index_vector(missing_idx)?;
+                    if free.shape != [missing_idx.len()] {
+                        return Err(mismatch(format!(
+                            "PartiallyObserved site \"{}\" missing_values free value has shape {:?}, but missing_idx has {} entries; scatter values must match their index vectors in length",
+                            site.name,
+                            free.shape,
+                            missing_idx.len()
+                        )));
+                    }
                     let bounds = match &free.constraint {
                         Some(ResolvedConstraint::VectorBounds { lower, upper }) => {
                             Some((lower.as_deref(), upper.as_deref()))
