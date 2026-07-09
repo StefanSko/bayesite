@@ -14,6 +14,16 @@ fn fixture(name: &str) -> json::Value {
     json::parse(&text).expect("fixture JSON parses")
 }
 
+fn golden_document(name: &str) -> json::Value {
+    let path = format!(
+        "{}/../../tests/golden_ir/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read golden document {path}: {e}"));
+    json::parse(&text).expect("golden document JSON parses")
+}
+
 const DECODABLE_FIXTURES: [&str; 6] = [
     "bounded_rates",
     "eight_schools_non_centered",
@@ -55,6 +65,34 @@ fn decodes_constraints() {
         Some(Constraint::Interval {
             lower: -1.0,
             upper: 3.0
+        })
+    );
+}
+
+#[test]
+fn decodes_lower_only_vector_bounds_golden_document() {
+    let doc = golden_document("censored_exponential");
+    let meta = decode_model(&doc).unwrap();
+    let free = meta.resolved_free_values();
+    assert_eq!(
+        free[1].1.constraint,
+        Some(Constraint::VectorBounds {
+            lower: Some("missing_lower".to_string()),
+            upper: None,
+        })
+    );
+}
+
+#[test]
+fn decodes_two_sided_vector_bounds_golden_document() {
+    let doc = golden_document("interval_censored_normal");
+    let meta = decode_model(&doc).unwrap();
+    let free = meta.resolved_free_values();
+    assert_eq!(
+        free[1].1.constraint,
+        Some(Constraint::VectorBounds {
+            lower: Some("missing_lower".to_string()),
+            upper: Some("missing_upper".to_string()),
         })
     );
 }
@@ -135,6 +173,38 @@ fn decodes_minimal_model_with_legacy_fallback() {
     let sites = meta.resolved_stochastic_sites();
     assert_eq!(sites.len(), 1);
     assert_eq!(sites[0].name, "x");
+}
+
+#[test]
+fn vector_bounds_requires_at_least_one_bound() {
+    let constraint = r#"{"node": "VectorBounds", "lower": null, "upper": null}"#;
+    let entry = NORMAL_PARAM.replace(
+        "\"constraint\": null",
+        &format!("\"constraint\": {constraint}"),
+    );
+    let doc = json::parse(&minimal_model(&entry)).unwrap();
+    let err = decode_model(&doc).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(
+        err.message.contains("at least one bound"),
+        "message: {}",
+        err.message
+    );
+}
+
+#[test]
+fn vector_bounds_rejects_non_data_ref_bound() {
+    let constraint = r#"{"node": "VectorBounds",
+        "lower": {"node": "ConstNode", "value": 0.0}, "upper": null}"#;
+    let entry = NORMAL_PARAM.replace(
+        "\"constraint\": null",
+        &format!("\"constraint\": {constraint}"),
+    );
+    let doc = json::parse(&minimal_model(&entry)).unwrap();
+    let err = decode_model(&doc).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MalformedDocument);
+    assert!(err.message.contains("lower"), "message: {}", err.message);
+    assert!(err.message.contains("DataRef"), "message: {}", err.message);
 }
 
 #[test]

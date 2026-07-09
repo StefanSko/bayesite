@@ -814,6 +814,9 @@ fn apply_constraint(
             let tail = tape.gather(leaf, slice_last_map(&[n], 1, n));
             Ok((constrained, Some(tail)))
         }
+        Some(Constraint::VectorBounds { .. }) => Err(mismatch(
+            "VectorBounds constraint is not yet supported at bind time",
+        )),
     }
 }
 

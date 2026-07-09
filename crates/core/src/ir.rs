@@ -78,9 +78,16 @@ pub enum IndexSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Constraint {
     Positive,
-    Interval { lower: f64, upper: f64 },
+    Interval {
+        lower: f64,
+        upper: f64,
+    },
     UnitInterval,
     Ordered,
+    VectorBounds {
+        lower: Option<String>,
+        upper: Option<String>,
+    },
 }
 
 /// `size: DataRef | int | None` on parameters and free values.
@@ -487,10 +494,43 @@ fn decode_constraint(value: &Value) -> Result<Option<Constraint>, Error> {
             }
             Constraint::Interval { lower, upper }
         }
+        "VectorBounds" => {
+            let lower = decode_vector_bound(node.field("lower")?, "lower")?;
+            let upper = decode_vector_bound(node.field("upper")?, "upper")?;
+            if lower.is_none() && upper.is_none() {
+                return Err(malformed(
+                    "VectorBounds requires at least one bound; change lower or upper to a DataRef node",
+                ));
+            }
+            Constraint::VectorBounds { lower, upper }
+        }
         other => return Err(unknown_tag(other, "a constraint")),
     };
     node.finish()?;
     Ok(Some(constraint))
+}
+
+fn decode_vector_bound(value: &Value, field: &str) -> Result<Option<String>, Error> {
+    if matches!(value, Value::Null) {
+        return Ok(None);
+    }
+    if node_tag(value) != Some("DataRef") {
+        return Err(malformed(format!(
+            "VectorBounds {field} must be null or a DataRef node; change {field} to null or a DataRef node"
+        )));
+    }
+    let mut node = NodeFields::open(value)?;
+    let name = node
+        .field("name")?
+        .as_str()
+        .ok_or_else(|| {
+            malformed(format!(
+                "VectorBounds {field} DataRef name must be a string; change the name to a string"
+            ))
+        })?
+        .to_string();
+    node.finish()?;
+    Ok(Some(name))
 }
 
 fn decode_size(value: &Value) -> Result<Size, Error> {

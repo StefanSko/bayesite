@@ -1079,6 +1079,8 @@ fn satisfies_constraint(value: &Tensor, constraint: &Option<Constraint>) -> bool
         Some(Constraint::Ordered) => {
             value.rank() == 1 && value.data().windows(2).all(|pair| pair[1] > pair[0])
         }
+        // DataRef bounds are unavailable to this value-only predicate.
+        Some(Constraint::VectorBounds { .. }) => false,
     }
 }
 

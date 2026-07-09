@@ -27,7 +27,36 @@ executes scoped work orders.
   fixtures. Every pre-existing fixture still passes — behavioral confirmation
   that the vendor bump is additive. The gate design (auto-discover + assert
   list) meant the new capability could not be silently ignored. Nice property.
-- Design freeze for the Pi work orders:
+## Surprise: reference backend folds support edges into missing bound sides
+
+Reading `bayesjax/_backends/jax/binding.py` at the v0.4.0 tag (to mirror
+bind-time validation) surfaced semantics **not stated in #26 or the spec
+changelog**, pinned only by the reference implementation:
+
+- **Support-edge folding**: a missing `VectorBounds` side is filled with the
+  base distribution's finite support edge before the transform is chosen.
+  Exponential/HalfNormal base → lower edge 0; Beta → (0, 1); Uniform →
+  (low, high) evaluated from data and aligned via `missing_idx` (full-vector
+  parameters are indexed down to missing order); everything else → no edges.
+  Consequence: an upper-only bound on an Exponential base becomes a
+  *two-sided* interval `[0, ub]` — a different transform (sigmoid, not
+  `ub - exp(u)`), hence a different density parameterization. The golden
+  fixtures do not cover this combination, so only reading the reference
+  caught it; a naive implementation would have silently diverged cross-engine.
+- **Support validation** (after folding): all present bound values must lie
+  within the base support edges; for bounded support additionally
+  `lower < support_upper` and `upper > support_lower` (leave mass inside);
+  `lower < upper` elementwise after folding.
+- **nextafter clip**: the two-sided inverse transform clips the constrained
+  value to `(nextafter(lb→ub), nextafter(ub→lb))` so saturated sigmoids can
+  never land exactly on a bound (protects bounded-support base logpdfs, e.g.
+  Beta with alpha < 1, from -inf/NaN at the boundary). Lower/upper-only
+  transforms are unclipped.
+- Bound-side resolution rules: referenced data must exist, be rank-1, have
+  length equal to the (rank-1) free value's length, and be entirely finite;
+  the free value itself must be rank-1.
+
+## Design freeze for the Pi work orders
   - `Constraint::VectorBounds { lower: Option<String>, upper: Option<String> }`
     (DataRef names), at least one present; legal on free values.
   - Generalize interval machinery to tape-valued bounds (constants for scalar
