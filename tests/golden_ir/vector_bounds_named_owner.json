@@ -1,0 +1,189 @@
+{
+  "bayeswire_ir": 1,
+  "model": {
+    "node": "ModelMeta",
+    "params": [],
+    "data": [
+      {
+        "name": "n",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": []
+          }
+        }
+      },
+      {
+        "name": "n_obs",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": []
+          }
+        }
+      },
+      {
+        "name": "n_mis",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": []
+          }
+        }
+      },
+      {
+        "name": "observed_idx",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": [
+              {
+                "node": "DataDimRef",
+                "name": "n_obs"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "missing_idx",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": [
+              {
+                "node": "DataDimRef",
+                "name": "n_mis"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "observed_values",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": [
+              {
+                "node": "DataDimRef",
+                "name": "n_obs"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "missing_upper",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": [
+              {
+                "node": "DataDimRef",
+                "name": "n_mis"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "observed_nodes": [],
+    "expressions": [],
+    "free_values": [
+      {
+        "name": "y",
+        "value": {
+          "node": "ResolvedFreeValue",
+          "constraint": {
+            "node": "VectorBounds",
+            "lower": null,
+            "upper": {
+              "node": "DataRef",
+              "name": "missing_upper"
+            }
+          },
+          "size": {
+            "node": "DataRef",
+            "name": "n_mis"
+          }
+        }
+      }
+    ],
+    "stochastic_sites": [
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "penalty",
+        "distribution": {
+          "node": "Normal",
+          "loc": 0.0,
+          "scale": 1.0
+        },
+        "value": {
+          "node": "VectorScatterOp",
+          "length": {
+            "node": "DataRef",
+            "name": "n"
+          },
+          "observed_idx": {
+            "node": "DataRef",
+            "name": "observed_idx"
+          },
+          "observed_values": {
+            "node": "DataRef",
+            "name": "observed_values"
+          },
+          "missing_idx": {
+            "node": "DataRef",
+            "name": "missing_idx"
+          },
+          "missing_values": {
+            "node": "ParamRef",
+            "name": "y"
+          }
+        }
+      },
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "y",
+        "distribution": {
+          "node": "Exponential",
+          "rate": {
+            "node": "ConstNode",
+            "value": 1.0
+          }
+        },
+        "value": {
+          "node": "VectorScatterOp",
+          "length": {
+            "node": "DataRef",
+            "name": "n"
+          },
+          "observed_idx": {
+            "node": "DataRef",
+            "name": "observed_idx"
+          },
+          "observed_values": {
+            "node": "DataRef",
+            "name": "observed_values"
+          },
+          "missing_idx": {
+            "node": "DataRef",
+            "name": "missing_idx"
+          },
+          "missing_values": {
+            "node": "ParamRef",
+            "name": "y"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -48,7 +48,9 @@ provenance.
    change the wire format.
 2. **Ordered map.** A field typed `dict[str, T]` encodes as a JSON array of
    entries `[{"name": "<key>", "value": <encoded T>}, ...]` in insertion
-   order. Never sorted.
+   order. Never sorted. Names are opaque strings to consumers. In particular,
+   authoring-time composition may produce dotted names such as `effects.mu`;
+   consumers must not split or otherwise interpret the `.` separator.
 3. **Tuple.** A tuple field encodes as a JSON array of encoded items.
 4. **Scalars.** `int`, `float`, `str`, `bool`, and `None` pass through.
    Int/float lexical identity is preserved exactly (`1` stays `1`, `1.0`
@@ -89,7 +91,10 @@ tuple.
 
 `ModelMeta` carries both declaration metadata and the resolved execution
 metadata needed by backends. Consumers must not re-run declaration
-resolution from the declaration-shaped fields.
+resolution from the declaration-shaped fields. Authoring constructs such as
+`Submodel` are flattened before this boundary: composed parameters, data,
+expressions, and stochastic sites are ordinary entries with opaque dotted
+names, not hierarchical IR nodes.
 
 - `free_values` defines the flat unconstrained NUTS state layout. If it is
   empty, consumers use `params` as the legacy layout source.
@@ -195,6 +200,16 @@ fit to its exact model and data bytes is specified in
 
 ## Changelog
 
+### 1 — authoring-time closed model composition
+
+`bayeswire_ir` stays at 1: `Submodel` is flattened before `ModelMeta`, so no
+node tag, field list, or encoding rule changed and all pre-existing corpus
+documents remain byte-identical. The `composed_measurements` corpus case pins
+the resulting opaque dotted names, repeated independent namespaces, child
+likelihood factors, and parent references to child expressions. Consumers see
+an ordinary flat model and must not reconstruct or interpret authoring-time
+hierarchy.
+
 ### 1 — VectorBounds constraints for censored PartiallyObserved free values
 
 `bayeswire_ir` stays at 1: this is an additive built-in tag addition only.
@@ -209,6 +224,37 @@ normalizer or change the stochastic-site distribution. This matches the Stan
 censored-imputation idiom, where the missing values are sampled within their
 censoring intervals while the full assembled vector is evaluated under the
 untruncated base likelihood.
+
+A `VectorBounds` free-value entry has exactly one **owner** in the resolved
+`stochastic_sites` sequence (including the legacy derivation when the explicit
+sequence is empty): the unique site with the same `name` as the free-value
+entry. Its value expression must be either a direct same-name `ParamRef`, or a
+`VectorScatterOp` whose `missing_values` is a direct same-name `ParamRef`.
+Consumers derive finite base-distribution support edges from this owner's
+distribution; for a scatter owner, full-vector support parameters are aligned
+through that owner's `missing_idx`. A differently named stochastic site never
+owns the free value, even when its value expression references the free slot or
+contains an equivalent scatter expression. Missing, duplicate, or malformed
+same-name owners fail at bind time with a repair-oriented error.
+
+Owner selection is structural and independent of stochastic-site order. The
+v1 rule that entry-array order is semantic still applies to factor evaluation,
+packing, and artifacts; it does not make the first expression that mentions a
+free value its owner.
+
+Ancestral workflows must distinguish declaration-backed generative sites from
+additional density factors structurally; they must not infer that role from
+expression references or site order. `Param` and `Observed` declarations are
+associated with stochastic sites by their assignable value expression and
+matching declaration distribution; non-`Param` free values use their canonical
+same-name owner. Any unassociated stochastic site remains a factor. A
+prior-predictive implementation without factor-aware sampling semantics must
+reject such factors before drawing rather than independently generating or
+silently discarding them.
+
+These paragraphs clarify previously unspecified v1 binding and ancestral
+simulation semantics. No tag, field list, or encoding rule changes, so
+`bayeswire_ir` remains 1.
 
 ### 1 — companion specs for the data document and model/data fingerprint
 

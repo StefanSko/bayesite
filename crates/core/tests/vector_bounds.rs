@@ -1,7 +1,7 @@
 use bayesite_core::error::ErrorKind;
 use bayesite_core::ir::{
-    Constraint, DataSchema, Distribution, Expr, ModelMeta, ResolvedData, ResolvedFreeValue,
-    ResolvedStochasticSite, Size,
+    BinOpKind, Constraint, DataSchema, Distribution, Expr, ModelMeta, ResolvedData,
+    ResolvedFreeValue, ResolvedObserved, ResolvedStochasticSite, Size,
 };
 use bayesite_core::model::{DataValue, Posterior};
 use bayesite_core::predictive::{
@@ -247,6 +247,146 @@ fn exponential_support_folds_an_upper_only_bound_to_two_sided() {
 }
 
 #[test]
+fn vector_bounds_support_comes_from_same_name_owner_not_earlier_factor() {
+    let mut model = partially_observed_model(exponential(), 1);
+    model.free_values[0].1.constraint = Some(Constraint::VectorBounds {
+        lower: None,
+        upper: Some("lower".to_string()),
+    });
+    let owner = model.stochastic_sites[0].clone();
+    model.stochastic_sites.insert(
+        0,
+        ResolvedStochasticSite {
+            name: "penalty".to_string(),
+            distribution: normal(),
+            value: owner.value.clone(),
+        },
+    );
+
+    let posterior = Posterior::new(model, partially_observed_data(1.0)).unwrap();
+    let (logp, gradient) = posterior.logp_grad(&[0.1]).unwrap();
+
+    assert!(logp.is_finite(), "{logp}");
+    assert!(gradient[0].is_finite(), "{:?}", gradient);
+}
+
+#[test]
+fn prior_predictive_rejects_non_owner_vector_scatter_factor() {
+    let mut model = partially_observed_model(exponential(), 1);
+    let owner = model.stochastic_sites[0].clone();
+    model.stochastic_sites.insert(
+        0,
+        ResolvedStochasticSite {
+            name: "penalty".to_string(),
+            distribution: normal(),
+            value: owner.value.clone(),
+        },
+    );
+
+    let err = simulate_prior_predictive(
+        model,
+        partially_observed_data(1.0),
+        &PriorPredictiveSettings { num_draws: 1 },
+        29,
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(
+        err.message.contains("additional stochastic factor"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn prior_predictive_rejects_non_owner_direct_parameter_factor() {
+    let mut model = vector_model(
+        Constraint::VectorBounds {
+            lower: Some("lower".to_string()),
+            upper: None,
+        },
+        Size::Fixed(1),
+        exponential(),
+        &["lower"],
+    );
+    model.stochastic_sites.insert(
+        0,
+        ResolvedStochasticSite {
+            name: "penalty".to_string(),
+            distribution: normal(),
+            value: Expr::Param("y".to_string()),
+        },
+    );
+
+    let err = simulate_prior_predictive(
+        model,
+        vec![data("lower", vec![1.0])],
+        &PriorPredictiveSettings { num_draws: 1 },
+        31,
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(
+        err.message.contains("additional stochastic factor"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn vector_bounds_reject_missing_same_name_owner() {
+    let mut model = partially_observed_model(exponential(), 1);
+    model.stochastic_sites[0].name = "renamed_y".to_string();
+
+    let err = Posterior::new(model, partially_observed_data(1.0)).unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::DataShapeMismatch);
+    assert!(
+        err.message.contains("exactly one same-name owner"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn vector_bounds_reject_duplicate_same_name_owners() {
+    let mut model = partially_observed_model(exponential(), 1);
+    model
+        .stochastic_sites
+        .push(model.stochastic_sites[0].clone());
+
+    let err = Posterior::new(model, partially_observed_data(1.0)).unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::DataShapeMismatch);
+    assert!(
+        err.message.contains("exactly one same-name owner"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn vector_bounds_reject_malformed_same_name_owner() {
+    let mut model = partially_observed_model(exponential(), 1);
+    model.stochastic_sites[0].value = Expr::Bin {
+        op: BinOpKind::Add,
+        left: Box::new(Expr::Param("y".to_string())),
+        right: Box::new(Expr::Const(0.0)),
+    };
+
+    let err = Posterior::new(model, partially_observed_data(1.0)).unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::DataShapeMismatch);
+    assert!(
+        err.message.contains("must evaluate directly"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
 fn normal_lower_only_bound_remains_one_sided() {
     let model = vector_model(
         Constraint::VectorBounds {
@@ -335,12 +475,17 @@ fn two_sided_normal_vector_bounds_are_finite_in_the_extreme_tail() {
 #[test]
 fn vector_scatter_propagates_the_missing_free_value_to_later_sites() {
     let mut model = partially_observed_model(normal(), 3);
+    let distribution = Distribution::Normal {
+        loc: Expr::Param("y".to_string()),
+        scale: Expr::Const(1e-9),
+    };
+    model.observed_nodes.push(ResolvedObserved {
+        name: "z".to_string(),
+        distribution: distribution.clone(),
+    });
     model.stochastic_sites.push(ResolvedStochasticSite {
         name: "z_site".to_string(),
-        distribution: Distribution::Normal {
-            loc: Expr::Param("y".to_string()),
-            scale: Expr::Const(1e-9),
-        },
+        distribution,
         value: Expr::Data("z".to_string()),
     });
     let declared_data = vec![
@@ -640,14 +785,19 @@ fn uniform_support_folding_defers_for_data_generated_by_earlier_sites() {
         },
         1,
     );
+    let distribution = Distribution::Uniform {
+        low: Expr::Const(1.0),
+        high: Expr::Const(2.0),
+    };
+    model.observed_nodes.push(ResolvedObserved {
+        name: "a".to_string(),
+        distribution: distribution.clone(),
+    });
     model.stochastic_sites.insert(
         0,
         ResolvedStochasticSite {
             name: "a".to_string(),
-            distribution: Distribution::Uniform {
-                low: Expr::Const(1.0),
-                high: Expr::Const(2.0),
-            },
+            distribution,
             value: Expr::Data("a".to_string()),
         },
     );
