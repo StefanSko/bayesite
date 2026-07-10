@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import tarfile
 import tempfile
-import tomllib
 import unittest
 import zipfile
 from pathlib import Path
@@ -29,8 +29,11 @@ def load_script(name: str):
 
 class ReleaseToolingTests(unittest.TestCase):
     def test_release_docs_match_crate_version(self) -> None:
-        cargo = tomllib.loads((REPO_ROOT / "crates/core/Cargo.toml").read_text(encoding="utf-8"))
-        version = cargo["package"]["version"]
+        cargo = (REPO_ROOT / "crates/core/Cargo.toml").read_text(encoding="utf-8")
+        match = re.search(r'^version = "([^"]+)"$', cargo, flags=re.MULTILINE)
+        self.assertIsNotNone(match)
+        assert match is not None
+        version = match.group(1)
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         capabilities = (REPO_ROOT / "docs/capabilities-v0.md").read_text(encoding="utf-8")
 
