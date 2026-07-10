@@ -48,7 +48,9 @@ provenance.
    change the wire format.
 2. **Ordered map.** A field typed `dict[str, T]` encodes as a JSON array of
    entries `[{"name": "<key>", "value": <encoded T>}, ...]` in insertion
-   order. Never sorted.
+   order. Never sorted. Names are opaque strings to consumers. In particular,
+   authoring-time composition may produce dotted names such as `effects.mu`;
+   consumers must not split or otherwise interpret the `.` separator.
 3. **Tuple.** A tuple field encodes as a JSON array of encoded items.
 4. **Scalars.** `int`, `float`, `str`, `bool`, and `None` pass through.
    Int/float lexical identity is preserved exactly (`1` stays `1`, `1.0`
@@ -89,7 +91,10 @@ tuple.
 
 `ModelMeta` carries both declaration metadata and the resolved execution
 metadata needed by backends. Consumers must not re-run declaration
-resolution from the declaration-shaped fields.
+resolution from the declaration-shaped fields. Authoring constructs such as
+`Submodel` are flattened before this boundary: composed parameters, data,
+expressions, and stochastic sites are ordinary entries with opaque dotted
+names, not hierarchical IR nodes.
 
 - `free_values` defines the flat unconstrained NUTS state layout. If it is
   empty, consumers use `params` as the legacy layout source.
@@ -194,6 +199,16 @@ fit to its exact model and data bytes is specified in
 [`model-data-fingerprint-v1.md`](model-data-fingerprint-v1.md).
 
 ## Changelog
+
+### 1 — authoring-time closed model composition
+
+`bayeswire_ir` stays at 1: `Submodel` is flattened before `ModelMeta`, so no
+node tag, field list, or encoding rule changed and all pre-existing corpus
+documents remain byte-identical. The `composed_measurements` corpus case pins
+the resulting opaque dotted names, repeated independent namespaces, child
+likelihood factors, and parent references to child expressions. Consumers see
+an ordinary flat model and must not reconstruct or interpret authoring-time
+hierarchy.
 
 ### 1 — VectorBounds constraints for censored PartiallyObserved free values
 

@@ -1,0 +1,48 @@
+{
+  "format": "bayescycle.data.json.v1",
+  "variables": {
+    "first.offset": {
+      "dtype": "float64",
+      "shape": [],
+      "values": [
+        0.25
+      ]
+    },
+    "first.values": {
+      "dtype": "float64",
+      "shape": [
+        3
+      ],
+      "values": [
+        0.1,
+        0.4,
+        -0.2
+      ]
+    },
+    "second.offset": {
+      "dtype": "float64",
+      "shape": [],
+      "values": [
+        -0.5
+      ]
+    },
+    "second.values": {
+      "dtype": "float64",
+      "shape": [
+        3
+      ],
+      "values": [
+        -0.3,
+        0.2,
+        0.6
+      ]
+    },
+    "comparison": {
+      "dtype": "float64",
+      "shape": [],
+      "values": [
+        0.75
+      ]
+    }
+  }
+}

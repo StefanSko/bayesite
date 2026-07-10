@@ -1,0 +1,456 @@
+{
+  "name": "composed_measurements",
+  "ir": {
+    "bayeswire_ir": 1,
+    "model": {
+      "node": "ModelMeta",
+      "params": [
+        {
+          "name": "first.location",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "DataRef",
+                "name": "first.offset"
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "second.location",
+          "value": {
+            "node": "ResolvedParam",
+            "distribution": {
+              "node": "Normal",
+              "loc": {
+                "node": "DataRef",
+                "name": "second.offset"
+              },
+              "scale": {
+                "node": "ConstNode",
+                "value": 1.0
+              }
+            },
+            "constraint": null,
+            "size": null
+          }
+        }
+      ],
+      "data": [
+        {
+          "name": "first.offset",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        },
+        {
+          "name": "second.offset",
+          "value": {
+            "node": "ResolvedData",
+            "schema": {
+              "node": "ResolvedDataShapeSchema",
+              "dims": []
+            }
+          }
+        }
+      ],
+      "observed_nodes": [
+        {
+          "node": "ResolvedObserved",
+          "name": "first.values",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "BinOp",
+              "op": "-",
+              "left": {
+                "node": "ParamRef",
+                "name": "first.location"
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "first.offset"
+              }
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          }
+        },
+        {
+          "node": "ResolvedObserved",
+          "name": "second.values",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "BinOp",
+              "op": "-",
+              "left": {
+                "node": "ParamRef",
+                "name": "second.location"
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "second.offset"
+              }
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          }
+        },
+        {
+          "node": "ResolvedObserved",
+          "name": "comparison",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "BinOp",
+              "op": "-",
+              "left": {
+                "node": "BinOp",
+                "op": "-",
+                "left": {
+                  "node": "ParamRef",
+                  "name": "first.location"
+                },
+                "right": {
+                  "node": "DataRef",
+                  "name": "first.offset"
+                }
+              },
+              "right": {
+                "node": "BinOp",
+                "op": "-",
+                "left": {
+                  "node": "ParamRef",
+                  "name": "second.location"
+                },
+                "right": {
+                  "node": "DataRef",
+                  "name": "second.offset"
+                }
+              }
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          }
+        }
+      ],
+      "expressions": [
+        {
+          "name": "first.centered",
+          "value": {
+            "node": "BinOp",
+            "op": "-",
+            "left": {
+              "node": "ParamRef",
+              "name": "first.location"
+            },
+            "right": {
+              "node": "DataRef",
+              "name": "first.offset"
+            }
+          }
+        },
+        {
+          "name": "second.centered",
+          "value": {
+            "node": "BinOp",
+            "op": "-",
+            "left": {
+              "node": "ParamRef",
+              "name": "second.location"
+            },
+            "right": {
+              "node": "DataRef",
+              "name": "second.offset"
+            }
+          }
+        },
+        {
+          "name": "contrast",
+          "value": {
+            "node": "BinOp",
+            "op": "-",
+            "left": {
+              "node": "BinOp",
+              "op": "-",
+              "left": {
+                "node": "ParamRef",
+                "name": "first.location"
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "first.offset"
+              }
+            },
+            "right": {
+              "node": "BinOp",
+              "op": "-",
+              "left": {
+                "node": "ParamRef",
+                "name": "second.location"
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "second.offset"
+              }
+            }
+          }
+        }
+      ],
+      "free_values": [
+        {
+          "name": "first.location",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": null,
+            "size": null
+          }
+        },
+        {
+          "name": "second.location",
+          "value": {
+            "node": "ResolvedFreeValue",
+            "constraint": null,
+            "size": null
+          }
+        }
+      ],
+      "stochastic_sites": [
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "first.location",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "DataRef",
+              "name": "first.offset"
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "first.location"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "first.values",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "BinOp",
+              "op": "-",
+              "left": {
+                "node": "ParamRef",
+                "name": "first.location"
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "first.offset"
+              }
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "DataRef",
+            "name": "first.values"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "second.location",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "DataRef",
+              "name": "second.offset"
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "ParamRef",
+            "name": "second.location"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "second.values",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "BinOp",
+              "op": "-",
+              "left": {
+                "node": "ParamRef",
+                "name": "second.location"
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "second.offset"
+              }
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "DataRef",
+            "name": "second.values"
+          }
+        },
+        {
+          "node": "ResolvedStochasticSite",
+          "name": "comparison",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "BinOp",
+              "op": "-",
+              "left": {
+                "node": "BinOp",
+                "op": "-",
+                "left": {
+                  "node": "ParamRef",
+                  "name": "first.location"
+                },
+                "right": {
+                  "node": "DataRef",
+                  "name": "first.offset"
+                }
+              },
+              "right": {
+                "node": "BinOp",
+                "op": "-",
+                "left": {
+                  "node": "ParamRef",
+                  "name": "second.location"
+                },
+                "right": {
+                  "node": "DataRef",
+                  "name": "second.offset"
+                }
+              }
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "value": {
+            "node": "DataRef",
+            "name": "comparison"
+          }
+        }
+      ]
+    }
+  },
+  "data": {
+    "first.offset": {
+      "dtype": "float64",
+      "shape": [],
+      "values": [
+        0.25
+      ]
+    },
+    "first.values": {
+      "dtype": "float64",
+      "shape": [
+        3
+      ],
+      "values": [
+        0.1,
+        0.4,
+        -0.2
+      ]
+    },
+    "second.offset": {
+      "dtype": "float64",
+      "shape": [],
+      "values": [
+        -0.5
+      ]
+    },
+    "second.values": {
+      "dtype": "float64",
+      "shape": [
+        3
+      ],
+      "values": [
+        -0.3,
+        0.2,
+        0.6
+      ]
+    },
+    "comparison": {
+      "dtype": "float64",
+      "shape": [],
+      "values": [
+        0.75
+      ]
+    }
+  },
+  "evaluations": [
+    {
+      "q": [
+        0.0,
+        0.0
+      ],
+      "log_density": -10.195446798842054,
+      "gradient": [
+        2.8,
+        -3.0
+      ]
+    },
+    {
+      "q": [
+        0.1,
+        0.2
+      ],
+      "log_density": -10.620446798842055,
+      "gradient": [
+        2.5,
+        -3.9000000000000004
+      ]
+    },
+    {
+      "q": [
+        0.42073549240394825,
+        0.4958324052262343
+      ],
+      "log_density": -11.353440666229071,
+      "gradient": [
+        1.1921549432064928,
+        -5.058426533727222
+      ]
+    }
+  ]
+}

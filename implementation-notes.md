@@ -87,8 +87,11 @@ findings are appended as the red→green implementation proceeds.
   unsupported for prior predictive.
 - Two hand-built generative DataRef fixtures lacked matching `observed_nodes`;
   adding the declaration metadata made their intended roles explicit instead
-  of retaining an unclassifiable convention. The updated bayeswire spec/corpus
-  is vendored at `866fa70`; only its semantic prose and pin changed.
+  of retaining an unclassifiable convention.
+- The final vendor refresh points at merged bayescycle `e9784f5`, containing
+  both the owner fix and closed `Submodel` composition. The new flat
+  `composed_measurements` document required no engine branch; admitting it to
+  the exhaustive JAX-oracle fixture list made the full gate green.
 - The complete validation ladder is green: vendor/zero-dependency guards,
   format, Clippy with warnings denied, release and wasm builds, 356 Rust tests,
   release-tooling tests, and the nuts-rs oracle (4 targets, 15 checks).
