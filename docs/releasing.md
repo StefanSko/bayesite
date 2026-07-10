@@ -24,8 +24,10 @@ sha256 sidecars. A `vX.Y.Z` tag triggers `.github/workflows/release.yml`.
 
 ## Cut a release
 
-1. On a release-preparation branch, update `crates/core/Cargo.toml` and refresh
-   `Cargo.lock` with Cargo.
+1. On a release-preparation branch, update `crates/core/Cargo.toml`, refresh
+   `Cargo.lock` with Cargo, and update versioned install/capabilities examples
+   in `README.md` and `docs/capabilities-v0.md`. Release-tooling tests enforce
+   that these versions agree.
 2. Finalize the changelog section, run the full validation ladder, and merge a
    reviewed release-preparation PR.
 3. Tag the resulting `main` commit:

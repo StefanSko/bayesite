@@ -68,7 +68,7 @@ or x86_64 Linux, this installs a pinned release to `~/.local/bin/bayesite`
 without a source checkout or Cargo on the execution path:
 
 ```sh
-VERSION=v0.2.0
+VERSION=v0.2.1
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) TARGET=aarch64-apple-darwin ;;
   Darwin-x86_64) TARGET=x86_64-apple-darwin ;;
@@ -105,7 +105,7 @@ Developer fallback when Rust/Cargo is already present:
 ```sh
 cargo install \
   --git https://github.com/StefanSko/bayesite \
-  --tag v0.2.0 \
+  --tag v0.2.1 \
   --package bayesite-core \
   --bin bayesite \
   --locked
