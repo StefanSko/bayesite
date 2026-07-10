@@ -34,6 +34,7 @@ Field kinds: `value` is a scalar, node, or null; `map` is an ordered
 | `Interval` | `lower` (value), `upper` (value) |
 | `UnitInterval` | — |
 | `Ordered` | — |
+| `VectorBounds` | `lower` (value), `upper` (value) |
 | `Normal` | `loc` (value), `scale` (value) |
 | `HalfNormal` | `scale` (value) |
 | `StudentT` | `df` (value), `loc` (value), `scale` (value) |

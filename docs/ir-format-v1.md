@@ -195,6 +195,21 @@ fit to its exact model and data bytes is specified in
 
 ## Changelog
 
+### 1 — VectorBounds constraints for censored PartiallyObserved free values
+
+`bayeswire_ir` stays at 1: this is an additive built-in tag addition only.
+No existing tag or field list changed, and all previously committed corpus
+documents remain byte-identical. `VectorBounds` records optional lower and
+upper `DataRef` vectors for free values whose sampler support is restricted
+per coordinate, initially for censored `PartiallyObserved` missing values.
+The bound vectors are aligned with the `missing_idx` order: element `j` of a
+bound vector constrains the free value corresponding to `missing_idx[j]`.
+These bounds restrict sampler support only; they do not add a truncation
+normalizer or change the stochastic-site distribution. This matches the Stan
+censored-imputation idiom, where the missing values are sampled within their
+censoring intervals while the full assembled vector is evaluated under the
+untruncated base likelihood.
+
 ### 1 — companion specs for the data document and model/data fingerprint
 
 `bayeswire_ir` is unchanged at 1: no tag, field list, or encoding rule

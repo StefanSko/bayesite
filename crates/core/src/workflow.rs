@@ -14,7 +14,7 @@ use crate::artifact::{
 };
 use crate::diagnostics;
 use crate::error::{Error, ErrorKind};
-use crate::ir::ModelMeta;
+use crate::ir::{Expr, ModelMeta};
 use crate::json::{self, Value};
 use crate::model::{DataValue, Posterior};
 use crate::predictive::{simulate_prior_predictive, PriorPredictiveRole, PriorPredictiveSettings};
@@ -980,6 +980,22 @@ fn generated_fit(
     sample_seed: u64,
     context: &str,
 ) -> Result<GeneratedFit, Error> {
+    // Fail before drawing: the v0 workflow can only report truth for free
+    // values that a ParamRef site simulates directly, so a PartiallyObserved
+    // free value (VectorScatter missing_values) would produce an unusable
+    // prior draw. Full support is tracked as issue #28.
+    for (name, _) in meta.resolved_free_values() {
+        let directly_simulated = meta
+            .resolved_stochastic_sites()
+            .iter()
+            .any(|site| matches!(&site.value, Expr::Param(param) if *param == name));
+        if !directly_simulated {
+            return Err(invalid(format!(
+                "{context} cannot report truth for free value \"{name}\"; the v0 workflow requires a directly simulated stochastic site for every free value"
+            )));
+        }
+    }
+
     let pp_settings = PriorPredictiveSettings { num_draws: 1 };
     let simulated = simulate_prior_predictive(
         meta.clone(),
