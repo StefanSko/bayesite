@@ -923,17 +923,40 @@ fn vector_bounds_support_edges(
     data: &HashMap<String, DataValue>,
     expected_length: usize,
 ) -> Result<VectorSupportEdges, Error> {
-    let Some(site) = sites
-        .iter()
-        .find(|site| expr_references_free_value(&site.value, free_name))
-    else {
-        return Ok(VectorSupportEdges {
-            lower: None,
-            upper: None,
-        });
+    let mut named_sites = sites.iter().filter(|site| site.name == free_name);
+    let owner = named_sites.next().ok_or_else(|| {
+        mismatch(format!(
+            "VectorBounds free value {free_name:?} requires exactly one same-name owner \
+             stochastic site; found 0"
+        ))
+    })?;
+    if let Some(_duplicate) = named_sites.next() {
+        let count = 2 + named_sites.count();
+        return Err(mismatch(format!(
+            "VectorBounds free value {free_name:?} requires exactly one same-name owner \
+             stochastic site; found {count}"
+        )));
+    }
+
+    let missing_idx = match &owner.value {
+        Expr::Param(name) if name == free_name => None,
+        Expr::VectorScatter {
+            missing_idx,
+            missing_values,
+            ..
+        } if matches!(missing_values.as_ref(), Expr::Param(name) if name == free_name) => {
+            Some(vector_bounds_missing_idx(missing_idx, data)?)
+        }
+        _ => {
+            return Err(mismatch(format!(
+                "VectorBounds owner site {free_name:?} must evaluate directly at \
+                 ParamRef({free_name:?}) or at a VectorScatter whose missing_values is that \
+                 ParamRef"
+            )))
+        }
     };
-    let missing_idx = vector_scatter_missing_idx(&site.value, free_name, data)?;
-    match &site.distribution {
+
+    match &owner.distribution {
         Distribution::Exponential { .. } | Distribution::HalfNormal { .. } => {
             Ok(VectorSupportEdges {
                 lower: Some(vec![0.0; expected_length]),
@@ -964,64 +987,11 @@ fn vector_bounds_support_edges(
     }
 }
 
-fn expr_references_free_value(expr: &Expr, free_name: &str) -> bool {
-    match expr {
-        Expr::Param(name) => name == free_name,
-        Expr::Data(_) | Expr::Const(_) => false,
-        Expr::Bin { left, right, .. } => {
-            expr_references_free_value(left, free_name)
-                || expr_references_free_value(right, free_name)
-        }
-        Expr::Unary { operand, .. } => expr_references_free_value(operand, free_name),
-        Expr::Index { base, index } => {
-            expr_references_free_value(base, free_name)
-                || index_references_free_value(index, free_name)
-        }
-        Expr::VectorScatter {
-            length,
-            observed_idx,
-            observed_values,
-            missing_idx,
-            missing_values,
-        } => [
-            length,
-            observed_idx,
-            observed_values,
-            missing_idx,
-            missing_values,
-        ]
-        .into_iter()
-        .any(|child| expr_references_free_value(child, free_name)),
-    }
-}
-
-fn index_references_free_value(index: &IndexSpec, free_name: &str) -> bool {
-    match index {
-        IndexSpec::Scalar(expr) => expr_references_free_value(expr, free_name),
-        IndexSpec::Full => false,
-        IndexSpec::Tuple(items) => items
-            .iter()
-            .any(|item| index_references_free_value(item, free_name)),
-    }
-}
-
-fn vector_scatter_missing_idx(
+fn vector_bounds_missing_idx(
     expr: &Expr,
-    free_name: &str,
     data: &HashMap<String, DataValue>,
-) -> Result<Option<Vec<i64>>, Error> {
-    let Expr::VectorScatter {
-        missing_idx,
-        missing_values,
-        ..
-    } = expr
-    else {
-        return Ok(None);
-    };
-    if !expr_references_free_value(missing_values, free_name) {
-        return Ok(None);
-    }
-    let index = evaluate_required_data_expr(missing_idx, data)?;
+) -> Result<Vec<i64>, Error> {
+    let index = evaluate_required_data_expr(expr, data)?;
     if index.rank() != 1 {
         return Err(mismatch(format!(
             "VectorBounds scatter missing_idx must be rank-1, got shape {:?}",
@@ -1040,8 +1010,7 @@ fn vector_scatter_missing_idx(
                 Ok(entry as i64)
             }
         })
-        .collect::<Result<Vec<_>, _>>()
-        .map(Some)
+        .collect()
 }
 
 fn uniform_support_edge(

@@ -5,7 +5,7 @@ use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, Posterior};
 
-const ALL_FIXTURES: [&str; 8] = [
+const ALL_FIXTURES: [&str; 9] = [
     "bounded_rates",
     "censored_exponential",
     "eight_schools_non_centered",
@@ -14,6 +14,7 @@ const ALL_FIXTURES: [&str; 8] = [
     "ordinal_regression",
     "partially_observed_mvn",
     "varying_intercepts_poisson",
+    "vector_bounds_named_owner",
 ];
 
 fn fixture(name: &str) -> Value {

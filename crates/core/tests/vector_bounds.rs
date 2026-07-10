@@ -1,7 +1,7 @@
 use bayesite_core::error::ErrorKind;
 use bayesite_core::ir::{
-    Constraint, DataSchema, Distribution, Expr, ModelMeta, ResolvedData, ResolvedFreeValue,
-    ResolvedStochasticSite, Size,
+    BinOpKind, Constraint, DataSchema, Distribution, Expr, ModelMeta, ResolvedData,
+    ResolvedFreeValue, ResolvedStochasticSite, Size,
 };
 use bayesite_core::model::{DataValue, Posterior};
 use bayesite_core::predictive::{
@@ -244,6 +244,81 @@ fn exponential_support_folds_an_upper_only_bound_to_two_sided() {
     let expected = -1.0 - 2.0_f64.ln();
     assert!((logp - expected).abs() < 1e-15, "{logp} != {expected}");
     assert!((gradient[0] + 0.5).abs() < 1e-15, "{:?}", gradient);
+}
+
+#[test]
+fn vector_bounds_support_comes_from_same_name_owner_not_earlier_factor() {
+    let mut model = partially_observed_model(exponential(), 1);
+    model.free_values[0].1.constraint = Some(Constraint::VectorBounds {
+        lower: None,
+        upper: Some("lower".to_string()),
+    });
+    let owner = model.stochastic_sites[0].clone();
+    model.stochastic_sites.insert(
+        0,
+        ResolvedStochasticSite {
+            name: "penalty".to_string(),
+            distribution: normal(),
+            value: owner.value.clone(),
+        },
+    );
+
+    let posterior = Posterior::new(model, partially_observed_data(1.0)).unwrap();
+    let (logp, gradient) = posterior.logp_grad(&[0.1]).unwrap();
+
+    assert!(logp.is_finite(), "{logp}");
+    assert!(gradient[0].is_finite(), "{:?}", gradient);
+}
+
+#[test]
+fn vector_bounds_reject_missing_same_name_owner() {
+    let mut model = partially_observed_model(exponential(), 1);
+    model.stochastic_sites[0].name = "renamed_y".to_string();
+
+    let err = Posterior::new(model, partially_observed_data(1.0)).unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::DataShapeMismatch);
+    assert!(
+        err.message.contains("exactly one same-name owner"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn vector_bounds_reject_duplicate_same_name_owners() {
+    let mut model = partially_observed_model(exponential(), 1);
+    model
+        .stochastic_sites
+        .push(model.stochastic_sites[0].clone());
+
+    let err = Posterior::new(model, partially_observed_data(1.0)).unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::DataShapeMismatch);
+    assert!(
+        err.message.contains("exactly one same-name owner"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn vector_bounds_reject_malformed_same_name_owner() {
+    let mut model = partially_observed_model(exponential(), 1);
+    model.stochastic_sites[0].value = Expr::Bin {
+        op: BinOpKind::Add,
+        left: Box::new(Expr::Param("y".to_string())),
+        right: Box::new(Expr::Const(0.0)),
+    };
+
+    let err = Posterior::new(model, partially_observed_data(1.0)).unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::DataShapeMismatch);
+    assert!(
+        err.message.contains("must evaluate directly"),
+        "{}",
+        err.message
+    );
 }
 
 #[test]

@@ -6,5 +6,6 @@
   "partially_observed_mvn": "2a1366188782d3e95ee7722dee2378243263efa893376d9f2b8065c378182990",
   "bounded_rates": "64a551a708e4a945de031f5370259d43610854c52c62f98813862b7bb5f41106",
   "censored_exponential": "11e5609dddedcc92d55376f07bde9f077c050d931012f4f097ddb2712e0fdb01",
-  "interval_censored_normal": "63f14bfe8cde8dd1be47f5cad5889426bbbc99d162f73f6d25349ad24df500f3"
+  "interval_censored_normal": "63f14bfe8cde8dd1be47f5cad5889426bbbc99d162f73f6d25349ad24df500f3",
+  "vector_bounds_named_owner": "6a4afc501801593d51b33ea7863890df0c9381b396341868a589ad91e861e498"
 }

@@ -210,6 +210,25 @@ censored-imputation idiom, where the missing values are sampled within their
 censoring intervals while the full assembled vector is evaluated under the
 untruncated base likelihood.
 
+A `VectorBounds` free-value entry has exactly one **owner** in the resolved
+`stochastic_sites` sequence (including the legacy derivation when the explicit
+sequence is empty): the unique site with the same `name` as the free-value
+entry. Its value expression must be either a direct same-name `ParamRef`, or a
+`VectorScatterOp` whose `missing_values` is a direct same-name `ParamRef`.
+Consumers derive finite base-distribution support edges from this owner's
+distribution; for a scatter owner, full-vector support parameters are aligned
+through that owner's `missing_idx`. A differently named stochastic site never
+owns the free value, even when its value expression references the free slot or
+contains an equivalent scatter expression. Missing, duplicate, or malformed
+same-name owners fail at bind time with a repair-oriented error.
+
+Owner selection is structural and independent of stochastic-site order. The
+v1 rule that entry-array order is semantic still applies to factor evaluation,
+packing, and artifacts; it does not make the first expression that mentions a
+free value its owner. This paragraph clarifies previously unspecified v1
+binding semantics. No tag, field list, or encoding rule changes, so
+`bayeswire_ir` remains 1.
+
 ### 1 — companion specs for the data document and model/data fingerprint
 
 `bayeswire_ir` is unchanged at 1: no tag, field list, or encoding rule

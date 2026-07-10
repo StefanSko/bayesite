@@ -6,5 +6,6 @@
   "partially_observed_mvn": "sha256:884d16783c5bec7bfe6e3383b9c6c5964cc0fd89043198e32b70874664a7af94",
   "bounded_rates": "sha256:5ba6a3e09f8c3a5856d7ab897e00da8547b0a25bf3fcb8a2ce5618e1758a73c3",
   "censored_exponential": "sha256:e1ba60904ec3af75b34117b129560a1163668d4843798e9ca89ab8fae7c2d5fb",
-  "interval_censored_normal": "sha256:2a0aff0a1606ebcf4ea082396ad34bffed4b0180caa8c0fe6d6c90626d2844c9"
+  "interval_censored_normal": "sha256:2a0aff0a1606ebcf4ea082396ad34bffed4b0180caa8c0fe6d6c90626d2844c9",
+  "vector_bounds_named_owner": "sha256:fed51ec64b85aed18c1f5ba659345b96ad1d550216928826d706f96716fadc54"
 }
