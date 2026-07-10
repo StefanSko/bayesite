@@ -225,8 +225,20 @@ same-name owners fail at bind time with a repair-oriented error.
 Owner selection is structural and independent of stochastic-site order. The
 v1 rule that entry-array order is semantic still applies to factor evaluation,
 packing, and artifacts; it does not make the first expression that mentions a
-free value its owner. This paragraph clarifies previously unspecified v1
-binding semantics. No tag, field list, or encoding rule changes, so
+free value its owner.
+
+Ancestral workflows must distinguish declaration-backed generative sites from
+additional density factors structurally; they must not infer that role from
+expression references or site order. `Param` and `Observed` declarations are
+associated with stochastic sites by their assignable value expression and
+matching declaration distribution; non-`Param` free values use their canonical
+same-name owner. Any unassociated stochastic site remains a factor. A
+prior-predictive implementation without factor-aware sampling semantics must
+reject such factors before drawing rather than independently generating or
+silently discarding them.
+
+These paragraphs clarify previously unspecified v1 binding and ancestral
+simulation semantics. No tag, field list, or encoding rule changes, so
 `bayeswire_ir` remains 1.
 
 ### 1 — companion specs for the data document and model/data fingerprint

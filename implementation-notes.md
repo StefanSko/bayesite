@@ -65,3 +65,30 @@ findings are appended as the red→green implementation proceeds.
 - Post-review full validation ladder passed again, including the restored
   unbounded prior-predictive shape contract, 334 Rust tests, wasm, Clippy, and
   the 15-check nuts-rs oracle.
+
+## Holistic prior-predictive site inventory
+
+- Subsequent BayesJAX review examples (wrapped values, distribution references,
+  and a factor reusing a declaration name) showed that reference scanning is
+  not a stable way to infer whether a site is generative. The IR sequence mixes
+  declaration-backed sites and arbitrary density factors; role must be resolved
+  from declaration structure once, before drawing.
+- New red Rust tests demonstrate the general failure without VectorBounds: an
+  extra unbounded `Param("theta")` factor is independently sampled, and a
+  colliding factor also named `theta` produces two unrelated draws with the
+  same output name. This is the same silent wrong-answer class as the original
+  adversarial scatter.
+- The replacement policy claims exactly one matching stochastic site for every
+  Param, Observed, and non-Param free declaration, then rejects every unclaimed
+  site. Param/Observed matching includes target plus declaration distribution;
+  non-Param free values use the canonical same-name direct/scatter owner. This
+  preserves differently named legacy parameter-site labels while making
+  duplicate, colliding, wrapped, and distribution-only Factors uniformly
+  unsupported for prior predictive.
+- Two hand-built generative DataRef fixtures lacked matching `observed_nodes`;
+  adding the declaration metadata made their intended roles explicit instead
+  of retaining an unclassifiable convention. The updated bayeswire spec/corpus
+  is vendored at `866fa70`; only its semantic prose and pin changed.
+- The complete validation ladder is green: vendor/zero-dependency guards,
+  format, Clippy with warnings denied, release and wasm builds, 356 Rust tests,
+  release-tooling tests, and the nuts-rs oracle (4 targets, 15 checks).

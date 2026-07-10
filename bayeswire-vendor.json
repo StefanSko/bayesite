@@ -1,9 +1,9 @@
 {
-  "bayeswire_ref": "2b57bf7f9255bdfd54a42727186e5de78a3841fe",
-  "bayeswire_commit": "2b57bf7f9255bdfd54a42727186e5de78a3841fe",
+  "bayeswire_ref": "866fa70159dcbcb0e4e5c2892959515f03d32083",
+  "bayeswire_commit": "866fa70159dcbcb0e4e5c2892959515f03d32083",
   "files": {
     "docs/data-document-v1.md": "7039fe5e895eaa072c25e97da344dd667424316144f8754b86f397c81a15a7f3",
-    "docs/ir-format-v1.md": "ea93bb75cf6233f8b4aeddcfc5a4012bdea5d47be0c23f33b1ccc6d267c00484",
+    "docs/ir-format-v1.md": "f78da06c4014f513973facadb1bbeb2412fef841bc83d658510449710f6b4cea",
     "docs/ir-v1-tags.md": "c2945d1c163eec9d10fa8fe37cfcd94e3506f07df5cb7428578a88e075db7da7",
     "docs/model-data-fingerprint-v1.md": "77c5a3766c7c2788c6bce685788f3532f32797a5bdf79284296531a458e64432",
     "tests/golden_ir/bounded_rates.json": "18a255c4e68a656115f9a5b6f7177cbae33d632738323f5d8aaf7507d98afee4",

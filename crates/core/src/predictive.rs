@@ -241,40 +241,103 @@ fn free_specs(
     Ok(specs)
 }
 
-fn validate_prior_predictive_vector_bound_owners(
+fn claim_unique_generative_site(
     sites: &[ResolvedStochasticSite],
-    free_specs: &HashMap<String, FreeSpec>,
-) -> Result<(), Error> {
-    for site in sites {
-        let free_name = match &site.value {
-            Expr::Param(name) => Some(name),
-            Expr::VectorScatter { missing_values, .. } => match missing_values.as_ref() {
-                Expr::Param(name) => Some(name),
-                _ => None,
-            },
-            Expr::Data(_)
-            | Expr::Const(_)
-            | Expr::Bin { .. }
-            | Expr::Unary { .. }
-            | Expr::Index { .. } => None,
-        };
-        if let Some(free_name) = free_name {
-            let has_vector_bounds = free_specs.get(free_name).is_some_and(|free| {
-                matches!(
-                    free.constraint,
-                    Some(ResolvedConstraint::VectorBounds { .. })
-                )
-            });
-            if has_vector_bounds && site.name != *free_name {
-                return Err(invalid(format!(
-                    "prior-predictive site {:?} is not the same-name owner of free value \
-                     {free_name:?}; additional factors evaluated at free values are not \
-                     forward-simulatable, so use a generative model with one same-name owner site",
-                    site.name
-                )));
-            }
-        }
+    claimed: &mut [bool],
+    declaration: &str,
+    matches: impl Fn(&ResolvedStochasticSite) -> bool,
+) -> Result<usize, Error> {
+    let matching_indices = sites
+        .iter()
+        .enumerate()
+        .filter_map(|(index, site)| (!claimed[index] && matches(site)).then_some(index))
+        .collect::<Vec<_>>();
+    if matching_indices.len() != 1 {
+        return Err(invalid(format!(
+            "prior-predictive {declaration} requires exactly one matching generative \
+             stochastic site, found {}; keep one declaration-backed site and remove \
+             additional density factors from the ancestrally simulated model",
+            matching_indices.len()
+        )));
     }
+    let index = matching_indices[0];
+    claimed[index] = true;
+    Ok(index)
+}
+
+fn site_owns_non_param_free_value(site: &ResolvedStochasticSite, name: &str) -> bool {
+    if site.name != name {
+        return false;
+    }
+    match &site.value {
+        Expr::Param(target) => target == name,
+        Expr::VectorScatter { missing_values, .. } => {
+            matches!(missing_values.as_ref(), Expr::Param(target) if target == name)
+        }
+        Expr::Data(_)
+        | Expr::Const(_)
+        | Expr::Bin { .. }
+        | Expr::Unary { .. }
+        | Expr::Index { .. } => false,
+    }
+}
+
+fn validate_prior_predictive_site_inventory(
+    meta: &ModelMeta,
+    sites: &[ResolvedStochasticSite],
+) -> Result<(), Error> {
+    let mut claimed = vec![false; sites.len()];
+
+    for (name, param) in &meta.params {
+        claim_unique_generative_site(sites, &mut claimed, &format!("Param {name:?}"), |site| {
+            matches!(&site.value, Expr::Param(target) if target == name)
+                && site.distribution == param.distribution
+        })?;
+    }
+
+    for observed in &meta.observed_nodes {
+        claim_unique_generative_site(
+            sites,
+            &mut claimed,
+            &format!("Observed {:?}", observed.name),
+            |site| {
+                matches!(&site.value, Expr::Data(target) if target == &observed.name)
+                    && site.distribution == observed.distribution
+            },
+        )?;
+    }
+
+    for (name, _) in meta.resolved_free_values() {
+        if meta
+            .params
+            .iter()
+            .any(|(param_name, _)| param_name == &name)
+        {
+            continue;
+        }
+        claim_unique_generative_site(
+            sites,
+            &mut claimed,
+            &format!("non-Param free value {name:?}"),
+            |site| site_owns_non_param_free_value(site, &name),
+        )?;
+    }
+
+    let factor_sites = sites
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !claimed[*index])
+        .map(|(index, site)| format!("{:?} at stochastic_sites[{index}]", site.name))
+        .collect::<Vec<_>>();
+    if !factor_sites.is_empty() {
+        return Err(invalid(format!(
+            "prior-predictive cannot simulate additional stochastic factor sites [{}]; \
+             Factors affect density but have no ancestral draw, so use a model containing \
+             only declaration-backed generative sites",
+            factor_sites.join(", ")
+        )));
+    }
+
     Ok(())
 }
 
@@ -1550,7 +1613,7 @@ pub fn simulate_prior_predictive(
     let data = bind_declared_data(&meta, data)?;
     let free_specs = free_specs(&meta, &data)?;
     let sites = meta.resolved_stochastic_sites();
-    validate_prior_predictive_vector_bound_owners(&sites, &free_specs)?;
+    validate_prior_predictive_site_inventory(&meta, &sites)?;
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
     let mut draws = Vec::with_capacity(settings.num_draws);
     let mut site_specs: Option<Vec<PriorPredictiveSite>> = None;

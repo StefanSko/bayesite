@@ -3,7 +3,7 @@
 use bayesite_core::error::ErrorKind;
 use bayesite_core::ir::{
     decode_model, DataSchema, Dim, Distribution, Expr, ModelMeta, ResolvedData, ResolvedFreeValue,
-    ResolvedParam, ResolvedStochasticSite, Size,
+    ResolvedObserved, ResolvedParam, ResolvedStochasticSite, Size,
 };
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, DataValue};
@@ -60,17 +60,21 @@ fn scalar_normal_model(loc: f64, scale: f64) -> ModelMeta {
 }
 
 fn scalar_bernoulli_observed_model(probs: f64) -> ModelMeta {
+    let distribution = Distribution::Bernoulli {
+        probs: Expr::Const(probs),
+    };
     ModelMeta {
         params: vec![],
         data: vec![],
-        observed_nodes: vec![],
+        observed_nodes: vec![ResolvedObserved {
+            name: "y".to_string(),
+            distribution: distribution.clone(),
+        }],
         expressions: vec![],
         free_values: vec![],
         stochastic_sites: vec![ResolvedStochasticSite {
             name: "y".to_string(),
-            distribution: Distribution::Bernoulli {
-                probs: Expr::Const(probs),
-            },
+            distribution,
             value: Expr::Data("y".to_string()),
         }],
     }
@@ -111,6 +115,55 @@ fn scalar_normal_with_vector_loc_model() -> ModelMeta {
             value: Expr::Param("theta".to_string()),
         }],
     }
+}
+
+#[test]
+fn prior_predictive_rejects_additional_unbounded_factor() {
+    let mut model = scalar_normal_model(0.0, 1.0);
+    model.stochastic_sites.push(ResolvedStochasticSite {
+        name: "penalty".to_string(),
+        distribution: Distribution::Exponential {
+            rate: Expr::Const(1.0),
+        },
+        value: Expr::Param("theta".to_string()),
+    });
+
+    let err =
+        simulate_prior_predictive(model, vec![], &PriorPredictiveSettings { num_draws: 1 }, 37)
+            .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(
+        err.message.contains("additional stochastic factor"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn prior_predictive_rejects_factor_colliding_with_declaration_name() {
+    let mut model = scalar_normal_model(0.0, 1.0);
+    model.stochastic_sites.insert(
+        0,
+        ResolvedStochasticSite {
+            name: "theta".to_string(),
+            distribution: Distribution::Exponential {
+                rate: Expr::Const(1.0),
+            },
+            value: Expr::Param("theta".to_string()),
+        },
+    );
+
+    let err =
+        simulate_prior_predictive(model, vec![], &PriorPredictiveSettings { num_draws: 1 }, 39)
+            .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(
+        err.message.contains("additional stochastic factor"),
+        "{}",
+        err.message
+    );
 }
 
 #[test]

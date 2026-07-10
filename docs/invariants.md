@@ -32,6 +32,11 @@ Core invariants that should remain true as Bayesite evolves.
 - Seeds are explicit user inputs. Re-running the same model, data, settings,
   seed, and chain id reproduces the same runtime behavior across supported
   targets, including wasm.
+- Prior-predictive simulation claims exactly one declaration-backed stochastic
+  site for every Param, Observed, and non-Param free value before drawing.
+  Additional density factors are rejected because Bayesite has no factor-aware
+  ancestral sampler; they are never independently generated or silently
+  discarded.
 
 ## IR boundary
 

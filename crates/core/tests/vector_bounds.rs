@@ -1,7 +1,7 @@
 use bayesite_core::error::ErrorKind;
 use bayesite_core::ir::{
     BinOpKind, Constraint, DataSchema, Distribution, Expr, ModelMeta, ResolvedData,
-    ResolvedFreeValue, ResolvedStochasticSite, Size,
+    ResolvedFreeValue, ResolvedObserved, ResolvedStochasticSite, Size,
 };
 use bayesite_core::model::{DataValue, Posterior};
 use bayesite_core::predictive::{
@@ -293,7 +293,7 @@ fn prior_predictive_rejects_non_owner_vector_scatter_factor() {
 
     assert_eq!(err.kind, ErrorKind::InvalidSettings);
     assert!(
-        err.message.contains("not the same-name owner"),
+        err.message.contains("additional stochastic factor"),
         "{}",
         err.message
     );
@@ -329,7 +329,7 @@ fn prior_predictive_rejects_non_owner_direct_parameter_factor() {
 
     assert_eq!(err.kind, ErrorKind::InvalidSettings);
     assert!(
-        err.message.contains("not the same-name owner"),
+        err.message.contains("additional stochastic factor"),
         "{}",
         err.message
     );
@@ -475,12 +475,17 @@ fn two_sided_normal_vector_bounds_are_finite_in_the_extreme_tail() {
 #[test]
 fn vector_scatter_propagates_the_missing_free_value_to_later_sites() {
     let mut model = partially_observed_model(normal(), 3);
+    let distribution = Distribution::Normal {
+        loc: Expr::Param("y".to_string()),
+        scale: Expr::Const(1e-9),
+    };
+    model.observed_nodes.push(ResolvedObserved {
+        name: "z".to_string(),
+        distribution: distribution.clone(),
+    });
     model.stochastic_sites.push(ResolvedStochasticSite {
         name: "z_site".to_string(),
-        distribution: Distribution::Normal {
-            loc: Expr::Param("y".to_string()),
-            scale: Expr::Const(1e-9),
-        },
+        distribution,
         value: Expr::Data("z".to_string()),
     });
     let declared_data = vec![
@@ -780,14 +785,19 @@ fn uniform_support_folding_defers_for_data_generated_by_earlier_sites() {
         },
         1,
     );
+    let distribution = Distribution::Uniform {
+        low: Expr::Const(1.0),
+        high: Expr::Const(2.0),
+    };
+    model.observed_nodes.push(ResolvedObserved {
+        name: "a".to_string(),
+        distribution: distribution.clone(),
+    });
     model.stochastic_sites.insert(
         0,
         ResolvedStochasticSite {
             name: "a".to_string(),
-            distribution: Distribution::Uniform {
-                low: Expr::Const(1.0),
-                high: Expr::Const(2.0),
-            },
+            distribution,
             value: Expr::Data("a".to_string()),
         },
     );
