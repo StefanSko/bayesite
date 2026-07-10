@@ -44,3 +44,24 @@ findings are appended as the red→green implementation proceeds.
 - The full validation ladder passed: zero-dependency/vendor guards, fmt,
   Clippy with warnings denied, release CLI, 332 Rust tests, wasm build, and
   the pinned nuts-rs statistical oracle (4 targets, 15 summary checks).
+
+## Codex review round 1 — predictive owner alignment
+
+- Codex found a real P1 outside density binding: prior-predictive dispatch
+  treated every assignable VectorScatter as generative. The adversarial model
+  therefore emitted independent `penalty` and `y` vectors even though posterior
+  density evaluation shares one latent `y`.
+- Red reproduction pinned the silent wrong artifact: one draw emitted penalty
+  `[1.967989...]` and owner y `[1.268627...]` from the same free slot. General
+  Factor/product-of-experts simulation has no ancestral interpretation, so the
+  safe scoped behavior is an explicit unsupported error for differently named
+  assignable factors over VectorBounds free values.
+- First fix overreached by applying the new rule to every free value, which
+  changed an existing unbounded shape-error fixture (`theta_site` targeting
+  `theta`) from DataShapeMismatch to InvalidSettings. The normative owner rule
+  is VectorBounds-specific, so validation was narrowed accordingly; both direct
+  and scatter non-owner VectorBounds factors reject before drawing, while the
+  pre-existing unbounded surface retains its established behavior.
+- Post-review full validation ladder passed again, including the restored
+  unbounded prior-predictive shape contract, 334 Rust tests, wasm, Clippy, and
+  the 15-check nuts-rs oracle.

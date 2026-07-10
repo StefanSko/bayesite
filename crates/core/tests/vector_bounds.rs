@@ -271,6 +271,71 @@ fn vector_bounds_support_comes_from_same_name_owner_not_earlier_factor() {
 }
 
 #[test]
+fn prior_predictive_rejects_non_owner_vector_scatter_factor() {
+    let mut model = partially_observed_model(exponential(), 1);
+    let owner = model.stochastic_sites[0].clone();
+    model.stochastic_sites.insert(
+        0,
+        ResolvedStochasticSite {
+            name: "penalty".to_string(),
+            distribution: normal(),
+            value: owner.value.clone(),
+        },
+    );
+
+    let err = simulate_prior_predictive(
+        model,
+        partially_observed_data(1.0),
+        &PriorPredictiveSettings { num_draws: 1 },
+        29,
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(
+        err.message.contains("not the same-name owner"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn prior_predictive_rejects_non_owner_direct_parameter_factor() {
+    let mut model = vector_model(
+        Constraint::VectorBounds {
+            lower: Some("lower".to_string()),
+            upper: None,
+        },
+        Size::Fixed(1),
+        exponential(),
+        &["lower"],
+    );
+    model.stochastic_sites.insert(
+        0,
+        ResolvedStochasticSite {
+            name: "penalty".to_string(),
+            distribution: normal(),
+            value: Expr::Param("y".to_string()),
+        },
+    );
+
+    let err = simulate_prior_predictive(
+        model,
+        vec![data("lower", vec![1.0])],
+        &PriorPredictiveSettings { num_draws: 1 },
+        31,
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(
+        err.message.contains("not the same-name owner"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
 fn vector_bounds_reject_missing_same_name_owner() {
     let mut model = partially_observed_model(exponential(), 1);
     model.stochastic_sites[0].name = "renamed_y".to_string();

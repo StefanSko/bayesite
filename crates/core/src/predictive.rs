@@ -13,7 +13,8 @@ use crate::artifact::{
 };
 use crate::error::{Error, ErrorKind};
 use crate::ir::{
-    BinOpKind, DataSchema, Dim, Distribution, Expr, IndexSpec, ModelMeta, Size, UnaryFn,
+    BinOpKind, DataSchema, Dim, Distribution, Expr, IndexSpec, ModelMeta, ResolvedStochasticSite,
+    Size, UnaryFn,
 };
 use crate::json::{self, Value};
 use crate::model::{resolve_constraint, DataValue, Posterior, ResolvedConstraint};
@@ -238,6 +239,43 @@ fn free_specs(
         specs.insert(name, FreeSpec { shape, constraint });
     }
     Ok(specs)
+}
+
+fn validate_prior_predictive_vector_bound_owners(
+    sites: &[ResolvedStochasticSite],
+    free_specs: &HashMap<String, FreeSpec>,
+) -> Result<(), Error> {
+    for site in sites {
+        let free_name = match &site.value {
+            Expr::Param(name) => Some(name),
+            Expr::VectorScatter { missing_values, .. } => match missing_values.as_ref() {
+                Expr::Param(name) => Some(name),
+                _ => None,
+            },
+            Expr::Data(_)
+            | Expr::Const(_)
+            | Expr::Bin { .. }
+            | Expr::Unary { .. }
+            | Expr::Index { .. } => None,
+        };
+        if let Some(free_name) = free_name {
+            let has_vector_bounds = free_specs.get(free_name).is_some_and(|free| {
+                matches!(
+                    free.constraint,
+                    Some(ResolvedConstraint::VectorBounds { .. })
+                )
+            });
+            if has_vector_bounds && site.name != *free_name {
+                return Err(invalid(format!(
+                    "prior-predictive site {:?} is not the same-name owner of free value \
+                     {free_name:?}; additional factors evaluated at free values are not \
+                     forward-simulatable, so use a generative model with one same-name owner site",
+                    site.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 struct ForwardEnv<'a> {
@@ -1512,6 +1550,7 @@ pub fn simulate_prior_predictive(
     let data = bind_declared_data(&meta, data)?;
     let free_specs = free_specs(&meta, &data)?;
     let sites = meta.resolved_stochastic_sites();
+    validate_prior_predictive_vector_bound_owners(&sites, &free_specs)?;
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
     let mut draws = Vec::with_capacity(settings.num_draws);
     let mut site_specs: Option<Vec<PriorPredictiveSite>> = None;
