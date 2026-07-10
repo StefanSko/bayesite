@@ -117,6 +117,18 @@ allowed exception and should only move bytes across the boundary.
   parity, transform/layout checks, sampler mechanics, analytic targets, and
   only then optional oracle comparisons (`jaxstanv5`, CmdStan, SBC reports).
 
+## Changelog and releases
+
+- `CHANGELOG.md` is the curated user-facing history. Every user-visible PR
+  updates its `Unreleased` section, or explains in the PR why no entry is
+  needed. Internal implementation notes are not a substitute.
+- Release preparation moves `Unreleased` entries into one dated version
+  section, updates both `crates/core/Cargo.toml` and `Cargo.lock`, and tags the
+  reviewed `main` commit only after the full validation ladder passes.
+- The complete procedure is in [`docs/releasing.md`](docs/releasing.md).
+  `CLAUDE.md` is a symlink to this file so both agent entry points carry the
+  same rules.
+
 ## Validation
 
 From this repository:
