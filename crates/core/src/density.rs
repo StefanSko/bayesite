@@ -1,7 +1,7 @@
 //! Distribution log densities as tape graphs.
 //!
 //! Each builder mirrors the corresponding `log_prob` in
-//! `src/jaxstanv5/distributions/` operation for operation (same formula
+//! `bayesjax` distributions operation for operation (same formula
 //! structure, same support masking, same clipping constants), so that f64
 //! results agree with the JAX reference to rounding error.
 

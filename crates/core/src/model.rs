@@ -1,7 +1,7 @@
 //! Bound model evaluation: data binding, constraint transforms, and the
 //! log density with its gradient.
 //!
-//! Mirrors `src/jaxstanv5/compiler/core.py`: the unconstrained vector `q`
+//! Mirrors `bayesjax/compiler/core.py`: the unconstrained vector `q`
 //! is split per the packing-order guarantee, constraints contribute their
 //! log-Jacobians, and stochastic sites accumulate in document order.
 

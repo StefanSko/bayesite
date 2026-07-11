@@ -5,7 +5,7 @@ conformance path**.
 
 - Agent path: one Bayesite binary, no Python, no package manager, no NumPy.
 - Development path: uses a pinned `nuts-rs` checkout as an independent NUTS
-  oracle and may also use `jaxstanv5`, JAX/BlackJAX, CmdStan, and report
+  oracle and may also use `bayesjax`, JAX/BlackJAX, CmdStan, and report
   generators as explicit additional oracles.
 
 The core crate must stay zero-dependency. The mandatory `nuts-rs` oracle is a
@@ -142,19 +142,20 @@ manual dispatch, and release tags.
 
 ### G7 — Cross-backend posterior comparison
 
-Optional local conformance gate using `jaxstanv5` + BlackJAX as an oracle.
+Optional local conformance gate using `bayesjax` + BlackJAX as an oracle.
 Compare posterior summaries over the golden corpus, not bit-identical draws:
 
 ```sh
-uv run scripts/check_rust_backend_posterior.py --jaxstanv5-path ../jaxstanv5
+uv run scripts/check_rust_backend_posterior.py
 ```
 
+The script pins `bayesjax==0.5.0` exactly. Pass
+`--bayescycle-path ../bayescycle` only to test an unpublished monorepo checkout.
 This gate must not become part of the default agent path. The conformance CI
-workflow also runs it on a schedule, manual dispatch, and release tags when the
-same-owner `jaxstanv5` checkout is available, so cross-backend drift is visible
-without adding Python/JAX to the shipped binary. The CI checkout is pinned to
-jaxstanv5 commit `91826d24d11690057d31fb1be75f02075bd2c26d`. The bayes*
-repositories are public; the CI checkout needs no credentials.
+workflow also runs it on a schedule, manual dispatch, and release tags, so
+cross-backend drift is visible without adding Python/JAX to the shipped binary.
+After each Bayescycle release, the pin advances in a reviewed Bayesite change
+only after G7 passes.
 
 ### G8 — CmdStan comparison
 
@@ -175,7 +176,7 @@ provided declared data. G9 pins:
 - analytic scalar Normal and Bernoulli simulation checks.
 
 Current limitation: prior predictive supports directly assignable stochastic
-sites only. Broader analytic summary checks and `jaxstanv5` reference
+sites only. Broader analytic summary checks and `bayesjax` reference
 comparisons remain future G9 conformance work.
 
 ### G10 — Simulation and recovery checks
@@ -268,5 +269,5 @@ python3 scripts/check_validation_ladder.py --nuts-rs-path /tmp/nuts-rs
 Optional oracle-backed posterior comparison:
 
 ```sh
-python3 scripts/check_validation_ladder.py --posterior --jaxstanv5-path ../jaxstanv5
+python3 scripts/check_validation_ladder.py --posterior
 ```

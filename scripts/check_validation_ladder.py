@@ -3,7 +3,7 @@
 
 The default path uses Rust/Cargo tools, committed fixtures, and a pinned
 nuts-rs checkout for independent NUTS statistical validation. Optional
-jaxstanv5 gates may use Python/JAX/BlackJAX, but those are never required
+bayesjax gates may use Python/JAX/BlackJAX, but those are never required
 for the agent execution path.
 """
 
@@ -178,9 +178,6 @@ def _posterior_command(args: argparse.Namespace) -> list[str]:
     command = [
         "uv",
         "run",
-        "--project",
-        str(args.jaxstanv5_path if args.jaxstanv5_path is not None else Path("../jaxstanv5")),
-        "python",
         "scripts/check_rust_backend_posterior.py",
         "--draws",
         str(args.posterior_draws),
@@ -189,8 +186,8 @@ def _posterior_command(args: argparse.Namespace) -> list[str]:
         "--chains",
         str(args.posterior_chains),
     ]
-    if args.jaxstanv5_path is not None:
-        command.extend(["--jaxstanv5-path", str(args.jaxstanv5_path)])
+    if args.bayescycle_path is not None:
+        command.extend(["--bayescycle-path", str(args.bayescycle_path)])
     return command
 
 
@@ -219,13 +216,13 @@ def main() -> None:
     parser.add_argument(
         "--posterior",
         action="store_true",
-        help="also run the optional jaxstanv5/BlackJAX posterior oracle gate",
+        help="also run the optional bayesjax/BlackJAX posterior oracle gate",
     )
     parser.add_argument(
-        "--jaxstanv5-path",
+        "--bayescycle-path",
         type=Path,
         default=None,
-        help="path to a jaxstanv5 checkout for the optional posterior oracle gate",
+        help="override the pinned bayesjax release with a bayescycle checkout",
     )
     parser.add_argument("--posterior-draws", type=int, default=1000)
     parser.add_argument("--posterior-warmup", type=int, default=500)
@@ -276,7 +273,7 @@ def main() -> None:
     if args.posterior:
         if shutil.which("uv") is None:
             sys.exit("G7 posterior oracle requires uv")
-        _run("G7 jaxstanv5/BlackJAX posterior oracle", _posterior_command(args))
+        _run("G7 bayesjax/BlackJAX posterior oracle", _posterior_command(args))
 
     print("\nvalidation ladder passed")
 

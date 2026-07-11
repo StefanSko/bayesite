@@ -29,13 +29,13 @@ demo-assets:
 demo:
     python3 -m http.server 8000 --bind 127.0.0.1
 
-# Optional cross-backend posterior comparison over the golden corpus (needs uv
-# and a jaxstanv5 checkout or installation).
-check-posterior jaxstanv5_path="":
+# Optional cross-backend posterior comparison over the golden corpus. Uses the
+# pinned bayesjax release by default; pass a bayescycle checkout to override it.
+check-posterior bayescycle_path="":
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ -n "{{jaxstanv5_path}}" ]]; then
-        uv run scripts/check_rust_backend_posterior.py --jaxstanv5-path "{{jaxstanv5_path}}"
+    if [[ -n "{{bayescycle_path}}" ]]; then
+        uv run scripts/check_rust_backend_posterior.py --bayescycle-path "{{bayescycle_path}}"
     else
         uv run scripts/check_rust_backend_posterior.py
     fi

@@ -295,7 +295,7 @@ pub fn ndjson_lines_with_model_data_fingerprint(
     }
 
     // Cross-chain R-hat / ESS per parameter: max over coordinates for
-    // R-hat, min for ESS, matching jaxstanv5.diagnostics conventions.
+    // R-hat, min for ESS, matching bayesjax diagnostics conventions.
     let mut rhat_entries = Vec::new();
     let mut ess_entries = Vec::new();
     for (param_idx, (name, shape)) in packing.iter().enumerate() {

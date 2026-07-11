@@ -115,7 +115,7 @@ allowed exception and should only move bytes across the boundary.
 - Follow the validation ladder in `docs/validation-ladder.md`: start from
   committed IR fixtures, prove decode/protocol behavior, then logp/gradient
   parity, transform/layout checks, sampler mechanics, analytic targets, and
-  only then optional oracle comparisons (`jaxstanv5`, CmdStan, SBC reports).
+  only then optional oracle comparisons (`bayesjax`, CmdStan, SBC reports).
 
 ## Changelog and releases
 
@@ -139,9 +139,12 @@ python3 scripts/check_validation_ladder.py
 
 Equivalent cargo gates remain in `just check-cargo`.
 
-Optional cross-backend checks against the Python producer should use a pinned
-`jaxstanv5` checkout and must not become part of the default agent path:
+Optional cross-backend checks use the exact `bayesjax` release pinned in
+`scripts/check_rust_backend_posterior.py` and must not become part of the
+default agent path:
 
 ```sh
-python3 scripts/check_validation_ladder.py --posterior --jaxstanv5-path ../jaxstanv5
+python3 scripts/check_validation_ladder.py --posterior
 ```
+
+Pass `--bayescycle-path ../bayescycle` only to test an unpublished checkout.

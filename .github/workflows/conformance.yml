@@ -14,9 +14,6 @@ on:
 permissions:
   contents: read
 
-env:
-  JAXSTANV5_REV: 91826d24d11690057d31fb1be75f02075bd2c26d
-
 jobs:
   nuts-rs-oracle:
     name: G6 nuts-rs oracle
@@ -43,7 +40,7 @@ jobs:
         run: python3 scripts/check_nuts_rs_oracle.py --nuts-rs-path /tmp/nuts-rs
 
   posterior-oracle:
-    name: G7 jaxstanv5 posterior oracle
+    name: G7 bayesjax posterior oracle
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -51,19 +48,9 @@ jobs:
         with:
           path: bayesite
 
-      - uses: actions/checkout@v4
-        with:
-          repository: StefanSko/jaxstanv5
-          ref: ${{ env.JAXSTANV5_REV }}
-          path: jaxstanv5
-
       - uses: astral-sh/setup-uv@v5
 
       - name: Run G7 cross-backend posterior oracle
         working-directory: bayesite
         shell: bash
-        run: |
-          uv run \
-            --project ../jaxstanv5 \
-            python scripts/check_rust_backend_posterior.py \
-            --jaxstanv5-path ../jaxstanv5
+        run: uv run scripts/check_rust_backend_posterior.py
