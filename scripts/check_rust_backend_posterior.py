@@ -2,8 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "blackjax>=1.2.0",
-#   "jax>=0.6.0",
+#   "bayesjax==0.5.0",
 # ]
 # ///
 """Differential posterior check: Rust backend vs JAX backend, golden corpus.
@@ -15,8 +14,10 @@ plus convergence gates (R-hat, ESS, divergence rate) on the Rust run.
 
 Run from the repository root:
 
-    uv run scripts/check_rust_backend_posterior.py \
-        --jaxstanv5-path ../jaxstanv5 [--draws N] [--warmup N]
+    uv run scripts/check_rust_backend_posterior.py [--draws N] [--warmup N]
+
+Pass ``--bayescycle-path ../bayescycle`` to override the pinned release with
+an unpublished monorepo checkout.
 
 Exits nonzero on the first failed comparison; output is one line per
 parameter so failures are attributable.
@@ -34,17 +35,17 @@ import tempfile
 from pathlib import Path
 
 
-def _bootstrap_jaxstanv5_path() -> None:
+def _bootstrap_bayescycle_path() -> None:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--jaxstanv5-path", type=Path, default=None)
+    parser.add_argument("--bayescycle-path", type=Path, default=None)
     args, _ = parser.parse_known_args()
-    if args.jaxstanv5_path is None:
+    if args.bayescycle_path is None:
         return
-    source_path = args.jaxstanv5_path / "src"
-    sys.path.insert(0, str(source_path if source_path.exists() else args.jaxstanv5_path))
+    for package in ("bayeswire", "bayesjax"):
+        sys.path.insert(0, str(args.bayescycle_path / "packages" / package / "src"))
 
 
-_bootstrap_jaxstanv5_path()
+_bootstrap_bayescycle_path()
 
 import jax
 
@@ -54,9 +55,9 @@ import jax.numpy as jnp  # noqa: E402
 
 REPO_ROOT = Path(__file__).parent.parent
 
-from jaxstanv5.inference import sample  # noqa: E402
+from bayesjax.inference import sample  # noqa: E402
+from bayesjax.model import bind_model  # noqa: E402
 from bayeswire.ir import bindable_from_meta, meta_from_dict  # noqa: E402
-from jaxstanv5.model import bind_model  # noqa: E402
 
 FIXTURE_DIR = REPO_ROOT / "tests" / "golden_ir" / "fixtures"
 CRATE_DIR = REPO_ROOT / "crates" / "core"
@@ -184,10 +185,10 @@ def main() -> None:
     parser.add_argument("--chains", type=int, default=4)
     parser.add_argument("--seed", type=int, default=20240608)
     parser.add_argument(
-        "--jaxstanv5-path",
+        "--bayescycle-path",
         type=Path,
         default=None,
-        help="path to a jaxstanv5 checkout or importable source tree",
+        help="path to a bayescycle monorepo checkout containing bayesjax",
     )
     args = parser.parse_args()
 

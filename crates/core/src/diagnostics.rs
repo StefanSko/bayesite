@@ -1,5 +1,5 @@
 //! Split R-hat and effective sample size, matching
-//! `blackjax.diagnostics` (which `jaxstanv5.diagnostics` wraps) value for
+//! `blackjax.diagnostics` (which `bayesjax.diagnostics` wraps) value for
 //! value.
 //!
 //! The autocovariance is computed directly (O(N^2)) instead of via FFT;
@@ -36,7 +36,7 @@ pub fn potential_scale_reduction(chains: Chains<'_>) -> f64 {
     ((between / within + num_samples - 1.0) / num_samples).sqrt()
 }
 
-/// Split R-hat as `jaxstanv5.diagnostics.rhat` computes it: a single chain
+/// Split R-hat as `bayesjax.diagnostics.rhat` computes it: a single chain
 /// is split into halves first.
 pub fn split_rhat(chains: Chains<'_>) -> f64 {
     if chains.len() > 1 {

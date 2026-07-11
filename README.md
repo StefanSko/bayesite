@@ -139,13 +139,14 @@ Equivalent `just` entry point, if installed:
 just check
 ```
 
-Optional posterior conformance against a pinned `jaxstanv5` checkout:
+Optional posterior conformance against the exactly pinned `bayesjax` release:
 
 ```sh
-python3 scripts/check_validation_ladder.py \
-  --posterior \
-  --jaxstanv5-path ../jaxstanv5
+python3 scripts/check_validation_ladder.py --posterior
 ```
+
+Pass `--bayescycle-path ../bayescycle` to test an unpublished monorepo checkout
+instead.
 
 The optional oracle path may use Python/JAX/BlackJAX. It is not part of the
 agent execution path. GitHub Actions also runs G6/G7 conformance on a schedule,
@@ -226,7 +227,7 @@ Bayesite rejects ambiguous stdin use before reading.
 - **IR/evaluation:** every golden fixture in `tests/golden_ir/fixtures/` must
   match committed JAX log-density and gradient values.
 - **Sampler:** fixed-seed statistical tests cover analytic targets; optional
-  conformance compares posterior summaries against `jaxstanv5`/BlackJAX.
+  conformance compares posterior summaries against `bayesjax`/BlackJAX.
 - **Diagnostics:** split R-hat and ESS match a committed BlackJAX fixture.
 - **Special functions:** checked against committed high-precision tables.
 - **PRNG:** splitmix64 and xoshiro256++ are pinned to reference vectors.
