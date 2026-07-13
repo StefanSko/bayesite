@@ -60,6 +60,7 @@ impl Default for RecoverSettings {
 pub struct SbcSettings {
     pub replicates: usize,
     pub chains: u64,
+    pub thin: usize,
     pub sampler: Settings,
 }
 
@@ -68,6 +69,7 @@ impl Default for SbcSettings {
         Self {
             replicates: 100,
             chains: 4,
+            thin: 1,
             sampler: Settings::default(),
         }
     }
@@ -154,8 +156,25 @@ fn validate_sbc_seed_span(seed: u64, replicates: usize) -> Result<(), Error> {
     Ok(())
 }
 
-fn sbc_rank_draws(chains: u64, num_draws: usize) -> Result<usize, Error> {
-    let rank_draws = (chains as u128) * (num_draws as u128);
+fn validate_sbc_thin(thin: usize, num_draws: usize) -> Result<(), Error> {
+    if thin == 0 {
+        return Err(invalid("sbc sample.thin must be at least 1"));
+    }
+    if thin > i64::MAX as usize {
+        return Err(invalid(
+            "sbc sample.thin must be in 1..=9223372036854775807 because workflow reports thin as a JSON integer",
+        ));
+    }
+    if !num_draws.is_multiple_of(thin) {
+        return Err(invalid(
+            "sbc sample.thin must divide sample.draws exactly; pick a thin that divides sample.draws",
+        ));
+    }
+    Ok(())
+}
+
+fn sbc_rank_draws(chains: u64, num_draws: usize, thin: usize) -> Result<usize, Error> {
+    let rank_draws = (chains as u128) * ((num_draws / thin) as u128);
     if rank_draws == 0 || rank_draws > i64::MAX as u128 {
         return Err(invalid(
             "sbc rank_draws must be in 1..=9223372036854775807 because workflow reports rank_draws as a JSON integer; reduce sample.chains or sample.draws",
@@ -1126,6 +1145,7 @@ fn parameter_chain_values(
 fn rank_and_diagnostics(
     truth: &Tensor,
     chain_values: &[Vec<Vec<f64>>],
+    thin: usize,
 ) -> (Vec<i64>, Vec<i64>, Vec<f64>, Vec<f64>) {
     let size = truth.shape().iter().product::<usize>().max(1);
     let mut ranks = Vec::with_capacity(size);
@@ -1137,7 +1157,7 @@ fn rank_and_diagnostics(
         let mut rank = 0i64;
         let mut ties = 0i64;
         for chain in chain_values {
-            for draw in chain {
+            for draw in chain.iter().skip(thin - 1).step_by(thin) {
                 if draw[coord] < truth_value {
                     rank += 1;
                 } else if draw[coord] == truth_value {
@@ -1521,11 +1541,13 @@ pub fn sbc_report(
     validate_sbc_replicates(settings.replicates)?;
     validate_workflow_chains(settings.chains, "sbc")?;
     validate_workflow_draws(settings.sampler.num_draws, "sbc")?;
+    validate_sbc_thin(settings.thin, settings.sampler.num_draws)?;
     validate_workflow_sampler_counts(&settings.sampler, "sbc")?;
     validate_workflow_treedepth(settings.sampler.max_treedepth, "sbc")?;
     validate_reportable_seed(seed, "sbc")?;
     validate_sbc_seed_span(seed, settings.replicates)?;
-    let rank_draws = sbc_rank_draws(settings.chains, settings.sampler.num_draws)?;
+    let rank_draws = sbc_rank_draws(settings.chains, settings.sampler.num_draws, settings.thin)?;
+    let posterior_draws = sbc_rank_draws(settings.chains, settings.sampler.num_draws, 1)?;
     let rank_bin_count = workflow_rank_bin_count(rank_draws, "sbc")?;
     let declared_data_count = declared_data.len();
     let declared_data_order = entry_order_value(&declared_data);
@@ -1585,7 +1607,7 @@ pub fn sbc_report(
                 .or_insert_with(|| stochastic_site.clone());
             let chain_values = parameter_chain_values(&fit.constrained_chains, param_idx);
             let (ranks, tie_counts, rhats, esses) =
-                rank_and_diagnostics(truth_value, &chain_values);
+                rank_and_diagnostics(truth_value, &chain_values, settings.thin);
             if !param_histograms.contains_key(name) {
                 param_order.push(name.clone());
             }
@@ -1662,7 +1684,10 @@ pub fn sbc_report(
                     ),
                     ("seed_schedule".to_string(), sbc_seed_schedule_value()),
                     ("rank_draws".to_string(), Value::Int(rank_draws as i64)),
-                    ("posterior_draws".to_string(), Value::Int(rank_draws as i64)),
+                    (
+                        "posterior_draws".to_string(),
+                        Value::Int(posterior_draws as i64),
+                    ),
                     (
                         "posterior_draws_artifact_kind".to_string(),
                         Value::Str(POSTERIOR_DRAWS.kind.to_string()),
@@ -1804,7 +1829,10 @@ pub fn sbc_report(
                 "prior_predictive_draws_artifact_scope".to_string(),
                 Value::Str(PRIOR_PREDICTIVE_ARTIFACT.scope.to_string()),
             ),
-            ("posterior_draws".to_string(), Value::Int(rank_draws as i64)),
+            (
+                "posterior_draws".to_string(),
+                Value::Int(posterior_draws as i64),
+            ),
             (
                 "posterior_draws_artifact_kind".to_string(),
                 Value::Str(POSTERIOR_DRAWS.kind.to_string()),
@@ -1998,7 +2026,7 @@ pub fn sbc_report(
                 ("rank_draws".to_string(), Value::Int(rank_draws as i64)),
                 (
                     "posterior_draws_per_replicate".to_string(),
-                    Value::Int(rank_draws as i64),
+                    Value::Int(posterior_draws as i64),
                 ),
                 (
                     "posterior_draws_artifact_kind".to_string(),
@@ -2197,10 +2225,11 @@ pub fn sbc_report(
             "chain_count_per_replicate".to_string(),
             Value::Int(settings.chains as i64),
         ),
+        ("thin".to_string(), Value::Int(settings.thin as i64)),
         ("rank_draws".to_string(), Value::Int(rank_draws as i64)),
         (
             "posterior_draws_per_replicate".to_string(),
-            Value::Int(rank_draws as i64),
+            Value::Int(posterior_draws as i64),
         ),
         (
             "posterior_draws_artifact_kind".to_string(),
@@ -2298,4 +2327,31 @@ pub fn sbc_report(
         ),
     ]);
     json::write(&report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rank_and_diagnostics;
+    use crate::tensor::Tensor;
+
+    #[test]
+    fn rank_thinning_selects_last_draw_of_each_stride_and_preserves_thin_one() {
+        let truth = Tensor::scalar(3.5);
+        let chains = vec![vec![
+            vec![0.0],
+            vec![10.0],
+            vec![1.0],
+            vec![2.0],
+            vec![3.0],
+            vec![4.0],
+        ]];
+
+        let (full_ranks, full_ties, _, _) = rank_and_diagnostics(&truth, &chains, 1);
+        assert_eq!(full_ranks, [4]);
+        assert_eq!(full_ties, [0]);
+
+        let (thinned_ranks, thinned_ties, _, _) = rank_and_diagnostics(&truth, &chains, 2);
+        assert_eq!(thinned_ranks, [1]);
+        assert_eq!(thinned_ties, [0]);
+    }
 }

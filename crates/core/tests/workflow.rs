@@ -553,6 +553,7 @@ fn workflow_reports_preserve_free_value_parameter_order() {
     let sbc_settings = SbcSettings {
         replicates: 2,
         chains: 1,
+        thin: 1,
         sampler: report_sampler(),
     };
     let report = json::parse(&sbc_report(meta, vec![], &sbc_settings, 29).unwrap()).unwrap();
@@ -560,6 +561,7 @@ fn workflow_reports_preserve_free_value_parameter_order() {
         report.get("workflow_format").and_then(Value::as_str),
         Some("v0-provisional")
     );
+    assert_eq!(report.get("thin").and_then(Value::as_i64), Some(1));
     assert_eq!(
         report
             .get("posterior_draws_per_replicate")
@@ -707,6 +709,7 @@ fn workflow_reports_parameter_coordinate_order() {
     let sbc_settings = SbcSettings {
         replicates: 1,
         chains: 2,
+        thin: 1,
         sampler: report_sampler(),
     };
     let sbc = json::parse(&sbc_report(sbc_meta, data, &sbc_settings, 29).unwrap()).unwrap();
@@ -811,6 +814,7 @@ fn workflow_reports_declared_integer_data_as_json_integers() {
     let sbc_settings = SbcSettings {
         replicates: 1,
         chains: 2,
+        thin: 1,
         sampler: report_sampler(),
     };
     let sbc = json::parse(&sbc_report(sbc_meta, data, &sbc_settings, 29).unwrap()).unwrap();
@@ -1181,6 +1185,7 @@ fn workflow_reports_source_stochastic_sites() {
     let sbc_settings = SbcSettings {
         replicates: 1,
         chains: 1,
+        thin: 1,
         sampler: report_sampler(),
     };
     let sbc = json::parse(&sbc_report(sbc_meta, vec![], &sbc_settings, 29).unwrap()).unwrap();
@@ -1306,6 +1311,7 @@ fn workflow_reports_shape_preserving_generated_observed_integer_flags() {
     let sbc_settings = SbcSettings {
         replicates: 1,
         chains: 1,
+        thin: 1,
         sampler: report_sampler(),
     };
     let sbc = json::parse(&sbc_report(sbc_meta, data, &sbc_settings, 29).unwrap()).unwrap();
@@ -1398,6 +1404,39 @@ fn workflow_reports_shape_preserving_generated_observed_integer_flags() {
 }
 
 #[test]
+fn sbc_report_uses_thinned_rank_support_but_full_posterior_diagnostics() {
+    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let settings = SbcSettings {
+        replicates: 1,
+        chains: 1,
+        thin: 4,
+        sampler: report_sampler(),
+    };
+    let report = json::parse(&sbc_report(meta, vec![], &settings, 29).unwrap()).unwrap();
+    assert_eq!(report.get("thin").and_then(Value::as_i64), Some(4));
+    assert_eq!(report.get("rank_draws").and_then(Value::as_i64), Some(5));
+    assert_eq!(
+        report
+            .get("posterior_draws_per_replicate")
+            .and_then(Value::as_i64),
+        Some(20)
+    );
+    assert_eq!(
+        report
+            .get("rank_bounds")
+            .and_then(|bounds| bounds.get("max"))
+            .and_then(Value::as_i64),
+        Some(5)
+    );
+    let Value::Object(parameters) = report.get("parameters").unwrap() else {
+        panic!("parameters must be an object");
+    };
+    for (_, parameter) in parameters {
+        assert_eq!(parameter.get("rank_draws").and_then(Value::as_i64), Some(5));
+    }
+}
+
+#[test]
 fn workflow_reports_reject_missing_simulated_truth_for_free_value() {
     let meta = decode_model(&bounded_rates_without_level_truth_site()).unwrap();
     let recover_settings = RecoverSettings {
@@ -1416,6 +1455,7 @@ fn workflow_reports_reject_missing_simulated_truth_for_free_value() {
     let sbc_settings = SbcSettings {
         replicates: 1,
         chains: 1,
+        thin: 1,
         sampler: report_sampler(),
     };
     let err = sbc_report(meta, vec![], &sbc_settings, 29).unwrap_err();
@@ -1448,6 +1488,7 @@ fn sbc_report_rejects_too_few_diagnostic_draws() {
     let settings = SbcSettings {
         replicates: 1,
         chains: 1,
+        thin: 1,
         sampler: short_sampler(),
     };
     let err = sbc_report(meta, vec![], &settings, 29).unwrap_err();
@@ -1455,6 +1496,28 @@ fn sbc_report_rejects_too_few_diagnostic_draws() {
     assert_eq!(
         err.message,
         "sbc sample.draws must be at least 4 because workflow reports include diagnostics"
+    );
+}
+
+#[test]
+fn sbc_report_rejects_invalid_thinning() {
+    let meta = decode_model(&fixture_ir("bounded_rates")).unwrap();
+    let mut settings = SbcSettings {
+        replicates: 1,
+        chains: 1,
+        thin: 0,
+        sampler: report_sampler(),
+    };
+    let err = sbc_report(meta.clone(), vec![], &settings, 29).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert_eq!(err.message, "sbc sample.thin must be at least 1");
+
+    settings.thin = 3;
+    let err = sbc_report(meta, vec![], &settings, 29).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert_eq!(
+        err.message,
+        "sbc sample.thin must divide sample.draws exactly; pick a thin that divides sample.draws"
     );
 }
 
@@ -1480,6 +1543,7 @@ fn sbc_report_rejects_too_large_treedepth() {
     let settings = SbcSettings {
         replicates: 1,
         chains: 1,
+        thin: 1,
         sampler: too_deep_sampler(),
     };
     let err = sbc_report(meta, vec![], &settings, 29).unwrap_err();
@@ -1522,6 +1586,7 @@ fn sbc_report_rejects_unreportable_sampler_counts() {
     let settings = SbcSettings {
         replicates: 1,
         chains: 1,
+        thin: 1,
         sampler: unreportable_draws_sampler(),
     };
     let err = sbc_report(meta, vec![], &settings, 29).unwrap_err();
@@ -1535,6 +1600,7 @@ fn sbc_report_rejects_unreportable_sampler_counts() {
     let settings = SbcSettings {
         replicates: 1,
         chains: 1,
+        thin: 1,
         sampler: unreportable_warmup_sampler(),
     };
     let err = sbc_report(meta, vec![], &settings, 29).unwrap_err();
@@ -1567,6 +1633,7 @@ fn sbc_report_rejects_unreportable_chain_count() {
     let settings = SbcSettings {
         replicates: 1,
         chains: i64::MAX as u64 + 1,
+        thin: 1,
         sampler: report_sampler(),
     };
     let err = sbc_report(meta, vec![], &settings, 29).unwrap_err();
@@ -1583,6 +1650,7 @@ fn sbc_report_rejects_unreportable_replicate_count() {
     let settings = SbcSettings {
         replicates: i64::MAX as usize + 1,
         chains: 1,
+        thin: 1,
         sampler: report_sampler(),
     };
     let err = sbc_report(meta, vec![], &settings, 29).unwrap_err();
@@ -1599,6 +1667,7 @@ fn sbc_report_rejects_unreportable_rank_draws() {
     let settings = SbcSettings {
         replicates: 1,
         chains: i64::MAX as u64,
+        thin: 1,
         sampler: report_sampler(),
     };
     let err = sbc_report(meta, vec![], &settings, 29).unwrap_err();
@@ -1615,6 +1684,7 @@ fn sbc_report_rejects_unreportable_rank_bin_count() {
     let settings = SbcSettings {
         replicates: 1,
         chains: 1,
+        thin: 1,
         sampler: Settings {
             num_warmup: 0,
             num_draws: i64::MAX as usize,
@@ -1700,6 +1770,7 @@ fn sbc_report_uses_reportable_replicate_seeds() {
     let settings = SbcSettings {
         replicates: 2,
         chains: 1,
+        thin: 1,
         sampler: report_sampler(),
     };
     let report = json::parse(&sbc_report(meta, vec![], &settings, 29).unwrap()).unwrap();

@@ -682,6 +682,7 @@ fn sbc_reports_ranks_without_verdict() {
         Some("replicated_simulated_datasets")
     );
     assert_eq!(payload.get("replicates").and_then(Value::as_i64), Some(2));
+    assert_eq!(payload.get("thin").and_then(Value::as_i64), Some(1));
     assert_eq!(
         payload.get("replicate_count").and_then(Value::as_i64),
         Some(2)
@@ -4298,6 +4299,13 @@ fn workflow_scenarios_reject_unreportable_count_fields_as_json() {
             "sbc scenario replicates must be in 1..=9223372036854775807 because workflow reports replicates as JSON integers",
         ),
         (
+            "sbc-thin",
+            "sbc",
+            "sbc_scenario",
+            r#""replicates": 1, "sample": {"draws": 4, "thin": 9223372036854775808}"#,
+            "sbc scenario sample.thin must be in 1..=9223372036854775807 because workflow reports sample.thin as a JSON integer",
+        ),
+        (
             "sbc-max-treedepth",
             "sbc",
             "sbc_scenario",
@@ -4337,6 +4345,55 @@ fn workflow_scenarios_reject_unreportable_count_fields_as_json() {
             payload.get("message").and_then(Value::as_str),
             Some(message),
             "{name}"
+        );
+    }
+}
+
+#[test]
+fn sbc_scenario_rejects_invalid_thinning_as_json() {
+    let doc = json::parse(&fixture_text("bounded_rates")).unwrap();
+    let dir = unique_temp_dir("bayesite-test-sbc-invalid-thin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let model_path = dir.join("model.json");
+    std::fs::write(&model_path, json::write(doc.get("ir").unwrap()).unwrap()).unwrap();
+
+    for (thin, message) in [
+        ("0", "sbc scenario sample.thin must be at least 1"),
+        (
+            "3",
+            "sbc scenario sample.thin must divide sample.draws exactly; pick a thin that divides sample.draws",
+        ),
+    ] {
+        let scenario_path = dir.join(format!("thin-{thin}.json"));
+        std::fs::write(
+            &scenario_path,
+            format!(
+                r#"{{
+                    "sbc_scenario": "v0-provisional",
+                    "data": {{}},
+                    "seed": 29,
+                    "replicates": 1,
+                    "sample": {{"draws": 20, "thin": {thin}}}
+                }}"#
+            ),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+            .args([
+                "sbc",
+                "--model",
+                model_path.to_str().unwrap(),
+                "--scenario",
+                scenario_path.to_str().unwrap(),
+            ])
+            .output()
+            .expect("bayesite runs");
+        assert!(!output.status.success(), "thin={thin}");
+        let payload = json::parse(String::from_utf8(output.stderr).unwrap().trim()).unwrap();
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some(message),
+            "thin={thin}"
         );
     }
 }
