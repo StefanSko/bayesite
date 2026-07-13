@@ -28,6 +28,7 @@ RUNNER_SRC = REPO_ROOT / "tools" / "oracles" / "nuts-rs-runner" / "src" / "main.
 NUTS_RS_REV = REPO_ROOT / "NUTS_RS_REV"
 EXPECTED_NUTS_RS_REV = NUTS_RS_REV.read_text(encoding="utf-8").strip()
 MAX_Z = 5.0
+COMBINED_MAX_Z = 4.0
 MAX_RHAT = 1.05
 MAX_DIVERGENCE_RATE = 0.01
 
@@ -61,6 +62,56 @@ class StatResult:
     bayesite_truth_z: float
     nuts_rs_truth_z: float
     cross_z: float
+
+
+@dataclass(frozen=True)
+class AggregateResult:
+    target: str
+    stat: str
+    comparison: str
+    mean_delta: float
+    stouffer_z: float
+    advisory_t: float | None
+    passed: bool
+
+
+def signed_z(delta: float, scale: float) -> float:
+    """Return a signed standardized delta, failing closed for invalid scales."""
+    if not math.isfinite(scale) or scale <= 0.0:
+        return math.copysign(float("inf"), delta)
+    return delta / scale
+
+
+def stouffer_z(z_scores: Sequence[float]) -> float:
+    """Combine independent signed z-scores with Stouffer's method."""
+    if not z_scores:
+        raise ValueError("Stouffer combination requires at least one z-score")
+    return sum(z_scores) / math.sqrt(len(z_scores))
+
+
+def advisory_t_statistic(deltas: Sequence[float]) -> float | None:
+    """Return the one-sample t-statistic, or None when variance is unavailable."""
+    if len(deltas) < 2:
+        return None
+    delta_mean = mean(deltas)
+    variance = sum((delta - delta_mean) ** 2 for delta in deltas) / (len(deltas) - 1)
+    if variance == 0.0:
+        return None
+    return delta_mean / (math.sqrt(variance) / math.sqrt(len(deltas)))
+
+
+def per_check_passes(z: float, max_z: float = MAX_Z) -> bool:
+    return math.isfinite(z) and abs(z) <= max_z
+
+
+def combined_passes(
+    z_scores: Sequence[float], max_z: float = COMBINED_MAX_Z
+) -> bool:
+    """Apply the aggregate gate, leaving the K=1 verdict to the coarse guard."""
+    if len(z_scores) < 2:
+        return True
+    combined = stouffer_z(z_scores)
+    return math.isfinite(combined) and abs(combined) <= max_z
 
 
 def _command_text(command: Sequence[str]) -> str:
@@ -398,12 +449,6 @@ def estimate(draws_by_chain: DrawsByChain, stat: StatFn, batches_per_chain: int)
     return Estimate(value=value, mcse=mcse, batch_count=len(batch_values))
 
 
-def z_score(delta: float, scale: float) -> float:
-    if not math.isfinite(scale) or scale <= 0.0:
-        return float("inf")
-    return abs(delta) / scale
-
-
 def split_rhat(draws_by_chain: DrawsByChain, dim: int) -> float:
     split_chains: list[list[float]] = []
     for chain in draws_by_chain:
@@ -460,9 +505,9 @@ def validate_target(
     for stat_name, truth, stat in stat_plan(target):
         bayes = estimate(bayesite_draws, stat, batches_per_chain)
         nuts = estimate(nuts_rs_draws, stat, batches_per_chain)
-        bayes_truth_z = z_score(bayes.value - truth, bayes.mcse)
-        nuts_truth_z = z_score(nuts.value - truth, nuts.mcse)
-        cross_z = z_score(bayes.value - nuts.value, math.hypot(bayes.mcse, nuts.mcse))
+        bayes_truth_z = signed_z(bayes.value - truth, bayes.mcse)
+        nuts_truth_z = signed_z(nuts.value - truth, nuts.mcse)
+        cross_z = signed_z(bayes.value - nuts.value, math.hypot(bayes.mcse, nuts.mcse))
         result = StatResult(
             target=target.name,
             stat=stat_name,
@@ -474,14 +519,18 @@ def validate_target(
             cross_z=cross_z,
         )
         results.append(result)
-        if bayes_truth_z > MAX_Z:
+        if not per_check_passes(bayes_truth_z):
             failures.append(
-                f"{target.name} {stat_name} Bayesite truth z {bayes_truth_z:.2f} > {MAX_Z}"
+                f"{target.name} {stat_name} Bayesite truth z {bayes_truth_z:+.2f}, |z| > {MAX_Z}"
             )
-        if nuts_truth_z > MAX_Z:
-            failures.append(f"{target.name} {stat_name} nuts-rs truth z {nuts_truth_z:.2f} > {MAX_Z}")
-        if cross_z > MAX_Z:
-            failures.append(f"{target.name} {stat_name} cross z {cross_z:.2f} > {MAX_Z}")
+        if not per_check_passes(nuts_truth_z):
+            failures.append(
+                f"{target.name} {stat_name} nuts-rs truth z {nuts_truth_z:+.2f}, |z| > {MAX_Z}"
+            )
+        if not per_check_passes(cross_z):
+            failures.append(
+                f"{target.name} {stat_name} cross z {cross_z:+.2f}, |z| > {MAX_Z}"
+            )
     return results, failures
 
 
@@ -504,21 +553,74 @@ def print_target_diagnostics(
 
 def print_stat_result(result: StatResult) -> None:
     status = "ok"
-    if (
-        result.bayesite_truth_z > MAX_Z
-        or result.nuts_rs_truth_z > MAX_Z
-        or result.cross_z > MAX_Z
+    if not all(
+        per_check_passes(z)
+        for z in (result.bayesite_truth_z, result.nuts_rs_truth_z, result.cross_z)
     ):
         status = "FAIL"
     print(
         f"{status:4s} {result.target:16s} {result.stat:9s} "
         f"truth {result.truth:9.4f} | "
         f"Bayesite {result.bayesite.value:10.4f} ± {result.bayesite.mcse:8.4f} "
-        f"z_truth {result.bayesite_truth_z:5.2f} | "
+        f"z_truth {result.bayesite_truth_z:+6.2f} | "
         f"nuts-rs {result.nuts_rs.value:10.4f} ± {result.nuts_rs.mcse:8.4f} "
-        f"z_truth {result.nuts_rs_truth_z:5.2f} | "
-        f"cross_z {result.cross_z:5.2f}"
+        f"z_truth {result.nuts_rs_truth_z:+6.2f} | "
+        f"cross_z {result.cross_z:+6.2f}"
     )
+
+
+def stat_comparisons(result: StatResult) -> list[tuple[str, float, float]]:
+    return [
+        ("bayesite-truth", result.bayesite.value - result.truth, result.bayesite_truth_z),
+        ("nuts-rs-truth", result.nuts_rs.value - result.truth, result.nuts_rs_truth_z),
+        (
+            "bayesite-nuts-rs",
+            result.bayesite.value - result.nuts_rs.value,
+            result.cross_z,
+        ),
+    ]
+
+
+def aggregate_stat_results(results: Sequence[StatResult]) -> list[AggregateResult]:
+    grouped: dict[tuple[str, str, str], tuple[list[float], list[float]]] = {}
+    for result in results:
+        for comparison, delta, z in stat_comparisons(result):
+            deltas, z_scores = grouped.setdefault(
+                (result.target, result.stat, comparison), ([], [])
+            )
+            deltas.append(delta)
+            z_scores.append(z)
+
+    aggregates: list[AggregateResult] = []
+    for (target, stat, comparison), (deltas, z_scores) in grouped.items():
+        aggregates.append(
+            AggregateResult(
+                target=target,
+                stat=stat,
+                comparison=comparison,
+                mean_delta=mean(deltas),
+                stouffer_z=stouffer_z(z_scores),
+                advisory_t=advisory_t_statistic(deltas),
+                passed=combined_passes(z_scores),
+            )
+        )
+    return aggregates
+
+
+def print_aggregate_results(results: Sequence[AggregateResult]) -> None:
+    print("\naggregate seed-replicated comparisons:")
+    print(
+        f"{'target':16s} {'statistic':9s} {'comparison':20s} "
+        f"{'mean delta':>12s} {'Stouffer Z':>11s} {'advisory t':>11s} verdict"
+    )
+    for result in results:
+        advisory = "n/a" if result.advisory_t is None else f"{result.advisory_t:+.3f}"
+        verdict = "ok" if result.passed else "FAIL"
+        print(
+            f"{result.target:16s} {result.stat:9s} {result.comparison:20s} "
+            f"{result.mean_delta:+12.5g} {result.stouffer_z:+11.3f} "
+            f"{advisory:>11s} {verdict}"
+        )
 
 
 def main() -> None:
@@ -528,9 +630,12 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=500)
     parser.add_argument("--chains", type=int, default=4)
     parser.add_argument("--seed", type=int, default=20240621)
+    parser.add_argument("--replicates", type=int, default=8)
     parser.add_argument("--batches-per-chain", type=int, default=8)
     args = parser.parse_args()
 
+    if args.replicates < 1:
+        sys.exit("nuts-rs oracle requires --replicates >= 1")
     if args.chains < 2:
         sys.exit("nuts-rs oracle requires --chains >= 2 for split R-hat")
     if args.draws < args.batches_per_chain * 2:
@@ -538,60 +643,95 @@ def main() -> None:
 
     targets = _targets()
     binary = build_bayesite()
-    nuts_draws, nuts_divergences = run_nuts_rs_runner(
-        args.nuts_rs_path,
-        targets,
-        seed=args.seed + 1,
-        chains=args.chains,
-        warmup=args.warmup,
-        draws=args.draws,
-    )
-
     all_results: list[StatResult] = []
     all_failures: list[str] = []
     total_draws = args.draws * args.chains
-    for target in targets:
-        bayes_draws, bayes_divergences = run_bayesite(
-            binary,
-            target,
-            seed=args.seed,
+
+    for replicate in range(args.replicates):
+        seed = args.seed + replicate
+        print(f"\n== replicate {replicate + 1}/{args.replicates}, seed {seed}", flush=True)
+        nuts_draws, nuts_divergences = run_nuts_rs_runner(
+            args.nuts_rs_path,
+            targets,
+            seed=seed,
             chains=args.chains,
             warmup=args.warmup,
             draws=args.draws,
         )
-        print_target_diagnostics(
-            target,
-            bayes_draws,
-            nuts_draws[target.name],
-            bayes_divergences,
-            nuts_divergences[target.name],
-            total_draws,
-        )
-        results, failures = validate_target(
-            target,
-            bayes_draws,
-            nuts_draws[target.name],
-            bayes_divergences,
-            nuts_divergences[target.name],
-            draws=args.draws,
-            chains=args.chains,
-            batches_per_chain=args.batches_per_chain,
-        )
-        for result in results:
-            print_stat_result(result)
-        all_results.extend(results)
-        all_failures.extend(failures)
+        for target in targets:
+            bayes_draws, bayes_divergences = run_bayesite(
+                binary,
+                target,
+                seed=seed,
+                chains=args.chains,
+                warmup=args.warmup,
+                draws=args.draws,
+            )
+            print_target_diagnostics(
+                target,
+                bayes_draws,
+                nuts_draws[target.name],
+                bayes_divergences,
+                nuts_divergences[target.name],
+                total_draws,
+            )
+            results, failures = validate_target(
+                target,
+                bayes_draws,
+                nuts_draws[target.name],
+                bayes_divergences,
+                nuts_divergences[target.name],
+                draws=args.draws,
+                chains=args.chains,
+                batches_per_chain=args.batches_per_chain,
+            )
+            for result in results:
+                print_stat_result(result)
+            all_results.extend(results)
+            all_failures.extend(f"seed {seed}: {failure}" for failure in failures)
 
+    per_check_total = 3 * len(all_results)
+    per_check_failed = sum(
+        not per_check_passes(z)
+        for result in all_results
+        for _, _, z in stat_comparisons(result)
+    )
+    diagnostic_failures = len(all_failures) - per_check_failed
+
+    aggregate_results: list[AggregateResult] = []
+    if args.replicates >= 2:
+        aggregate_results = aggregate_stat_results(all_results)
+        print_aggregate_results(aggregate_results)
+        for result in aggregate_results:
+            if not result.passed:
+                all_failures.append(
+                    f"{result.target} {result.stat} {result.comparison} Stouffer "
+                    f"Z {result.stouffer_z:+.3f}, |Z| > {COMBINED_MAX_Z}"
+                )
+
+    aggregate_failed = sum(not result.passed for result in aggregate_results)
+    aggregate_total = len(aggregate_results)
     if all_failures:
         print("\nstatistical oracle failures:", file=sys.stderr)
         for failure in all_failures:
             print(f"- {failure}", file=sys.stderr)
-        sys.exit(f"{len(all_failures)} nuts-rs oracle comparison(s) failed")
-    print(
-        f"\nnuts-rs statistical oracle passed: {len(targets)} targets, "
-        f"{len(all_results)} summary checks, z threshold {MAX_Z}, "
-        f"draws {args.draws} x chains {args.chains}"
+
+    status = "PASSED" if not all_failures else "FAILED"
+    combined_summary = (
+        f"combined |Z| threshold {COMBINED_MAX_Z}, pass/fail "
+        f"{aggregate_total - aggregate_failed}/{aggregate_failed}"
+        if args.replicates >= 2
+        else f"combined |Z| threshold {COMBINED_MAX_Z} disabled for K=1, pass/fail 0/0"
     )
+    print(
+        f"\nnuts-rs statistical oracle {status}: {len(targets)} targets, "
+        f"replicates {args.replicates}, per-check |z| threshold {MAX_Z}, pass/fail "
+        f"{per_check_total - per_check_failed}/{per_check_failed}; {combined_summary}; "
+        f"diagnostic failures {diagnostic_failures}; draws {args.draws} x chains {args.chains}",
+        flush=True,
+    )
+    if all_failures:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

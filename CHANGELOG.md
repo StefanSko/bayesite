@@ -8,6 +8,11 @@ versioned on their own.
 
 ## [Unreleased]
 
+### Changed
+
+- Replicate the G6 nuts-rs statistical oracle across deterministic seeds and
+  add signed Stouffer aggregation to detect small systematic sampler biases.
+
 ## [0.2.1] - 2026-07-10
 
 ### Added

@@ -169,6 +169,8 @@ def _nuts_rs_command(args: argparse.Namespace) -> list[str]:
         str(args.nuts_rs_warmup),
         "--chains",
         str(args.nuts_rs_chains),
+        "--replicates",
+        str(args.nuts_rs_replicates),
         "--batches-per-chain",
         str(args.nuts_rs_batches_per_chain),
     ]
@@ -212,6 +214,7 @@ def main() -> None:
     parser.add_argument("--nuts-rs-draws", type=int, default=1000)
     parser.add_argument("--nuts-rs-warmup", type=int, default=500)
     parser.add_argument("--nuts-rs-chains", type=int, default=4)
+    parser.add_argument("--nuts-rs-replicates", type=int, default=8)
     parser.add_argument("--nuts-rs-batches-per-chain", type=int, default=8)
     parser.add_argument(
         "--posterior",
