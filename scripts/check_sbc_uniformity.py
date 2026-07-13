@@ -710,7 +710,7 @@ def _print_results(results: Sequence[UniformityResult]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bayesite-bin", type=Path, default=DEFAULT_BINARY)
-    parser.add_argument("--replicates", type=int, default=100)
+    parser.add_argument("--replicates", type=int, default=400)
     parser.add_argument("--seed", type=int, default=20240713)
     parser.add_argument("--alpha", type=float, default=0.01)
     parser.add_argument("--chains", type=int, default=1)

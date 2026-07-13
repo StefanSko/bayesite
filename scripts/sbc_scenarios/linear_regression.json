@@ -16,7 +16,7 @@
     }
   },
   "seed": 21240713,
-  "replicates": 100,
+  "replicates": 400,
   "sample": {
     "chains": 1,
     "warmup": 200,

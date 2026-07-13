@@ -236,7 +236,7 @@ def main() -> None:
     parser.add_argument(
         "--sbc-replicates",
         type=int,
-        default=100,
+        default=400,
         help="replicates per scenario for the G11 SBC rank-uniformity gate",
     )
     parser.add_argument(

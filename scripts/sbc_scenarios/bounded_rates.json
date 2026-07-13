@@ -2,7 +2,7 @@
   "sbc_scenario": "v0-provisional",
   "data": {},
   "seed": 20240713,
-  "replicates": 100,
+  "replicates": 400,
   "sample": {
     "chains": 1,
     "warmup": 200,
