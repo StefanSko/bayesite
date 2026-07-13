@@ -672,6 +672,17 @@ def evaluate_reports(
     return evaluate_rank_series(all_series, alpha=alpha, simulations=simulations)
 
 
+def autocorrelation_time(*, chains: int, draws: int, ess: float) -> float:
+    """Estimate integrated autocorrelation time from a total-ESS statistic.
+
+    Bayesite reports ESS pooled across chains (raw count chains * draws), so
+    the per-draw autocorrelation time is the total draw count over the ESS.
+    """
+    if chains < 1 or draws < 1 or not math.isfinite(ess) or ess <= 0.0:
+        raise ValueError("chains, draws, and ess must be positive")
+    return chains * draws / ess
+
+
 def smallest_divisor_at_least(draws: int, required_stride: int) -> int:
     """Return the smallest divisor of draws no smaller than required_stride."""
     if draws < 1 or required_stride < 1:
@@ -894,7 +905,9 @@ def run_scenarios(
                     expected_thin=1,
                 )
                 ess_stat = pilot_ess_stat(pilot_report, spec.name)
-                tau_hat = args.draws / ess_stat
+                tau_hat = autocorrelation_time(
+                    chains=args.chains, draws=args.draws, ess=ess_stat
+                )
                 required_stride = math.ceil(args.ess_safety * tau_hat)
                 thin = smallest_divisor_at_least(args.draws, required_stride)
                 if required_stride > args.draws or thin == args.draws:

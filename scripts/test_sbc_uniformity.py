@@ -167,6 +167,16 @@ class SbcUniformityTests(unittest.TestCase):
         self.assertFalse(rejected)
         self.assertIsNone(diagnosis)
 
+    def test_autocorrelation_time_accounts_for_chain_count(self) -> None:
+        self.assertEqual(
+            sbc.autocorrelation_time(chains=1, draws=500, ess=250.0), 2.0
+        )
+        self.assertEqual(
+            sbc.autocorrelation_time(chains=4, draws=500, ess=250.0), 8.0
+        )
+        with self.assertRaises(ValueError):
+            sbc.autocorrelation_time(chains=1, draws=500, ess=0.0)
+
     def test_one_sided_exit_requires_mean_shift_for_bias_label(self) -> None:
         ranks = [0, 100] * 100
         diagnosis = sbc._classify_deviation([0], [], ranks, 100)
