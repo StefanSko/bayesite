@@ -17,10 +17,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
-from typing import Callable, Sequence
+from typing import Callable, Iterator, Sequence
 
 import gate_report as report_html
 
@@ -333,15 +334,9 @@ def check_nuts_rs_path(path: Path) -> None:
         )
 
 
-def run_nuts_rs_runner(
-    nuts_rs_path: Path,
-    targets: list[Target],
-    *,
-    seed: int,
-    chains: int,
-    warmup: int,
-    draws: int,
-) -> tuple[dict[str, DrawsByChain], dict[str, int]]:
+@contextmanager
+def nuts_rs_runner_project(nuts_rs_path: Path) -> Iterator[Path]:
+    """Materialize the oracle runner cargo project once for all replicates."""
     check_nuts_rs_path(nuts_rs_path)
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -365,29 +360,53 @@ edition = "2024"
 nuts-rs = {{ path = {json.dumps(str(nuts_rs_path))}, default-features = false }}
 """.strip()
         (tmp_path / "Cargo.toml").write_text(cargo_toml + "\n", encoding="utf-8")
-        result = _run_capture(
-            "run nuts-rs oracle runner",
+        _run_capture(
+            "build nuts-rs oracle runner",
             [
                 "cargo",
-                "run",
+                "build",
                 "--release",
                 "--quiet",
                 "--manifest-path",
                 str(tmp_path / "Cargo.toml"),
-                "--",
-                "--targets",
-                ",".join(target.name for target in targets),
-                "--seed",
-                str(seed),
-                "--chains",
-                str(chains),
-                "--warmup",
-                str(warmup),
-                "--draws",
-                str(draws),
             ],
             cwd=tmp_path,
         )
+        yield tmp_path
+
+
+def run_nuts_rs_runner(
+    runner_project: Path,
+    targets: list[Target],
+    *,
+    seed: int,
+    chains: int,
+    warmup: int,
+    draws: int,
+) -> tuple[dict[str, DrawsByChain], dict[str, int]]:
+    result = _run_capture(
+        "run nuts-rs oracle runner",
+        [
+            "cargo",
+            "run",
+            "--release",
+            "--quiet",
+            "--manifest-path",
+            str(runner_project / "Cargo.toml"),
+            "--",
+            "--targets",
+            ",".join(target.name for target in targets),
+            "--seed",
+            str(seed),
+            "--chains",
+            str(chains),
+            "--warmup",
+            str(warmup),
+            "--draws",
+            str(draws),
+        ],
+        cwd=runner_project,
+    )
     payload = json.loads(result.stdout)
     by_target: dict[str, DrawsByChain] = {}
     divergences: dict[str, int] = {}
@@ -824,48 +843,49 @@ def main() -> None:
     all_failures: list[str] = []
     total_draws = args.draws * args.chains
 
-    for replicate in range(args.replicates):
-        seed = args.seed + replicate
-        print(f"\n== replicate {replicate + 1}/{args.replicates}, seed {seed}", flush=True)
-        nuts_draws, nuts_divergences = run_nuts_rs_runner(
-            args.nuts_rs_path,
-            targets,
-            seed=seed,
-            chains=args.chains,
-            warmup=args.warmup,
-            draws=args.draws,
-        )
-        for target in targets:
-            bayes_draws, bayes_divergences = run_bayesite(
-                binary,
-                target,
+    with nuts_rs_runner_project(args.nuts_rs_path) as runner_project:
+        for replicate in range(args.replicates):
+            seed = args.seed + replicate
+            print(f"\n== replicate {replicate + 1}/{args.replicates}, seed {seed}", flush=True)
+            nuts_draws, nuts_divergences = run_nuts_rs_runner(
+                runner_project,
+                targets,
                 seed=seed,
                 chains=args.chains,
                 warmup=args.warmup,
                 draws=args.draws,
             )
-            print_target_diagnostics(
-                target,
-                bayes_draws,
-                nuts_draws[target.name],
-                bayes_divergences,
-                nuts_divergences[target.name],
-                total_draws,
-            )
-            results, failures = validate_target(
-                target,
-                bayes_draws,
-                nuts_draws[target.name],
-                bayes_divergences,
-                nuts_divergences[target.name],
-                draws=args.draws,
-                chains=args.chains,
-                batches_per_chain=args.batches_per_chain,
-            )
-            for result in results:
-                print_stat_result(result)
-            all_results.extend(results)
-            all_failures.extend(f"seed {seed}: {failure}" for failure in failures)
+            for target in targets:
+                bayes_draws, bayes_divergences = run_bayesite(
+                    binary,
+                    target,
+                    seed=seed,
+                    chains=args.chains,
+                    warmup=args.warmup,
+                    draws=args.draws,
+                )
+                print_target_diagnostics(
+                    target,
+                    bayes_draws,
+                    nuts_draws[target.name],
+                    bayes_divergences,
+                    nuts_divergences[target.name],
+                    total_draws,
+                )
+                results, failures = validate_target(
+                    target,
+                    bayes_draws,
+                    nuts_draws[target.name],
+                    bayes_divergences,
+                    nuts_divergences[target.name],
+                    draws=args.draws,
+                    chains=args.chains,
+                    batches_per_chain=args.batches_per_chain,
+                )
+                for result in results:
+                    print_stat_result(result)
+                all_results.extend(results)
+                all_failures.extend(f"seed {seed}: {failure}" for failure in failures)
 
     per_check_total = 3 * len(all_results)
     per_check_failed = sum(

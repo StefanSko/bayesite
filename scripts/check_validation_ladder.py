@@ -275,6 +275,7 @@ def main() -> None:
         ],
     )
     _run("release packaging helper tests", ["python3", "scripts/test_release_tooling.py"])
+    _run("G6 oracle aggregation helper tests", ["python3", "scripts/test_oracle_stats.py"])
     _check_release_cli_binary()
     if not args.skip_sbc_uniformity:
         _run("G11 SBC uniformity helper tests", ["python3", "scripts/test_sbc_uniformity.py"])
