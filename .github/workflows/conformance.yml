@@ -37,7 +37,18 @@ jobs:
 
       - name: Run G6 independent NUTS oracle
         shell: bash
-        run: python3 scripts/check_nuts_rs_oracle.py --nuts-rs-path /tmp/nuts-rs
+        run: >-
+          python3 scripts/check_nuts_rs_oracle.py
+          --nuts-rs-path /tmp/nuts-rs
+          --report g6-report.html
+
+      - name: Upload G6 oracle report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g6-oracle-report
+          path: g6-report.html
+          retention-days: 14
 
   posterior-oracle:
     name: G7 bayesjax posterior oracle
@@ -54,3 +65,33 @@ jobs:
         working-directory: bayesite
         shell: bash
         run: uv run scripts/check_rust_backend_posterior.py
+
+  sbc-uniformity:
+    name: G11 SBC rank uniformity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release CLI
+        shell: bash
+        run: >-
+          cargo build --release --locked --bin bayesite
+          --manifest-path crates/core/Cargo.toml
+
+      - name: Run G11 SBC rank uniformity
+        shell: bash
+        run: >-
+          python3 scripts/check_sbc_uniformity.py
+          --replicates 2000
+          --report g11-sbc-report.html
+
+      - name: Upload G11 SBC report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g11-sbc-report
+          path: g11-sbc-report.html
+          retention-days: 14

@@ -1,0 +1,13 @@
+{
+  "sbc_scenario": "v0-provisional",
+  "data": {},
+  "seed": 20240713,
+  "replicates": 400,
+  "sample": {
+    "chains": 1,
+    "warmup": 200,
+    "draws": 100,
+    "max_treedepth": 5,
+    "target_accept": 0.8
+  }
+}

@@ -104,12 +104,19 @@ are self-contained Rust tests in files such as
 Mandatory development gate using a pinned `nuts-rs` checkout as an independent
 NUTS implementation. The gate samples analytic Gaussian targets with Bayesite
 and `nuts-rs`, then compares summary estimates using batch Monte Carlo standard
-errors (MCSE):
+errors (MCSE). Signed z-scores use Bayesite minus truth, nuts-rs minus truth,
+and Bayesite minus nuts-rs; for the cross-backend comparison:
 
 ```text
-z = abs(bayesite_stat - nuts_rs_stat) / sqrt(mcse_bayesite^2 + mcse_nuts_rs^2)
+z = (bayesite_stat - nuts_rs_stat) / sqrt(mcse_bayesite^2 + mcse_nuts_rs^2)
 ```
 
+The target battery is replicated over eight seeds by default. Replicate `i`
+uses `base_seed + i` for both backends. Every per-seed comparison retains the
+coarse `|z| <= 5.0` guard. For two or more replicates, each target/statistic/
+comparison triple also requires Stouffer `|sum(z_i) / sqrt(K)| <= 4.0`; the
+reported t-statistic of signed per-seed deltas is advisory only. With `K=1`, no
+aggregate table or verdict is produced and only the per-seed guard applies.
 Each backend is also compared to analytic truth. The gate covers:
 
 - scalar standard Normal;
@@ -133,12 +140,13 @@ git -C /tmp/nuts-rs checkout 5332136767cade60bdeec84cd5b2e0f273961d4c
 Run directly with:
 
 ```sh
-python3 scripts/check_nuts_rs_oracle.py --nuts-rs-path /tmp/nuts-rs
+python3 scripts/check_nuts_rs_oracle.py --nuts-rs-path /tmp/nuts-rs --replicates 8
 ```
 
 This gate must not add dependencies to `bayesite-core` or to the Bayesite agent
-execution path. The conformance CI workflow runs this gate on a schedule,
-manual dispatch, and release tags.
+execution path. Pass `--report PATH` to write a deterministic, self-contained
+HTML visualization; conformance CI uploads that report as a run artifact on
+scheduled, manually dispatched, and release-tag runs.
 
 ### G7 — Cross-backend posterior comparison
 
@@ -228,9 +236,16 @@ G11 pins:
 - aggregate and per-replicate sampler count metadata;
 - absence of aggregate uniformity, pass/fail, or sampler-quality verdicts.
 
-Current limitation: SBC reports ranks and histograms but no uniformity verdict or
-p-value. Broader SBC conformance over larger replicate counts remains future G11
-work.
+The binary deliberately remains a verdict-free factual reporter: `bayesite sbc`
+still emits ranks and histograms, not a uniformity verdict or p-value. The
+development ladder now applies a mandatory, default-on conformance verdict in
+`scripts/check_sbc_uniformity.py`. It resolves exact ties by seeded uniform
+randomization and tests each parameter-coordinate rank ECDF against a
+Monte Carlo-calibrated simultaneous binomial confidence band, with Bonferroni
+control across scenarios and parameters, following Säilynoja, Bürkner & Vehtari
+(2021). Pass `--report PATH` for rank-histogram and calibrated ECDF-band HTML
+visualizations; conformance CI uploads the report as a run artifact. Broader
+data-averaged SBC variants remain future G11 work.
 
 ### G12 — Posterior predictive checks
 

@@ -8,6 +8,18 @@ versioned on their own.
 
 ## [Unreleased]
 
+### Added
+
+- Add a mandatory, stdlib-only SBC rank-uniformity conformance gate using
+  Monte Carlo-calibrated simultaneous ECDF confidence bands.
+- Add self-contained HTML report options for the G6 and G11 statistical gates
+  and upload their reports as conformance CI artifacts.
+
+### Changed
+
+- Replicate the G6 nuts-rs statistical oracle across deterministic seeds and
+  add signed Stouffer aggregation to detect small systematic sampler biases.
+
 ## [0.2.1] - 2026-07-10
 
 ### Added
