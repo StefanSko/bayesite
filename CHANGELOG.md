@@ -8,6 +8,11 @@ versioned on their own.
 
 ## [Unreleased]
 
+### Added
+
+- Add a mandatory, stdlib-only SBC rank-uniformity conformance gate using
+  Monte Carlo-calibrated simultaneous ECDF confidence bands.
+
 ## [0.2.1] - 2026-07-10
 
 ### Added
