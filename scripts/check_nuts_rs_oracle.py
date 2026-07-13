@@ -22,6 +22,8 @@ from pathlib import Path
 from statistics import mean
 from typing import Callable, Sequence
 
+import gate_report as report_html
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CORE_MANIFEST = REPO_ROOT / "crates" / "core" / "Cargo.toml"
 RUNNER_SRC = REPO_ROOT / "tools" / "oracles" / "nuts-rs-runner" / "src" / "main.rs"
@@ -623,6 +625,180 @@ def print_aggregate_results(results: Sequence[AggregateResult]) -> None:
         )
 
 
+def _comparison_z(result: StatResult, comparison: str) -> float:
+    return {
+        "bayesite-truth": result.bayesite_truth_z,
+        "nuts-rs-truth": result.nuts_rs_truth_z,
+        "bayesite-nuts-rs": result.cross_z,
+    }[comparison]
+
+
+def _oracle_dot_plot(
+    comparison: str,
+    results: Sequence[StatResult],
+    aggregates: Sequence[AggregateResult],
+    replicates: int,
+) -> str:
+    labels: list[tuple[str, str]] = []
+    grouped: dict[tuple[str, str], list[float]] = {}
+    for result in results:
+        key = (result.target, result.stat)
+        if key not in grouped:
+            labels.append(key)
+            grouped[key] = []
+        grouped[key].append(_comparison_z(result, comparison))
+    aggregate_by_key = {
+        (result.target, result.stat): result
+        for result in aggregates
+        if result.comparison == comparison
+    }
+
+    width = 1000
+    left = 230
+    right = 970
+    top = 72
+    row_height = 28
+    bottom = top + row_height * len(labels)
+    x_min = -6.5
+    x_max = 6.5
+
+    def x_position(value: float) -> float:
+        clipped = max(x_min, min(x_max, value))
+        return left + (clipped - x_min) / (x_max - x_min) * (right - left)
+
+    elements: list[str] = []
+    for row_index, key in enumerate(labels):
+        y = top + row_index * row_height
+        aggregate = aggregate_by_key.get(key)
+        if aggregate is not None and not aggregate.passed:
+            elements.append(
+                report_html.svg_rect(0, y, width, row_height, fill="#fde9e8")
+            )
+        elements.append(
+            report_html.svg_line(left, y + row_height, right, y + row_height, stroke=report_html.GRID)
+        )
+        elements.append(
+            report_html.svg_text(8, y + 18, f"{key[0]} / {key[1]}", size=11)
+        )
+
+    for value, color, dashed, label in (
+        (-5.0, report_html.RED, True, "per-seed limit"),
+        (-4.0, report_html.RED, True, "combined gate"),
+        (0.0, report_html.GRID, False, "0"),
+        (4.0, report_html.RED, True, "combined gate"),
+        (5.0, report_html.RED, True, "per-seed limit"),
+    ):
+        x = x_position(value)
+        elements.append(
+            report_html.svg_line(x, top, x, bottom, stroke=color, dashed=dashed)
+        )
+        elements.append(
+            report_html.svg_text(x, 44 if abs(value) == 5 else 58, label, size=9, fill=color, anchor="middle")
+        )
+        elements.append(report_html.svg_text(x, bottom + 18, f"{value:+g}", size=10, anchor="middle"))
+
+    for row_index, key in enumerate(labels):
+        center_y = top + row_index * row_height + row_height / 2
+        z_scores = grouped[key]
+        jitter_step = min(3.0, 12.0 / max(1, len(z_scores)))
+        for seed_index, z_score in enumerate(z_scores):
+            y = center_y + (seed_index - (len(z_scores) - 1) / 2) * jitter_step
+            finite = math.isfinite(z_score)
+            x = x_position(z_score if finite else math.copysign(x_max, z_score))
+            color = report_html.BLUE if per_check_passes(z_score) else report_html.RED
+            elements.append(report_html.svg_circle(x, y, 3.2, fill=color))
+            if not finite or z_score < x_min or z_score > x_max:
+                marker = ">" if z_score > 0 else "<"
+                marker_x = x - 7 if z_score > 0 else x + 7
+                anchor = "end" if z_score > 0 else "start"
+                elements.append(
+                    report_html.svg_text(marker_x, y + 3, marker, size=10, fill=color, anchor=anchor, weight="bold")
+                )
+        aggregate = aggregate_by_key.get(key)
+        if replicates >= 2 and aggregate is not None:
+            color = report_html.BLUE if aggregate.passed else report_html.RED
+            elements.append(
+                report_html.svg_diamond(
+                    x_position(aggregate.stouffer_z), center_y, 5.5, fill=color
+                )
+            )
+
+    elements.append(report_html.svg_text(left, 18, comparison, size=15, weight="bold"))
+    elements.append(
+        report_html.svg_text(right, bottom + 18, "signed z", size=10, anchor="end")
+    )
+    return report_html.svg_figure(
+        width, bottom + 32, f"{comparison} signed z dot plot", elements
+    )
+
+
+def render_oracle_report(
+    results: Sequence[StatResult],
+    aggregates: Sequence[AggregateResult],
+    *,
+    target_count: int,
+    replicates: int,
+    draws: int,
+    warmup: int,
+    chains: int,
+    seed: int,
+    passed: bool,
+) -> str:
+    """Render the deterministic, self-contained G6 statistical report."""
+    settings = (
+        ("targets count", target_count),
+        ("replicates K", replicates),
+        ("draws", draws),
+        ("warmup", warmup),
+        ("chains", chains),
+        ("base seed", seed),
+        ("per-check threshold", MAX_Z),
+        ("combined threshold", COMBINED_MAX_Z),
+        ("overall", "PASS" if passed else "FAIL"),
+    )
+    sections = [report_html.section_heading("Signed z comparisons")]
+    for comparison in ("bayesite-truth", "nuts-rs-truth", "bayesite-nuts-rs"):
+        sections.append(_oracle_dot_plot(comparison, results, aggregates, replicates))
+    sections.append(report_html.section_heading("Aggregate comparisons"))
+    if replicates < 2:
+        sections.append('<p class="note">aggregation disabled for K=1</p>')
+    else:
+        rows = []
+        for result in aggregates:
+            advisory = "n/a" if result.advisory_t is None else f"{result.advisory_t:+.3f}"
+            rows.append(
+                (
+                    (
+                        result.target,
+                        result.stat,
+                        result.comparison,
+                        f"{result.mean_delta:+.5g}",
+                        f"{result.stouffer_z:+.3f}",
+                        advisory,
+                        "PASS" if result.passed else "FAIL",
+                    ),
+                    not result.passed,
+                )
+            )
+        sections.append(
+            report_html.data_table(
+                (
+                    "Target",
+                    "Statistic",
+                    "Comparison",
+                    "Mean delta",
+                    "Stouffer Z",
+                    "Advisory t",
+                    "Verdict",
+                ),
+                rows,
+            )
+        )
+    return report_html.html_document(
+        "G6 nuts-rs statistical oracle", settings, passed, sections
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nuts-rs-path", type=Path, default=Path("/tmp/nuts-rs"))
@@ -632,6 +808,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=20240621)
     parser.add_argument("--replicates", type=int, default=8)
     parser.add_argument("--batches-per-chain", type=int, default=8)
+    parser.add_argument("--report", type=Path)
     args = parser.parse_args()
 
     if args.replicates < 1:
@@ -730,6 +907,21 @@ def main() -> None:
         f"diagnostic failures {diagnostic_failures}; draws {args.draws} x chains {args.chains}",
         flush=True,
     )
+    if args.report is not None:
+        args.report.write_text(
+            render_oracle_report(
+                all_results,
+                aggregate_results,
+                target_count=len(targets),
+                replicates=args.replicates,
+                draws=args.draws,
+                warmup=args.warmup,
+                chains=args.chains,
+                seed=args.seed,
+                passed=not all_failures,
+            ),
+            encoding="utf-8",
+        )
     if all_failures:
         sys.exit(1)
 

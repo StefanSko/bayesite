@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+import gate_report as report_html
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCENARIO_DIR = REPO_ROOT / "scripts" / "sbc_scenarios"
 DEFAULT_BINARY = REPO_ROOT / "target" / "release" / "bayesite"
@@ -504,6 +506,24 @@ def _classify_deviation(above: list[int], below: list[int]) -> str:
     return "too few extreme ranks (posterior overdispersed)"
 
 
+def accepted_count_bounds(
+    sample_count: int,
+    support_max: int,
+    alpha: float,
+    *,
+    simulations: int = MONTE_CARLO_SETS,
+) -> list[tuple[int, int]]:
+    """Return the exact accepted cumulative-count bounds at each ECDF grid point."""
+    gamma = calibrated_gamma(
+        sample_count, support_max, alpha, simulations=simulations
+    )
+    bounds: list[tuple[int, int]] = []
+    for table in _pointwise_tables(sample_count, support_max):
+        accepted = [count for count, p_value in enumerate(table) if p_value >= gamma]
+        bounds.append((accepted[0], accepted[-1]))
+    return bounds
+
+
 def test_rank_uniformity(
     ranks: Sequence[int],
     support_max: int,
@@ -517,10 +537,9 @@ def test_rank_uniformity(
         raise ValueError("at least one rank is required")
     if support_max < 1 or any(rank < 0 or rank > support_max for rank in ranks):
         raise ValueError("ranks must lie in 0..support_max")
-    gamma = calibrated_gamma(
+    bounds = accepted_count_bounds(
         sample_count, support_max, alpha, simulations=simulations
     )
-    tables = _pointwise_tables(sample_count, support_max)
     histogram = [0] * (support_max + 1)
     for rank in ranks:
         histogram[rank] += 1
@@ -529,11 +548,8 @@ def test_rank_uniformity(
     below: list[int] = []
     min_margin_count = sample_count
     cumulative = 0
-    for grid_index, table in enumerate(tables):
+    for grid_index, (lower, upper) in enumerate(bounds):
         cumulative += histogram[grid_index]
-        accepted = [count for count, p_value in enumerate(table) if p_value >= gamma]
-        lower = accepted[0]
-        upper = accepted[-1]
         min_margin_count = min(min_margin_count, cumulative - lower, upper - cumulative)
         if cumulative > upper:
             above.append(grid_index)
@@ -544,16 +560,23 @@ def test_rank_uniformity(
     return rejected, min_margin_count / sample_count, diagnosis
 
 
-def evaluate_reports(
-    reports: Sequence[tuple[str, object]],
-    *,
-    alpha: float,
-    seed: int,
-    simulations: int = MONTE_CARLO_SETS,
-) -> list[UniformityResult]:
+def rank_series_from_reports(
+    reports: Sequence[tuple[str, object]], *, seed: int
+) -> list[RankSeries]:
     all_series: list[RankSeries] = []
     for scenario, report in reports:
         all_series.extend(parse_rank_facts(report, scenario, seed=seed))
+    if not all_series:
+        raise ConformanceError("SBC reports contain no parameter rank arrays")
+    return all_series
+
+
+def evaluate_rank_series(
+    all_series: Sequence[RankSeries],
+    *,
+    alpha: float,
+    simulations: int = MONTE_CARLO_SETS,
+) -> list[UniformityResult]:
     if not all_series:
         raise ConformanceError("SBC reports contain no parameter rank arrays")
     alpha_parameter = alpha / len(all_series)
@@ -576,6 +599,17 @@ def evaluate_reports(
             )
         )
     return results
+
+
+def evaluate_reports(
+    reports: Sequence[tuple[str, object]],
+    *,
+    alpha: float,
+    seed: int,
+    simulations: int = MONTE_CARLO_SETS,
+) -> list[UniformityResult]:
+    all_series = rank_series_from_reports(reports, seed=seed)
+    return evaluate_rank_series(all_series, alpha=alpha, simulations=simulations)
 
 
 def _load_scenario(spec: ScenarioSpec, args: argparse.Namespace, scenario_index: int) -> dict:
@@ -707,6 +741,298 @@ def _print_results(results: Sequence[UniformityResult]) -> None:
         )
 
 
+def _histogram_figure(series: RankSeries, result: UniformityResult) -> str:
+    bin_count = 20
+    histogram = [0] * bin_count
+    support_size = series.support_max + 1
+    for rank in series.ranks:
+        histogram[min(bin_count - 1, rank * bin_count // support_size)] += 1
+    expected = len(series.ranks) / bin_count
+    maximum = max(max(histogram), expected * 1.1, 1.0)
+    width = 520
+    height = 245
+    left = 50
+    right = 500
+    top = 38
+    bottom = 205
+
+    def y_position(value: float) -> float:
+        return bottom - value / maximum * (bottom - top)
+
+    elements = [
+        report_html.svg_text(
+            12,
+            20,
+            f"{series.scenario} / {series.parameter}",
+            size=13,
+            weight="bold",
+        ),
+        report_html.svg_axes(left, bottom, right, top),
+    ]
+    slot_width = (right - left) / bin_count
+    color = report_html.RED if result.rejected else report_html.BLUE
+    for index, count in enumerate(histogram):
+        x = left + index * slot_width + 1
+        y = y_position(count)
+        elements.append(
+            report_html.svg_rect(
+                x, y, max(1.0, slot_width - 2), bottom - y, fill=color
+            )
+        )
+    expected_y = y_position(expected)
+    elements.append(
+        report_html.svg_line(
+            left,
+            expected_y,
+            right,
+            expected_y,
+            stroke=report_html.INK,
+            dashed=True,
+        )
+    )
+    elements.append(
+        report_html.svg_text(
+            right,
+            expected_y - 4,
+            f"expected {expected:.1f}",
+            size=9,
+            anchor="end",
+        )
+    )
+    elements.extend(
+        (
+            report_html.svg_text(left, bottom + 18, "0", size=10, anchor="middle"),
+            report_html.svg_text(right, bottom + 18, "1", size=10, anchor="middle"),
+            report_html.svg_text(right, height - 5, "rank quantile", size=10, anchor="end"),
+        )
+    )
+    return report_html.svg_figure(
+        width,
+        height,
+        f"Rank histogram for {series.scenario} / {series.parameter}",
+        elements,
+    )
+
+
+def _ecdf_values(series: RankSeries) -> list[tuple[float, float, int]]:
+    histogram = [0] * (series.support_max + 1)
+    for rank in series.ranks:
+        histogram[rank] += 1
+    values: list[tuple[float, float, int]] = []
+    cumulative = 0
+    support_size = series.support_max + 1
+    for grid_index in range(series.support_max):
+        cumulative += histogram[grid_index]
+        t = (grid_index + 1) / support_size
+        values.append((t, cumulative / len(series.ranks) - t, cumulative))
+    return values
+
+
+def _svg_polyline(points: Sequence[tuple[float, float]]) -> str:
+    return "M " + " L ".join(f"{x:.6g} {y:.6g}" for x, y in points)
+
+
+def _ecdf_figure(
+    series: Sequence[RankSeries],
+    results: Sequence[UniformityResult],
+    *,
+    alpha: float,
+    simulations: int,
+) -> str:
+    members = list(zip(series, results))
+    support_keys = {
+        (len(rank_series.ranks), rank_series.support_max)
+        for rank_series, _ in members
+    }
+    panels = [members] if len(support_keys) == 1 else [[member] for member in members]
+
+    width = 1000
+    panel_height = 275
+    height = panel_height * len(panels) + 20
+    elements: list[str] = []
+    alpha_parameter = alpha / len(series)
+    for panel_index, panel_members in enumerate(panels):
+        sample_count = len(panel_members[0][0].ranks)
+        support_max = panel_members[0][0].support_max
+        panel_top = panel_index * panel_height
+        plot_top = panel_top + 48
+        plot_bottom = panel_top + 225
+        left = 72
+        right = 965
+        bounds = accepted_count_bounds(
+            sample_count,
+            support_max,
+            alpha_parameter,
+            simulations=simulations,
+        )
+        support_size = support_max + 1
+        envelope = [
+            (
+                (index + 1) / support_size,
+                lower / sample_count - (index + 1) / support_size,
+                upper / sample_count - (index + 1) / support_size,
+            )
+            for index, (lower, upper) in enumerate(bounds)
+        ]
+        curve_values = [(item, _ecdf_values(item)) for item, _ in panel_members]
+        extent_values = [value for _, lower, upper in envelope for value in (lower, upper)]
+        extent_values.extend(value for _, values in curve_values for _, value, _ in values)
+        y_limit = max(0.05, math.ceil(max(abs(value) for value in extent_values) * 20) / 20)
+
+        def x_position(value: float) -> float:
+            return left + value * (right - left)
+
+        def y_position(value: float) -> float:
+            return plot_bottom - (value + y_limit) / (2 * y_limit) * (plot_bottom - plot_top)
+
+        elements.append(
+            report_html.svg_text(
+                12,
+                panel_top + 20,
+                f"ECDF deviation envelope (N={sample_count}, rank support 0..{support_max})",
+                size=13,
+                weight="bold",
+            )
+        )
+        elements.append(report_html.svg_axes(left, plot_bottom, right, plot_top))
+        zero_y = y_position(0.0)
+        elements.append(
+            report_html.svg_line(left, zero_y, right, zero_y, stroke=report_html.GRID)
+        )
+        upper_points = [(x_position(t), y_position(upper)) for t, _, upper in envelope]
+        lower_points = [(x_position(t), y_position(lower)) for t, lower, _ in reversed(envelope)]
+        band_path = _svg_polyline(upper_points + lower_points) + " Z"
+        elements.append(
+            report_html.svg_path(
+                band_path,
+                stroke=report_html.GRID,
+                fill=report_html.GRID,
+                opacity=0.75,
+            )
+        )
+        for member_index, ((rank_series, result), (_, values)) in enumerate(
+            zip(panel_members, curve_values)
+        ):
+            color = report_html.RED if result.rejected else report_html.BLUE
+            curve_points = [(x_position(t), y_position(value)) for t, value, _ in values]
+            elements.append(
+                report_html.svg_path(
+                    _svg_polyline(curve_points), stroke=color, width=1.8
+                )
+            )
+            elements.append(
+                report_html.svg_text(
+                    left + member_index * 175,
+                    panel_top + 36,
+                    f"{rank_series.scenario} / {rank_series.parameter}",
+                    size=9,
+                    fill=color,
+                )
+            )
+            if result.rejected:
+                for grid_index, ((t, value, cumulative), (lower, upper)) in enumerate(
+                    zip(values, bounds)
+                ):
+                    if cumulative < lower or cumulative > upper:
+                        marker_x = x_position(t)
+                        marker_y = y_position(value)
+                        elements.append(
+                            report_html.svg_circle(
+                                marker_x, marker_y, 4.5, fill=report_html.RED
+                            )
+                        )
+                        elements.append(
+                            report_html.svg_text(
+                                min(right - 4, marker_x + 7),
+                                marker_y - 6,
+                                f"{rank_series.scenario} / {rank_series.parameter} exits band",
+                                size=9,
+                                fill=report_html.RED,
+                                anchor="end" if marker_x > right - 250 else "start",
+                            )
+                        )
+                        break
+        elements.extend(
+            (
+                report_html.svg_text(left, plot_bottom + 17, "0", size=10, anchor="middle"),
+                report_html.svg_text(right, plot_bottom + 17, "1", size=10, anchor="middle"),
+                report_html.svg_text(right, plot_bottom + 17, "rank quantile t", size=10, anchor="end"),
+                report_html.svg_text(left - 8, plot_top + 4, f"+{y_limit:.2f}", size=9, anchor="end"),
+                report_html.svg_text(left - 8, plot_bottom, f"-{y_limit:.2f}", size=9, anchor="end"),
+            )
+        )
+    return report_html.svg_figure(
+        width, height, "Calibrated ECDF deviation envelopes", elements
+    )
+
+
+def render_sbc_report(
+    series: Sequence[RankSeries],
+    results: Sequence[UniformityResult],
+    *,
+    scenario_count: int,
+    replicates: int,
+    draws: int,
+    warmup: int,
+    chains: int,
+    seed: int,
+    alpha: float,
+    simulations: int = MONTE_CARLO_SETS,
+) -> str:
+    """Render the deterministic, self-contained G11 statistical report."""
+    if not series:
+        raise ValueError("at least one rank series is required")
+    if len(series) != len(results):
+        raise ValueError("rank series and uniformity results must have equal lengths")
+    passed = not any(result.rejected for result in results)
+    settings = (
+        ("scenarios", scenario_count),
+        ("replicates N", replicates),
+        ("draws", draws),
+        ("warmup", warmup),
+        ("chains", chains),
+        ("seed", seed),
+        ("alpha", alpha),
+        ("calibration set count", simulations),
+        ("overall", "PASS" if passed else "FAIL"),
+    )
+    sections = [report_html.section_heading("Rank histograms")]
+    sections.extend(
+        _histogram_figure(rank_series, result)
+        for rank_series, result in zip(series, results)
+    )
+    sections.extend(
+        (
+            report_html.section_heading("ECDF deviations"),
+            _ecdf_figure(series, results, alpha=alpha, simulations=simulations),
+            report_html.section_heading("Uniformity results"),
+        )
+    )
+    rows = [
+        (
+            (
+                result.scenario,
+                result.parameter,
+                result.sample_count,
+                f"{result.min_band_margin:.4f}",
+                "FAIL" if result.rejected else "PASS",
+                result.diagnosis or "none",
+            ),
+            result.rejected,
+        )
+        for result in results
+    ]
+    sections.append(
+        report_html.data_table(
+            ("Scenario", "Parameter", "N", "Min band margin", "Verdict", "Diagnosis"),
+            rows,
+        )
+    )
+    return report_html.html_document(
+        "G11 SBC rank uniformity", settings, passed, sections
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bayesite-bin", type=Path, default=DEFAULT_BINARY)
@@ -718,14 +1044,32 @@ def main() -> None:
     parser.add_argument("--draws", type=int, default=100)
     parser.add_argument("--max-treedepth", type=int, default=5)
     parser.add_argument("--target-accept", type=float, default=0.8)
+    parser.add_argument("--report", type=Path)
     args = parser.parse_args()
 
     try:
         _validate_args(args)
         reports = run_scenarios(args.bayesite_bin, args)
-        results = evaluate_reports(reports, alpha=args.alpha, seed=args.seed)
+        series = rank_series_from_reports(reports, seed=args.seed)
+        results = evaluate_rank_series(series, alpha=args.alpha)
     except ConformanceError as error:
         sys.exit(f"G11 SBC rank uniformity failed: {error}")
+
+    if args.report is not None:
+        args.report.write_text(
+            render_sbc_report(
+                series,
+                results,
+                scenario_count=len(SCENARIOS),
+                replicates=args.replicates,
+                draws=args.draws,
+                warmup=args.warmup,
+                chains=args.chains,
+                seed=args.seed,
+                alpha=args.alpha,
+            ),
+            encoding="utf-8",
+        )
 
     failures = [result for result in results if result.rejected]
     if failures:

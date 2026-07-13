@@ -144,8 +144,9 @@ python3 scripts/check_nuts_rs_oracle.py --nuts-rs-path /tmp/nuts-rs --replicates
 ```
 
 This gate must not add dependencies to `bayesite-core` or to the Bayesite agent
-execution path. The conformance CI workflow runs this gate on a schedule,
-manual dispatch, and release tags.
+execution path. Pass `--report PATH` to write a deterministic, self-contained
+HTML visualization; conformance CI uploads that report as a run artifact on
+scheduled, manually dispatched, and release-tag runs.
 
 ### G7 — Cross-backend posterior comparison
 
@@ -242,7 +243,9 @@ development ladder now applies a mandatory, default-on conformance verdict in
 randomization and tests each parameter-coordinate rank ECDF against a
 Monte Carlo-calibrated simultaneous binomial confidence band, with Bonferroni
 control across scenarios and parameters, following Säilynoja, Bürkner & Vehtari
-(2021). Broader data-averaged SBC variants remain future G11 work.
+(2021). Pass `--report PATH` for rank-histogram and calibrated ECDF-band HTML
+visualizations; conformance CI uploads the report as a run artifact. Broader
+data-averaged SBC variants remain future G11 work.
 
 ### G12 — Posterior predictive checks
 

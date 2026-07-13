@@ -186,6 +186,69 @@ class SbcUniformityTests(unittest.TestCase):
         self.assertIn("parameter biased_theta", messages[0])
         self.assertIn("ranks skew low (biased estimates)", messages[0])
 
+    def test_report_smoke_failure_highlight_and_byte_determinism(self) -> None:
+        series = [
+            sbc.RankSeries(
+                scenario="healthy",
+                parameter="theta",
+                ranks=tuple(index % 5 for index in range(20)),
+                support_max=4,
+            ),
+            sbc.RankSeries(
+                scenario="doctored",
+                parameter="biased_theta",
+                ranks=(0,) * 20,
+                support_max=4,
+            ),
+        ]
+        results = [
+            sbc.UniformityResult("healthy", "theta", 20, 0.1, False, None),
+            sbc.UniformityResult(
+                "doctored",
+                "biased_theta",
+                20,
+                -0.5,
+                True,
+                "ranks skew low (biased estimates)",
+            ),
+        ]
+        kwargs = {
+            "scenario_count": 2,
+            "replicates": 20,
+            "draws": 4,
+            "warmup": 2,
+            "chains": 1,
+            "seed": 7,
+            "alpha": 0.05,
+            "simulations": 40,
+        }
+        first = sbc.render_sbc_report(series, results, **kwargs)
+        second = sbc.render_sbc_report(series, results, **kwargs)
+
+        self.assertEqual(first.encode(), second.encode())
+        self.assertEqual(first.count("<svg"), 3)
+        self.assertIn('<div class="banner fail">FAIL</div>', first)
+        self.assertIn("healthy / theta", first)
+        self.assertIn("biased_theta", first)
+        self.assertIn('class="fail-row"', first)
+
+    def test_report_pass_banner(self) -> None:
+        series = [sbc.RankSeries("healthy", "theta", tuple(range(5)) * 4, 4)]
+        results = [sbc.UniformityResult("healthy", "theta", 20, 0.1, False, None)]
+        report = sbc.render_sbc_report(
+            series,
+            results,
+            scenario_count=1,
+            replicates=20,
+            draws=4,
+            warmup=2,
+            chains=1,
+            seed=7,
+            alpha=0.05,
+            simulations=40,
+        )
+        self.assertIn('<div class="banner pass">PASS</div>', report)
+
 
 if __name__ == "__main__":
     unittest.main()

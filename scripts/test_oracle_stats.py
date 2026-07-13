@@ -33,6 +33,21 @@ def estimate_z_scores(values: list[float], mcse: float = 1.0) -> list[float]:
     return [oracle.signed_z(estimate.value, estimate.mcse) for estimate in estimates]
 
 
+def synthetic_result(target: str, stat: str, z: float) -> object:
+    bayesite = oracle.Estimate(value=z, mcse=1.0, batch_count=8)
+    nuts_rs = oracle.Estimate(value=0.0, mcse=1.0, batch_count=8)
+    return oracle.StatResult(
+        target=target,
+        stat=stat,
+        truth=0.0,
+        bayesite=bayesite,
+        nuts_rs=nuts_rs,
+        bayesite_truth_z=z,
+        nuts_rs_truth_z=0.0,
+        cross_z=z / 2**0.5,
+    )
+
+
 class OracleStatsTests(unittest.TestCase):
     def test_unbiased_estimates_across_eight_seeds_pass(self) -> None:
         z_scores = estimate_z_scores([0.4, -0.5, 0.2, -0.1, -0.3, 0.5, -0.2, 0.0])
@@ -66,6 +81,49 @@ class OracleStatsTests(unittest.TestCase):
     def test_advisory_t_is_not_available_for_zero_variance(self) -> None:
         self.assertIsNone(oracle.advisory_t_statistic([0.25] * 8))
         self.assertIsNotNone(oracle.advisory_t_statistic([0.2, 0.3, 0.2, 0.3]))
+
+    def test_report_smoke_failure_highlight_and_byte_determinism(self) -> None:
+        results = [
+            synthetic_result("synthetic", "mean[0]", 3.0),
+            synthetic_result("synthetic", "mean[0]", 3.0),
+        ]
+        aggregates = oracle.aggregate_stat_results(results)
+        kwargs = {
+            "target_count": 1,
+            "replicates": 2,
+            "draws": 20,
+            "warmup": 10,
+            "chains": 2,
+            "seed": 17,
+            "passed": False,
+        }
+        first = oracle.render_oracle_report(results, aggregates, **kwargs)
+        second = oracle.render_oracle_report(results, aggregates, **kwargs)
+
+        self.assertEqual(first.encode(), second.encode())
+        self.assertEqual(first.count("<svg"), 3)
+        self.assertIn('<div class="banner fail">FAIL</div>', first)
+        self.assertIn("synthetic / mean[0]", first)
+        self.assertIn('class="fail-row"', first)
+        self.assertIn("Mean delta", first)
+
+    def test_report_pass_banner(self) -> None:
+        results = [
+            synthetic_result("healthy", "var[0]", -0.2),
+            synthetic_result("healthy", "var[0]", 0.2),
+        ]
+        report = oracle.render_oracle_report(
+            results,
+            oracle.aggregate_stat_results(results),
+            target_count=1,
+            replicates=2,
+            draws=20,
+            warmup=10,
+            chains=2,
+            seed=17,
+            passed=True,
+        )
+        self.assertIn('<div class="banner pass">PASS</div>', report)
 
 
 if __name__ == "__main__":

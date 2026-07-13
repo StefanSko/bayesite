@@ -12,6 +12,8 @@ versioned on their own.
 
 - Add a mandatory, stdlib-only SBC rank-uniformity conformance gate using
   Monte Carlo-calibrated simultaneous ECDF confidence bands.
+- Add self-contained HTML report options for the G6 and G11 statistical gates
+  and upload their reports as conformance CI artifacts.
 
 ### Changed
 
