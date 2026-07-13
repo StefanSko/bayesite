@@ -176,6 +176,18 @@ def _nuts_rs_command(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def _sbc_uniformity_command(args: argparse.Namespace) -> list[str]:
+    binary_name = "bayesite.exe" if sys.platform.startswith("win") else "bayesite"
+    return [
+        "python3",
+        "scripts/check_sbc_uniformity.py",
+        "--bayesite-bin",
+        str(REPO_ROOT / "target" / "release" / binary_name),
+        "--replicates",
+        str(args.sbc_replicates),
+    ]
+
+
 def _posterior_command(args: argparse.Namespace) -> list[str]:
     command = [
         "uv",
@@ -217,6 +229,17 @@ def main() -> None:
     parser.add_argument("--nuts-rs-replicates", type=int, default=8)
     parser.add_argument("--nuts-rs-batches-per-chain", type=int, default=8)
     parser.add_argument(
+        "--skip-sbc-uniformity",
+        action="store_true",
+        help="skip the mandatory G11 SBC rank-uniformity gate",
+    )
+    parser.add_argument(
+        "--sbc-replicates",
+        type=int,
+        default=100,
+        help="replicates per scenario for the G11 SBC rank-uniformity gate",
+    )
+    parser.add_argument(
         "--posterior",
         action="store_true",
         help="also run the optional bayesjax/BlackJAX posterior oracle gate",
@@ -253,6 +276,9 @@ def main() -> None:
     )
     _run("release packaging helper tests", ["python3", "scripts/test_release_tooling.py"])
     _check_release_cli_binary()
+    if not args.skip_sbc_uniformity:
+        _run("G11 SBC uniformity helper tests", ["python3", "scripts/test_sbc_uniformity.py"])
+        _run("G11 SBC rank uniformity", _sbc_uniformity_command(args))
     _run(
         "G1-G5 fixture, log-density, sampler, and protocol tests",
         ["cargo", "test", "--manifest-path", str(CORE_MANIFEST)],

@@ -8,6 +8,11 @@ versioned on their own.
 
 ## [Unreleased]
 
+### Added
+
+- Add a mandatory, stdlib-only SBC rank-uniformity conformance gate using
+  Monte Carlo-calibrated simultaneous ECDF confidence bands.
+
 ### Changed
 
 - Replicate the G6 nuts-rs statistical oracle across deterministic seeds and

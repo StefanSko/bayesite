@@ -235,9 +235,14 @@ G11 pins:
 - aggregate and per-replicate sampler count metadata;
 - absence of aggregate uniformity, pass/fail, or sampler-quality verdicts.
 
-Current limitation: SBC reports ranks and histograms but no uniformity verdict or
-p-value. Broader SBC conformance over larger replicate counts remains future G11
-work.
+The binary deliberately remains a verdict-free factual reporter: `bayesite sbc`
+still emits ranks and histograms, not a uniformity verdict or p-value. The
+development ladder now applies a mandatory, default-on conformance verdict in
+`scripts/check_sbc_uniformity.py`. It resolves exact ties by seeded uniform
+randomization and tests each parameter-coordinate rank ECDF against a
+Monte Carlo-calibrated simultaneous binomial confidence band, with Bonferroni
+control across scenarios and parameters, following Säilynoja, Bürkner & Vehtari
+(2021). Broader data-averaged SBC variants remain future G11 work.
 
 ### G12 — Posterior predictive checks
 
