@@ -21,6 +21,7 @@ Bayesite data documents, including `simulate` output, intentionally do not:
 | `sample` fit stream | `draws_format: "v0-provisional"` |
 | `diagnose` report | `diagnostics_format: "v0-provisional"` |
 | `prior-predictive` stream | `prior_predictive_format: "v0-provisional"` |
+| `generate` paired stream | `generated_datasets_format: "v0-provisional"` |
 | `posterior-predictive` stream | `posterior_predictive_format: "v0-provisional"` |
 | `posterior-check` report | `posterior_check_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
 | `simulate` data document | no marker; plain data document accepted by `sample` |
@@ -156,6 +157,29 @@ against the trailer chain aggregates: the per-draw diverging count must match
 `divergences`, the recomputed tree-depth histogram must match
 `treedepth_histogram`, and the mean of `tree_accept` must match `mean_accept`
 (within 1e-9).
+
+## `bayesite generate`
+
+`generate` consumes one closed model, a canonical design document, one explicit
+parameter-source variant (`fixed`, `model-prior`, or `posterior`), a count in
+`1..=1000`, and an explicit safe-integer seed. The pure core redraws the source
+once per dataset and emits UTF-8 NDJSON:
+
+1. one `generated_dataset_pairs` header with exact model/design/source hashes,
+   count/seed, and ordered parameter/dataset schemas;
+2. exactly one draw record per requested dataset containing natural-scale
+   parameters, a complete canonical dataset, and fixed/prior/posterior source
+   lineage;
+3. one completion trailer repeating bounded identity, source, count, and seed
+   facts.
+
+Fixed values repeat by point-mass semantics while outcomes redraw. Model-prior
+parameters redraw per dataset. Posterior draws are selected uniformly with
+replacement and each selection receives a fresh outcome draw. Models with
+non-Param free values, score-only factors, or non-assignable stochastic sites
+fail explicitly; factors are never dropped. The operation is deterministic for
+fixed bytes, count, and seed and performs no filesystem, entropy, or clock
+access in the core.
 
 ## `bayesite prior-predictive`
 

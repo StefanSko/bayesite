@@ -34,7 +34,7 @@ maps, and unsupported versions.
 The CLI and wasm/native protocol must expose the intended command set:
 
 ```text
-sample | diagnose | prior-predictive | posterior-predictive | posterior-check | simulate | recover-check | recover | sbc
+sample | diagnose | generate | prior-predictive | posterior-predictive | posterior-check | simulate | recover-check | recover | sbc
 ```
 
 G1 pins the common artifact contract:
@@ -303,6 +303,16 @@ G12 pins:
 Current limitations: posterior predictive supports directly assignable observed
 stochastic sites only, and posterior-check supports built-in generic discrepancy
 statistics only.
+
+### G13 — Functional generation
+
+`bayesite generate` runs one pure bounded operation for fixed, model-prior, or
+posterior parameter sources. G13 pins deterministic redraw per dataset,
+natural-scale parameter/complete-dataset pairing, source/model/design lineage,
+posterior sampling with replacement, fixed repetition, factor and non-Param
+free-value capability rejection, `1..=1000` count and output-size bounds, exact
+request fields, and CLI/Wasm protocol parity. No frontend worker fan-out is a
+valid implementation of this gate.
 
 ## Default command
 
