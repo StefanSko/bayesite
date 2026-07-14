@@ -2316,37 +2316,24 @@ fn parse_fit_draw_line(
     line: &Value,
     specs: &[FitParamSpec],
     expected_draw_index: usize,
-    source_seed: i64,
 ) -> Result<FitDraw, Error> {
-    let draw_index = line
-        .get("draw_index")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| malformed_fit("fit draw line needs integer draw_index"))?;
-    if draw_index < 0 || draw_index as usize != expected_draw_index {
-        return Err(malformed_fit(format!(
-            "fit draw_index values must be contiguous from 0; expected {expected_draw_index}, got {draw_index}"
-        )));
-    }
-    if line.get("draws_format").and_then(Value::as_str) != Some(V0_PROVISIONAL) {
-        return Err(malformed_fit(
-            "fit draw line draws_format must be \"v0-provisional\"; rerun `bayesite sample`",
-        ));
-    }
-    if line.get("artifact_kind").and_then(Value::as_str) != Some(POSTERIOR_DRAWS.kind) {
-        return Err(malformed_fit(
-            "fit draw line artifact_kind must be \"posterior_draws\"; pass output from `bayesite sample`",
-        ));
-    }
-    if line.get("draw_index_base").and_then(Value::as_str) != Some(POSTERIOR_DRAW_INDEX_BASE) {
-        return Err(malformed_fit(
-            "fit draw line draw_index_base must be \"zero_based_retained_draw_order\"",
-        ));
-    }
-    if line.get("seed").and_then(Value::as_i64) != Some(source_seed) {
-        return Err(malformed_fit(
-            "fit draw line seed must match fit header seed; rerun `bayesite sample`",
-        ));
-    }
+    // `diagnose_ndjson` has already validated every optional metadata group.
+    // Legacy streams may omit draw-index/artifact metadata consistently; in
+    // that case stream order is the stable source-draw index.
+    let draw_index = match line.get("draw_index") {
+        Some(value) => {
+            let draw_index = value
+                .as_i64()
+                .ok_or_else(|| malformed_fit("fit draw_index must be an integer when present"))?;
+            if draw_index < 0 || draw_index as usize != expected_draw_index {
+                return Err(malformed_fit(format!(
+                    "fit draw_index values must be contiguous from 0; expected {expected_draw_index}, got {draw_index}"
+                )));
+            }
+            draw_index as usize
+        }
+        None => expected_draw_index,
+    };
     let chain = line
         .get("chain")
         .and_then(Value::as_i64)
@@ -2374,7 +2361,7 @@ fn parse_fit_draw_line(
         )?);
     }
     Ok(FitDraw {
-        draw_index: draw_index as usize,
+        draw_index,
         chain,
         draw,
         values: parsed,
@@ -2464,12 +2451,7 @@ fn parse_fit_stream(
         if trailer.is_some() {
             return Err(malformed_fit("fit trailer must be the final line"));
         }
-        draws.push(parse_fit_draw_line(
-            &doc,
-            &params,
-            draws.len(),
-            source_seed,
-        )?);
+        draws.push(parse_fit_draw_line(&doc, &params, draws.len())?);
     }
     let trailer = trailer.ok_or_else(|| {
         malformed_fit("fit is missing a trailer; rerun `bayesite sample` to completion")
@@ -3293,6 +3275,12 @@ pub(crate) struct GenerationPair {
     pub(crate) lineage: GenerationLineage,
 }
 
+pub(crate) struct PosteriorGenerationSource<'a> {
+    pub(crate) fit_data: Vec<(String, DataValue)>,
+    pub(crate) fit_ndjson: &'a str,
+    pub(crate) expected_model_data_fingerprint: Option<&'a str>,
+}
+
 fn validate_generation_model(meta: &ModelMeta) -> Result<(), Error> {
     let free = meta.resolved_free_values();
     if free.len() != meta.params.len()
@@ -3394,7 +3382,8 @@ pub(crate) fn fixed_generation_pairs(
     parameters: Vec<(String, DataValue)>,
     count: usize,
     seed: u64,
-) -> Result<Vec<GenerationPair>, Error> {
+    emit: &mut dyn FnMut(GenerationPair) -> Result<(), Error>,
+) -> Result<(), Error> {
     validate_generation_model(&meta)?;
     if parameters.len() != meta.params.len()
         || parameters
@@ -3420,9 +3409,8 @@ pub(crate) fn fixed_generation_pairs(
         "generate fixed",
     )?;
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
-    let mut pairs = Vec::with_capacity(count);
     for _ in 0..count {
-        pairs.push(GenerationPair {
+        emit(GenerationPair {
             parameters: parameters.clone(),
             outcomes: simulate_generation_outcomes(
                 &meta,
@@ -3431,9 +3419,9 @@ pub(crate) fn fixed_generation_pairs(
                 &mut rng,
             )?,
             lineage: GenerationLineage::Fixed,
-        });
+        })?;
     }
-    Ok(pairs)
+    Ok(())
 }
 
 pub(crate) fn model_prior_generation_pairs(
@@ -3441,30 +3429,68 @@ pub(crate) fn model_prior_generation_pairs(
     design: Vec<(String, DataValue)>,
     count: usize,
     seed: u64,
-) -> Result<Vec<GenerationPair>, Error> {
+    emit: &mut dyn FnMut(GenerationPair) -> Result<(), Error>,
+) -> Result<(), Error> {
     validate_generation_model(&meta)?;
-    generation_design(&meta, design.clone())?;
-    let run = simulate_prior_predictive(
-        meta.clone(),
-        design,
-        &PriorPredictiveSettings { num_draws: count },
-        seed,
-    )?;
-    let mut pairs = Vec::with_capacity(count);
-    for (draw_index, draw) in run.draws.into_iter().enumerate() {
+    let data = generation_design(&meta, design)?;
+    let free_specs = free_specs(&meta, &data)?;
+    let sites = meta.resolved_stochastic_sites();
+    let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
+    for draw_index in 0..count {
+        let mut env = ForwardEnv {
+            values: HashMap::new(),
+            data: &data,
+        };
         let mut parameter_map = HashMap::new();
         let mut outcomes = Vec::new();
-        for (site, (name, value)) in run.sites.iter().zip(draw.values) {
-            let data_value = DataValue {
-                shape: value.shape().to_vec(),
-                values: value.data().to_vec(),
-                integer: site.integer,
-            };
-            match site.role {
-                PriorPredictiveRole::Parameter => {
-                    parameter_map.insert(name, data_value);
+        for site in &sites {
+            match &site.value {
+                Expr::Param(name) => {
+                    let free = free_specs.get(name).ok_or_else(|| {
+                        malformed(format!(
+                            "generation site {:?} targets unknown parameter {name:?}",
+                            site.name
+                        ))
+                    })?;
+                    if matches!(
+                        free.constraint,
+                        Some(ResolvedConstraint::VectorBounds { .. })
+                    ) {
+                        return Err(invalid(format!(
+                            "VectorBounds model-prior generation is not implemented for {name:?}"
+                        )));
+                    }
+                    let value = sample_constrained_distribution(
+                        &mut rng,
+                        &env,
+                        &site.distribution,
+                        Some(&free.shape),
+                        &free.constraint,
+                        name,
+                    )?;
+                    env.values.insert(name.clone(), value.clone());
+                    parameter_map.insert(
+                        name.clone(),
+                        DataValue {
+                            shape: value.shape().to_vec(),
+                            values: value.data().to_vec(),
+                            integer: value_is_integer(&value),
+                        },
+                    );
                 }
-                PriorPredictiveRole::Observed => outcomes.push((name, data_value)),
+                Expr::Data(name) => {
+                    let value = sample_distribution(&mut rng, &env, &site.distribution, None)?;
+                    env.values.insert(name.clone(), value.clone());
+                    outcomes.push((
+                        name.clone(),
+                        DataValue {
+                            shape: value.shape().to_vec(),
+                            values: value.data().to_vec(),
+                            integer: value_is_integer(&value),
+                        },
+                    ));
+                }
+                _ => unreachable!("generation model validation rejects non-assignable sites"),
             }
         }
         let parameters = meta
@@ -3486,15 +3512,15 @@ pub(crate) fn model_prior_generation_pairs(
                 "model-prior generation produced undeclared parameter values",
             ));
         }
-        pairs.push(GenerationPair {
+        emit(GenerationPair {
             parameters,
             outcomes,
             lineage: GenerationLineage::ModelPrior {
                 source_draw_index: draw_index,
             },
-        });
+        })?;
     }
-    Ok(pairs)
+    Ok(())
 }
 
 fn uniform_fit_index(rng: &mut Xoshiro256PlusPlus, count: usize) -> usize {
@@ -3511,22 +3537,21 @@ fn uniform_fit_index(rng: &mut Xoshiro256PlusPlus, count: usize) -> usize {
 pub(crate) fn posterior_generation_pairs(
     meta: ModelMeta,
     design: Vec<(String, DataValue)>,
-    fit_data: Vec<(String, DataValue)>,
-    fit_ndjson: &str,
-    expected_model_data_fingerprint: Option<&str>,
+    source: PosteriorGenerationSource<'_>,
     count: usize,
     seed: u64,
-) -> Result<Vec<GenerationPair>, Error> {
+    emit: &mut dyn FnMut(GenerationPair) -> Result<(), Error>,
+) -> Result<(), Error> {
     validate_generation_model(&meta)?;
     // Generation accepts exactly the fit streams accepted by the native
     // diagnostic validator rather than maintaining a weaker parser contract.
-    crate::protocol::diagnose_ndjson(fit_ndjson)?;
-    let posterior = Posterior::new(meta.clone(), fit_data)?;
+    crate::protocol::diagnose_ndjson(source.fit_ndjson)?;
+    let posterior = Posterior::new(meta.clone(), source.fit_data)?;
     let fit = parse_fit_stream(
-        fit_ndjson,
+        source.fit_ndjson,
         &posterior.packing(),
         posterior.identity_hash(),
-        expected_model_data_fingerprint,
+        source.expected_model_data_fingerprint,
     )?;
     let data = generation_design(&meta, design)?;
     let free_specs = free_specs(&meta, &data)?;
@@ -3579,7 +3604,6 @@ pub(crate) fn posterior_generation_pairs(
         )?;
     }
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
-    let mut pairs = Vec::with_capacity(count);
     for _ in 0..count {
         let source_index = uniform_fit_index(&mut rng, fit.draws.len());
         let fit_draw = &fit.draws[source_index];
@@ -3605,7 +3629,7 @@ pub(crate) fn posterior_generation_pairs(
             "generate posterior",
         )?;
         let outcomes = simulate_generation_outcomes(&meta, &data, values, &mut rng)?;
-        pairs.push(GenerationPair {
+        emit(GenerationPair {
             parameters,
             outcomes,
             lineage: GenerationLineage::Posterior {
@@ -3613,7 +3637,7 @@ pub(crate) fn posterior_generation_pairs(
                 chain: fit_draw.chain,
                 draw: fit_draw.draw,
             },
-        });
+        })?;
     }
-    Ok(pairs)
+    Ok(())
 }

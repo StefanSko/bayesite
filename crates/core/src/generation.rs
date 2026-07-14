@@ -8,7 +8,7 @@ use crate::json::{self, Value};
 use crate::model::{data_from_json, data_to_json, DataValue};
 use crate::predictive::{
     fixed_generation_pairs, model_prior_generation_pairs, posterior_generation_pairs,
-    GenerationLineage, GenerationPair,
+    GenerationLineage, GenerationPair, PosteriorGenerationSource,
 };
 
 const MAX_COUNT: usize = 1000;
@@ -189,16 +189,35 @@ fn canonical_variables(document: &Value, label: &str) -> Result<Vec<(String, Val
                 "{label} variable {name:?} has unsupported dtype {dtype:?}"
             )));
         }
-        if unique_field(spec_fields, "shape", &format!("{label} variable {name:?}"))?
+        let variable_label = format!("{label} variable {name:?}");
+        if unique_field(spec_fields, "shape", &variable_label)?
             .as_array()
             .is_none()
-            || unique_field(spec_fields, "values", &format!("{label} variable {name:?}"))?
-                .as_array()
-                .is_none()
         {
             return Err(malformed(format!(
-                "{label} variable {name:?} shape and values must be arrays"
+                "{label} variable {name:?} shape must be an array"
             )));
+        }
+        let values = unique_field(spec_fields, "values", &variable_label)?
+            .as_array()
+            .ok_or_else(|| {
+                malformed(format!("{label} variable {name:?} values must be an array"))
+            })?;
+        for value in values {
+            let valid = match dtype {
+                "bool" => matches!(value, Value::Bool(_)),
+                "int32" => value
+                    .as_i64()
+                    .is_some_and(|value| i32::try_from(value).is_ok()),
+                "int64" => matches!(value, Value::Int(_)),
+                "float32" | "float64" => value.as_f64().is_some(),
+                _ => unreachable!("dtype vocabulary was validated"),
+            };
+            if !valid {
+                return Err(malformed(format!(
+                    "{label} variable {name:?} contains a value outside dtype {dtype}"
+                )));
+            }
         }
     }
     // Reuse the binder's numeric, shape-product, boolean, and finite checks.
@@ -372,10 +391,20 @@ fn lineage_value(lineage: &GenerationLineage) -> Value {
     }
 }
 
-fn checked_lines(values: Vec<Value>) -> Result<Vec<String>, Error> {
-    let mut total = 0usize;
-    let mut lines = Vec::with_capacity(values.len());
-    for value in values {
+struct CheckedLines {
+    total: usize,
+    lines: Vec<String>,
+}
+
+impl CheckedLines {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            total: 0,
+            lines: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn push(&mut self, value: Value) -> Result<(), Error> {
         let line = json::write(&value)?;
         let line_bytes = line
             .len()
@@ -386,17 +415,22 @@ fn checked_lines(values: Vec<Value>) -> Result<Vec<String>, Error> {
                 "generated-dataset artifact line exceeds {MAX_LINE_BYTES} bytes"
             )));
         }
-        total = total
+        self.total = self
+            .total
             .checked_add(line_bytes)
             .ok_or_else(|| invalid("generated-dataset artifact size overflowed this build"))?;
-        if total > MAX_ARTIFACT_BYTES {
+        if self.total > MAX_ARTIFACT_BYTES {
             return Err(invalid(format!(
                 "generated-dataset artifact exceeds {MAX_ARTIFACT_BYTES} bytes"
             )));
         }
-        lines.push(line);
+        self.lines.push(line);
+        Ok(())
     }
-    Ok(lines)
+
+    fn finish(self) -> Vec<String> {
+        self.lines
+    }
 }
 
 pub fn generated_datasets_ndjson_lines(request: GenerationRequest) -> Result<Vec<String>, Error> {
@@ -442,126 +476,139 @@ pub fn generated_datasets_ndjson_lines(request: GenerationRequest) -> Result<Vec
     }
 
     let source = source_descriptor(&request.source)?;
-    let pairs = match &request.source {
-        GenerationSource::Fixed {
-            parameters_document,
-            parameters_hash,
-        } => {
-            if *parameters_hash != sha256_bytes(parameters_document.as_bytes()) {
-                return Err(invalid(
-                    "fixed parameters hash must match the exact received parameter bytes",
-                ));
+    let mut lines = CheckedLines::with_capacity(request.count + 2);
+    let mut schemas: Option<(Value, Value)> = None;
+    let mut emitted = 0usize;
+    {
+        let mut emit_pair = |pair: GenerationPair| -> Result<(), Error> {
+            let (parameters, dataset) = pair_documents(&pair, &design_variables)?;
+            let parameter_schema = schema(&parameters, "generated parameters")?;
+            let dataset_schema = schema(&dataset, "generated dataset")?;
+            match &schemas {
+                Some((expected_parameters, expected_dataset))
+                    if *expected_parameters != parameter_schema
+                        || *expected_dataset != dataset_schema =>
+                {
+                    return Err(invalid(
+                        "generated parameter or dataset schema changed across draws",
+                    ));
+                }
+                None => {
+                    let mut header = common_fields();
+                    header.extend([
+                        ("workflow_phases".to_string(), workflow_phases_value()),
+                        (
+                            "generation_model_hash".to_string(),
+                            Value::Str(request.generation_model_hash.clone()),
+                        ),
+                        (
+                            "design_hash".to_string(),
+                            Value::Str(request.design_hash.clone()),
+                        ),
+                        ("parameter_source".to_string(), source.clone()),
+                        ("count".to_string(), Value::Int(request.count as i64)),
+                        ("seed".to_string(), Value::Int(request.seed as i64)),
+                        (
+                            "draw_index_base".to_string(),
+                            Value::Str(DRAW_INDEX_BASE.to_string()),
+                        ),
+                        ("parameter_schema".to_string(), parameter_schema.clone()),
+                        ("dataset_schema".to_string(), dataset_schema.clone()),
+                    ]);
+                    lines.push(Value::Object(header))?;
+                    schemas = Some((parameter_schema, dataset_schema));
+                }
+                Some(_) => {}
             }
-            let parameters = json::parse(parameters_document)?;
-            canonical_variables(&parameters, "generate fixed parameters")?;
-            let parameter_data = data_from_json(&parameters)?;
-            fixed_generation_pairs(
-                meta.clone(),
-                design_data.clone(),
-                parameter_data,
-                request.count,
-                request.seed,
-            )?
-        }
-        GenerationSource::ModelPrior { model_hash, .. } => {
-            if model_hash != &request.generation_model_hash {
-                return Err(invalid(
-                    "model-prior model hash must equal generation model hash",
-                ));
-            }
-            model_prior_generation_pairs(
-                meta.clone(),
-                design_data.clone(),
-                request.count,
-                request.seed,
-            )?
-        }
-        GenerationSource::Posterior {
-            fit_ndjson,
-            fit_data_document,
-            fit_hash,
-            fit_model_hash,
-            fit_data_hash,
-            expected_model_data_fingerprint,
-        } => {
-            if fit_model_hash != &request.generation_model_hash {
-                return Err(invalid(
-                    "posterior fit model hash must equal generation model hash",
-                ));
-            }
-            if *fit_hash != sha256_bytes(fit_ndjson.as_bytes()) {
-                return Err(invalid(
-                    "posterior fit hash must match the exact posterior bytes",
-                ));
-            }
-            if *fit_data_hash != sha256_bytes(fit_data_document.as_bytes()) {
-                return Err(invalid(
-                    "posterior fit data hash must match the exact received fit-data bytes",
-                ));
-            }
-            let fit_data = json::parse(fit_data_document)?;
-            posterior_generation_pairs(
-                meta.clone(),
-                design_data.clone(),
-                data_from_json(&fit_data)?,
-                fit_ndjson,
-                expected_model_data_fingerprint.as_deref(),
-                request.count,
-                request.seed,
-            )?
-        }
-    };
-    if pairs.len() != request.count {
-        return Err(invalid("generate core returned the wrong pair count"));
-    }
-    let Some(first_pair) = pairs.first() else {
-        unreachable!("count was validated positive")
-    };
-    let (first_parameters, first_dataset) = pair_documents(first_pair, &design_variables)?;
-    let parameter_schema = schema(&first_parameters, "generated parameters")?;
-    let dataset_schema = schema(&first_dataset, "generated dataset")?;
+            let mut draw = common_fields();
+            draw.extend([
+                ("draw_index".to_string(), Value::Int(emitted as i64)),
+                ("draw_count".to_string(), Value::Int(request.count as i64)),
+                ("parameters".to_string(), parameters),
+                ("dataset".to_string(), dataset),
+                ("source_lineage".to_string(), lineage_value(&pair.lineage)),
+            ]);
+            lines.push(Value::Object(draw))?;
+            emitted += 1;
+            Ok(())
+        };
 
-    let mut header = common_fields();
-    header.extend([
-        ("workflow_phases".to_string(), workflow_phases_value()),
-        (
-            "generation_model_hash".to_string(),
-            Value::Str(request.generation_model_hash.clone()),
-        ),
-        (
-            "design_hash".to_string(),
-            Value::Str(request.design_hash.clone()),
-        ),
-        ("parameter_source".to_string(), source.clone()),
-        ("count".to_string(), Value::Int(request.count as i64)),
-        ("seed".to_string(), Value::Int(request.seed as i64)),
-        (
-            "draw_index_base".to_string(),
-            Value::Str(DRAW_INDEX_BASE.to_string()),
-        ),
-        ("parameter_schema".to_string(), parameter_schema.clone()),
-        ("dataset_schema".to_string(), dataset_schema.clone()),
-    ]);
-    let mut values = Vec::with_capacity(request.count + 2);
-    values.push(Value::Object(header));
-    for (draw_index, pair) in pairs.iter().enumerate() {
-        let (parameters, dataset) = pair_documents(pair, &design_variables)?;
-        if schema(&parameters, "generated parameters")? != parameter_schema
-            || schema(&dataset, "generated dataset")? != dataset_schema
-        {
-            return Err(invalid(
-                "generated parameter or dataset schema changed across draws",
-            ));
+        match &request.source {
+            GenerationSource::Fixed {
+                parameters_document,
+                parameters_hash,
+            } => {
+                if *parameters_hash != sha256_bytes(parameters_document.as_bytes()) {
+                    return Err(invalid(
+                        "fixed parameters hash must match the exact received parameter bytes",
+                    ));
+                }
+                let parameters = json::parse(parameters_document)?;
+                canonical_variables(&parameters, "generate fixed parameters")?;
+                fixed_generation_pairs(
+                    meta.clone(),
+                    design_data.clone(),
+                    data_from_json(&parameters)?,
+                    request.count,
+                    request.seed,
+                    &mut emit_pair,
+                )?;
+            }
+            GenerationSource::ModelPrior { model_hash, .. } => {
+                if model_hash != &request.generation_model_hash {
+                    return Err(invalid(
+                        "model-prior model hash must equal generation model hash",
+                    ));
+                }
+                model_prior_generation_pairs(
+                    meta.clone(),
+                    design_data.clone(),
+                    request.count,
+                    request.seed,
+                    &mut emit_pair,
+                )?;
+            }
+            GenerationSource::Posterior {
+                fit_ndjson,
+                fit_data_document,
+                fit_hash,
+                fit_model_hash,
+                fit_data_hash,
+                expected_model_data_fingerprint,
+            } => {
+                if fit_model_hash != &request.generation_model_hash {
+                    return Err(invalid(
+                        "posterior fit model hash must equal generation model hash",
+                    ));
+                }
+                if *fit_hash != sha256_bytes(fit_ndjson.as_bytes()) {
+                    return Err(invalid(
+                        "posterior fit hash must match the exact posterior bytes",
+                    ));
+                }
+                if *fit_data_hash != sha256_bytes(fit_data_document.as_bytes()) {
+                    return Err(invalid(
+                        "posterior fit data hash must match the exact received fit-data bytes",
+                    ));
+                }
+                let fit_data = json::parse(fit_data_document)?;
+                posterior_generation_pairs(
+                    meta.clone(),
+                    design_data.clone(),
+                    PosteriorGenerationSource {
+                        fit_data: data_from_json(&fit_data)?,
+                        fit_ndjson,
+                        expected_model_data_fingerprint: expected_model_data_fingerprint.as_deref(),
+                    },
+                    request.count,
+                    request.seed,
+                    &mut emit_pair,
+                )?;
+            }
         }
-        let mut draw = common_fields();
-        draw.extend([
-            ("draw_index".to_string(), Value::Int(draw_index as i64)),
-            ("draw_count".to_string(), Value::Int(request.count as i64)),
-            ("parameters".to_string(), parameters),
-            ("dataset".to_string(), dataset),
-            ("source_lineage".to_string(), lineage_value(&pair.lineage)),
-        ]);
-        values.push(Value::Object(draw));
+    }
+    if emitted != request.count || schemas.is_none() {
+        return Err(invalid("generate core returned the wrong pair count"));
     }
     let mut trailer = common_fields();
     trailer.extend([
@@ -577,11 +624,11 @@ pub fn generated_datasets_ndjson_lines(request: GenerationRequest) -> Result<Vec
         ("draw_count".to_string(), Value::Int(request.count as i64)),
         ("complete".to_string(), Value::Bool(true)),
     ]);
-    values.push(Value::Object(vec![(
+    lines.push(Value::Object(vec![(
         "trailer".to_string(),
         Value::Object(trailer),
-    )]));
-    checked_lines(values)
+    )]))?;
+    Ok(lines.finish())
 }
 
 pub fn sha256_bytes(bytes: &[u8]) -> String {

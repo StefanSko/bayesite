@@ -18,6 +18,7 @@ use crate::artifact::{
 };
 use crate::diagnostics;
 use crate::error::{Error, ErrorKind};
+use crate::fingerprint::model_data_fingerprint;
 use crate::generation::{
     generated_datasets_ndjson_lines, AuthoredProvenance, GenerationRequest, GenerationSource,
 };
@@ -3387,13 +3388,15 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
                                 ))
                             })
                     };
+                    let expected_fingerprint =
+                        model_data_fingerprint(&model_document, &fit_data_document);
                     GenerationSource::Posterior {
                         fit_ndjson,
                         fit_data_document,
                         fit_hash: identity("fit_hash")?,
                         fit_model_hash: identity("fit_model_hash")?,
                         fit_data_hash: identity("fit_data_hash")?,
-                        expected_model_data_fingerprint: None,
+                        expected_model_data_fingerprint: Some(expected_fingerprint),
                     }
                 }
                 other => {

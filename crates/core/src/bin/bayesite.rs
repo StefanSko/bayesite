@@ -356,7 +356,7 @@ fn usage() -> &'static str {
      [--seed N] [--draws D] [--out <pp.jsonl|->]\n\
      usage: bayesite generate --model <ir.json|-> --design <data.json|-> \
      --source <fixed|model-prior|posterior> [--parameters <params.json|->] \
-     [--fit <fit.jsonl|-> --fit-data <data.json|->] [--count N] [--seed N] \
+     [--fit <fit.jsonl|-> --fit-data <data.json|->] --count N --seed N \
      [--out <generated.jsonl|->]\n\
      usage: bayesite posterior-predictive --model <ir.json|-> --data <data.json|-> \
      --fit <fit.jsonl|-> [--seed N] [--out <yrep.jsonl|->]\n\
@@ -643,7 +643,7 @@ fn parse_generate_args(argv: &[String]) -> Result<GenerateArgs, Error> {
     let mut fit_path: Option<String> = None;
     let mut fit_data_path: Option<String> = None;
     let mut out_path = "-".to_string();
-    let mut count = 100usize;
+    let mut count: Option<usize> = None;
     let mut seed: Option<u64> = None;
     let mut iter = argv.iter();
     while let Some(flag) = iter.next() {
@@ -658,11 +658,11 @@ fn parse_generate_args(argv: &[String]) -> Result<GenerateArgs, Error> {
             "--fit-data" => fit_data_path = Some(value_for_flag(&mut iter, "--fit-data")?.clone()),
             "--out" => out_path = value_for_flag(&mut iter, "--out")?.clone(),
             "--count" => {
-                count = parse_reportable_draw_count(
+                count = Some(parse_reportable_draw_count(
                     value_for_flag(&mut iter, "--count")?,
                     "--count",
                     "generated-dataset artifacts",
-                )?
+                )?)
             }
             "--seed" => seed = Some(parse_artifact_seed(value_for_flag(&mut iter, "--seed")?)?),
             other => {
@@ -678,6 +678,7 @@ fn parse_generate_args(argv: &[String]) -> Result<GenerateArgs, Error> {
         design_path.ok_or_else(|| usage_error("--design is required (a path or - for stdin)"))?;
     let source_kind = source_kind
         .ok_or_else(|| usage_error("--source is required (fixed, model-prior, or posterior)"))?;
+    let count = count.ok_or_else(|| usage_error("--count is required for generation"))?;
     if count == 0 || count > 1000 {
         return Err(usage_error("--count must be in 1..=1000"));
     }
