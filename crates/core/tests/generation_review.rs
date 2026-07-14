@@ -342,7 +342,7 @@ fn protocol_rejects_byte_distinct_posterior_fingerprint_inputs() {
     .join("\n");
     let changed_model = format!("{model_text}\n");
     let changed_fit_data = format!("{fit_data_text}\n");
-    let request = Value::Object(vec![
+    let mut request = Value::Object(vec![
         ("command".to_string(), Value::Str("generate".to_string())),
         ("model".to_string(), Value::Str(changed_model.clone())),
         (
@@ -384,6 +384,28 @@ fn protocol_rejects_byte_distinct_posterior_fingerprint_inputs() {
     ]);
     let response = handle_request(&json::write(&request).unwrap());
     assert!(response.contains("model_data_fingerprint"), "{response}");
+
+    let malformed_fit = fit.replace(
+        &format!("\"model_data_fingerprint\":\"{fingerprint}\""),
+        "\"model_data_fingerprint\":null",
+    );
+    let source = object_entry_mut(&mut request, "parameter_source");
+    *object_entry_mut(source, "fit") = Value::Str(malformed_fit.clone());
+    let identities = object_entry_mut(&mut request, "identities");
+    *object_entry_mut(identities, "fit_hash") = Value::Str(sha256_bytes(malformed_fit.as_bytes()));
+    let response = handle_request(&json::write(&request).unwrap());
+    assert!(response.contains("model_data_fingerprint"), "{response}");
+}
+
+#[test]
+fn documented_generate_command_has_explicit_count_and_seed() {
+    let agents =
+        std::fs::read_to_string(format!("{}/../../AGENTS.md", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let command = agents
+        .lines()
+        .find(|line| line.starts_with("bayesite generate"))
+        .expect("AGENTS.md generation example");
+    assert!(command.contains("--count") && command.contains("--seed"));
 }
 
 #[test]
