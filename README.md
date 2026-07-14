@@ -18,6 +18,7 @@ Implemented command surface:
 bayesite sample
 bayesite diagnose
 bayesite prior-predictive
+bayesite generate
 bayesite posterior-predictive
 bayesite posterior-check
 bayesite simulate
@@ -32,6 +33,8 @@ Current runtime capabilities:
 - evaluates log density and gradients with in-tree reverse-mode AD;
 - samples posterior draws with NUTS only;
 - recomputes R-hat/ESS diagnostics from fit streams;
+- emits paired parameter/complete-dataset draws from fixed values, a closed
+  model prior, or a compatible posterior in one bounded generation operation;
 - emits prior-predictive draws for directly assignable stochastic sites;
 - emits posterior-predictive replicated observed draws;
 - emits factual posterior predictive check reports;

@@ -31,7 +31,7 @@ versioned format decision owned by bayeswire.
 
 - Consume IR; do not add a Rust model declaration language unless explicitly
   redesigned.
-- Provide an agent-operable CLI workflow: `sample`, `diagnose`,
+- Provide an agent-operable CLI workflow: `sample`, `diagnose`, `generate`,
   `prior-predictive`, `recover`, and `sbc`.
 - Keep the default agent path to one downloaded binary: no Python, no package
   manager, no NumPy question, and no runtime dependency graph.
@@ -73,6 +73,7 @@ The endgame CLI is a single binary with machine-readable commands:
 bayesite sample           --model model.json --data data.json --out fit.jsonl
 bayesite diagnose         --fit fit.jsonl
 bayesite prior-predictive --model model.json --data data.json --out pp.jsonl
+bayesite generate         --model model.json --design design.json --source model-prior --count 100 --seed 1 --out generated.jsonl
 bayesite recover          --model model.json --scenario scenario.json
 bayesite sbc              --model model.json --scenario scenario.json --replicates 100
 ```

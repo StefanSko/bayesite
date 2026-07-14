@@ -10,6 +10,10 @@ versioned on their own.
 
 ### Added
 
+- Add one bounded `generate` operation across the pure core, CLI, and Wasm
+  protocol for fixed, closed-model-prior, and compatible-posterior parameter
+  sources, preserving natural-scale parameter/complete-dataset pairs and exact
+  redraw lineage.
 - Expand SBC calibration with `eight_schools_non_centered` for non-centered
   hierarchical geometry, `varying_intercepts_poisson` for a hierarchical
   Poisson GLM, `linear_regression_n64` for n=64 regression, and `mvn_cholesky`

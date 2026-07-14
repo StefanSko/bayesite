@@ -19,8 +19,8 @@ Core invariants that should remain true as Bayesite evolves.
 
 ## Workflow surface
 
-- The intended command set is `sample`, `diagnose`, `prior-predictive`,
-  `posterior-predictive`, `posterior-check`, `simulate`, `recover-check`,
+- The intended command set is `sample`, `diagnose`, `generate`,
+  `prior-predictive`, `posterior-predictive`, `posterior-check`, `simulate`, `recover-check`,
   `recover`, and `sbc`.
 - CLI stdout/stderr are machine-readable. Errors are JSON objects with typed
   error names and repair-oriented messages.
@@ -32,6 +32,10 @@ Core invariants that should remain true as Bayesite evolves.
 - Seeds are explicit user inputs. Re-running the same model, data, settings,
   seed, and chain id reproduces the same runtime behavior across supported
   targets, including wasm.
+- Functional generation accepts exactly fixed parameters, one closed model's
+  prior, or a model/data-compatible posterior source. It redraws the selected
+  source once per dataset and emits one natural-scale parameter/complete-data
+  pair per draw in one bounded core invocation.
 - Prior-predictive simulation claims exactly one declaration-backed stochastic
   site for every Param, Observed, and non-Param free value before drawing.
   Additional density factors are rejected because Bayesite has no factor-aware

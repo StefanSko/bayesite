@@ -3655,6 +3655,7 @@ fn capabilities_emits_versioned_document_matching_dispatch_table() {
             "sample",
             "diagnose",
             "prior-predictive",
+            "generate",
             "posterior-predictive",
             "posterior-check",
             "simulate",

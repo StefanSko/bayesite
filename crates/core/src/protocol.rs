@@ -18,6 +18,10 @@ use crate::artifact::{
 };
 use crate::diagnostics;
 use crate::error::{Error, ErrorKind};
+use crate::fingerprint::model_data_fingerprint;
+use crate::generation::{
+    generated_datasets_ndjson_lines, AuthoredProvenance, GenerationRequest, GenerationSource,
+};
 use crate::ir::{decode_model, ModelMeta};
 use crate::json::{self, Value};
 use crate::model::{data_from_json, data_to_json, DataValue, Posterior};
@@ -2807,6 +2811,22 @@ fn invalid_request(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidSettings, message)
 }
 
+fn request_json_document(value: &Value, label: &str) -> Result<(String, Value), Error> {
+    let (text, document) = match value {
+        Value::Str(text) => (text.clone(), json::parse(text)?),
+        Value::Object(_) => (json::write(value)?, value.clone()),
+        _ => {
+            return Err(invalid_request(format!(
+                "{label} must be a JSON object or an exact JSON text string"
+            )))
+        }
+    };
+    if !matches!(document, Value::Object(_)) {
+        return Err(invalid_request(format!("{label} must decode to an object")));
+    }
+    Ok((text, document))
+}
+
 fn request_model_data(
     request: &Value,
     context: &str,
@@ -3184,6 +3204,218 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
                 })?;
             diagnose_ndjson(fit)
         }
+        Some("generate") => {
+            reject_unknown_fields(
+                &request,
+                "generate request",
+                &[
+                    "command",
+                    "model",
+                    "design",
+                    "parameter_source",
+                    "count",
+                    "seed",
+                    "identities",
+                ],
+            )?;
+            let model_value = request
+                .get("model")
+                .ok_or_else(|| invalid_request("generate request needs a model IR document"))?;
+            let (model_document, model) =
+                request_json_document(model_value, "generate request model")?;
+            decode_model(&model)?;
+            let design_value = request
+                .get("design")
+                .ok_or_else(|| invalid_request("generate request needs a design object"))?;
+            let (design_document, _) =
+                request_json_document(design_value, "generate request design")?;
+            let count = request
+                .get("count")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| invalid_request("generate request count must be an integer"))?;
+            if count < 1 {
+                return Err(invalid_request("generate request count must be at least 1"));
+            }
+            let count = usize::try_from(count)
+                .map_err(|_| invalid_request("generate request count does not fit this build"))?;
+            let seed = request_seed(&request, "generate")?;
+            let identities = request
+                .get("identities")
+                .ok_or_else(|| invalid_request("generate request needs identities"))?;
+            let generation_model_hash = identities
+                .get("generation_model_hash")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    invalid_request("generate identities need generation_model_hash")
+                })?
+                .to_string();
+            let design_hash = identities
+                .get("design_hash")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_request("generate identities need design_hash"))?
+                .to_string();
+            let source_doc = request
+                .get("parameter_source")
+                .ok_or_else(|| invalid_request("generate request needs parameter_source"))?;
+            let kind = source_doc
+                .get("kind")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_request("generate parameter_source needs kind"))?;
+            let source = match kind {
+                "fixed" => {
+                    reject_unknown_fields(
+                        source_doc,
+                        "generate fixed parameter_source",
+                        &["kind", "parameters"],
+                    )?;
+                    reject_unknown_fields(
+                        identities,
+                        "generate fixed identities",
+                        &["generation_model_hash", "design_hash", "parameters_hash"],
+                    )?;
+                    let parameters = source_doc.get("parameters").ok_or_else(|| {
+                        invalid_request("generate fixed parameter_source needs parameters")
+                    })?;
+                    let (parameters_document, _) = request_json_document(
+                        parameters,
+                        "generate fixed parameter_source parameters",
+                    )?;
+                    let parameters_hash = identities
+                        .get("parameters_hash")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            invalid_request("generate fixed identities need parameters_hash")
+                        })?
+                        .to_string();
+                    GenerationSource::Fixed {
+                        parameters_document,
+                        parameters_hash,
+                    }
+                }
+                "model-prior" => {
+                    reject_unknown_fields(
+                        source_doc,
+                        "generate model-prior parameter_source",
+                        &["kind", "authored_provenance"],
+                    )?;
+                    reject_unknown_fields(
+                        identities,
+                        "generate model-prior identities",
+                        &["generation_model_hash", "design_hash"],
+                    )?;
+                    let authored_provenance = match source_doc.get("authored_provenance") {
+                        Some(Value::Null) => None,
+                        Some(value) => {
+                            reject_unknown_fields(
+                                value,
+                                "generate authored_provenance",
+                                &[
+                                    "claimed_source_model_hash",
+                                    "claimed_outcome_model_hash",
+                                ],
+                            )?;
+                            Some(AuthoredProvenance {
+                                claimed_source_model_hash: value
+                                    .get("claimed_source_model_hash")
+                                    .and_then(Value::as_str)
+                                    .ok_or_else(|| {
+                                        invalid_request(
+                                            "generate authored_provenance needs claimed_source_model_hash",
+                                        )
+                                    })?
+                                    .to_string(),
+                                claimed_outcome_model_hash: value
+                                    .get("claimed_outcome_model_hash")
+                                    .and_then(Value::as_str)
+                                    .ok_or_else(|| {
+                                        invalid_request(
+                                            "generate authored_provenance needs claimed_outcome_model_hash",
+                                        )
+                                    })?
+                                    .to_string(),
+                            })
+                        }
+                        None => {
+                            return Err(invalid_request(
+                                "generate model-prior parameter_source needs authored_provenance",
+                            ))
+                        }
+                    };
+                    GenerationSource::ModelPrior {
+                        model_hash: generation_model_hash.clone(),
+                        authored_provenance,
+                    }
+                }
+                "posterior" => {
+                    reject_unknown_fields(
+                        source_doc,
+                        "generate posterior parameter_source",
+                        &["kind", "fit", "fit_data"],
+                    )?;
+                    reject_unknown_fields(
+                        identities,
+                        "generate posterior identities",
+                        &[
+                            "generation_model_hash",
+                            "design_hash",
+                            "fit_hash",
+                            "fit_model_hash",
+                            "fit_data_hash",
+                        ],
+                    )?;
+                    let fit_ndjson = source_doc
+                        .get("fit")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            invalid_request("generate posterior parameter_source needs fit text")
+                        })?
+                        .to_string();
+                    let fit_data = source_doc.get("fit_data").ok_or_else(|| {
+                        invalid_request("generate posterior parameter_source needs fit_data")
+                    })?;
+                    let (fit_data_document, _) = request_json_document(
+                        fit_data,
+                        "generate posterior parameter_source fit_data",
+                    )?;
+                    let identity = |name: &str| -> Result<String, Error> {
+                        identities
+                            .get(name)
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .ok_or_else(|| {
+                                invalid_request(format!(
+                                    "generate posterior identities need {name}"
+                                ))
+                            })
+                    };
+                    let expected_fingerprint =
+                        model_data_fingerprint(&model_document, &fit_data_document);
+                    GenerationSource::Posterior {
+                        fit_ndjson,
+                        fit_data_document,
+                        fit_hash: identity("fit_hash")?,
+                        fit_model_hash: identity("fit_model_hash")?,
+                        fit_data_hash: identity("fit_data_hash")?,
+                        expected_model_data_fingerprint: Some(expected_fingerprint),
+                    }
+                }
+                other => {
+                    return Err(invalid_request(format!(
+                        "generate parameter_source kind {other:?} is unsupported"
+                    )))
+                }
+            };
+            let lines = generated_datasets_ndjson_lines(GenerationRequest {
+                model_document,
+                design_document,
+                source,
+                count,
+                seed,
+                generation_model_hash,
+                design_hash,
+            })?;
+            Ok(lines.join("\n"))
+        }
         Some("prior-predictive") => {
             reject_unknown_fields(
                 &request,
@@ -3399,10 +3631,10 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
             json::write(&response)
         }
         Some(command) => Err(invalid_request(format!(
-            "unknown command \"{command}\"; supported commands are \"sample\", \"diagnose\", \"diagnostics\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"simulate\", \"recover-check\", \"recover\", and \"sbc\""
+            "unknown command \"{command}\"; supported commands are \"sample\", \"diagnose\", \"diagnostics\", \"generate\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"simulate\", \"recover-check\", \"recover\", and \"sbc\""
         ))),
         None => Err(invalid_request(
-            "request needs \"command\": \"sample\", \"diagnose\", \"diagnostics\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"simulate\", \"recover-check\", \"recover\", or \"sbc\"",
+            "request needs \"command\": \"sample\", \"diagnose\", \"diagnostics\", \"generate\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"simulate\", \"recover-check\", \"recover\", or \"sbc\"",
         )),
     }
 }

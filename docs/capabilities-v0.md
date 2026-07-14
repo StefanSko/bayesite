@@ -8,7 +8,7 @@ discover what an engine binary supports.
 {
   "capabilities_format": "v0-provisional",
   "version": "0.2.2",
-  "commands": ["sample", "diagnose", "prior-predictive", "posterior-predictive", "posterior-check", "simulate", "recover-check", "recover", "sbc", "capabilities"],
+  "commands": ["sample", "diagnose", "prior-predictive", "generate", "posterior-predictive", "posterior-check", "simulate", "recover-check", "recover", "sbc", "capabilities"],
   "ir": {"bayeswire_ir": 1},
   "schemas": {
     "recover_scenario": "v0-provisional",
