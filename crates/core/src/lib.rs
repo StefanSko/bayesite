@@ -16,6 +16,7 @@ pub mod density;
 pub mod diagnostics;
 pub mod error;
 pub mod fingerprint;
+pub mod generation;
 pub mod ir;
 pub mod json;
 pub mod linalg;
