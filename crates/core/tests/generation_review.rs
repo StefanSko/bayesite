@@ -1,13 +1,16 @@
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use bayesite_core::fingerprint::model_data_fingerprint;
 use bayesite_core::generation::{
     generated_datasets_ndjson_lines, sha256_bytes, GenerationRequest, GenerationSource,
 };
 use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, Posterior};
-use bayesite_core::protocol::{handle_request, ndjson_lines};
+use bayesite_core::protocol::{
+    diagnose_ndjson, handle_request, ndjson_lines, ndjson_lines_with_model_data_fingerprint,
+};
 use bayesite_core::sampler::{sample, Settings};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -307,6 +310,177 @@ fn canonical_design_rejects_bad_specs_and_accepts_top_level_reordering() {
         seed: 7,
     };
     assert!(generated_datasets_ndjson_lines(good).is_ok());
+}
+
+#[test]
+fn protocol_rejects_byte_distinct_posterior_fingerprint_inputs() {
+    let (model, design, _, fit_data) = linear_parts();
+    let model_text = json::write(&model).unwrap();
+    let fit_data_text = json::write(&fit_data).unwrap();
+    let posterior = Posterior::new(
+        decode_model(&model).unwrap(),
+        data_from_json(&fit_data).unwrap(),
+    )
+    .unwrap();
+    let settings = Settings {
+        num_warmup: 20,
+        num_draws: 4,
+        max_treedepth: 5,
+        target_accept: 0.8,
+        ..Settings::default()
+    };
+    let chain = sample(&posterior, &settings, 82, 0).unwrap();
+    let fingerprint = model_data_fingerprint(&model_text, &fit_data_text);
+    let fit = ndjson_lines_with_model_data_fingerprint(
+        &posterior,
+        &settings,
+        82,
+        &[(0, chain)],
+        Some(&fingerprint),
+    )
+    .unwrap()
+    .join("\n");
+    let changed_model = format!("{model_text}\n");
+    let changed_fit_data = format!("{fit_data_text}\n");
+    let request = Value::Object(vec![
+        ("command".to_string(), Value::Str("generate".to_string())),
+        ("model".to_string(), Value::Str(changed_model.clone())),
+        (
+            "design".to_string(),
+            Value::Str(json::write(&design).unwrap()),
+        ),
+        (
+            "parameter_source".to_string(),
+            Value::Object(vec![
+                ("kind".to_string(), Value::Str("posterior".to_string())),
+                ("fit".to_string(), Value::Str(fit.clone())),
+                ("fit_data".to_string(), Value::Str(changed_fit_data.clone())),
+            ]),
+        ),
+        ("count".to_string(), Value::Int(1)),
+        ("seed".to_string(), Value::Int(7)),
+        (
+            "identities".to_string(),
+            Value::Object(vec![
+                (
+                    "generation_model_hash".to_string(),
+                    Value::Str(sha256_bytes(changed_model.as_bytes())),
+                ),
+                ("design_hash".to_string(), Value::Str(hash(&design))),
+                (
+                    "fit_hash".to_string(),
+                    Value::Str(sha256_bytes(fit.as_bytes())),
+                ),
+                (
+                    "fit_model_hash".to_string(),
+                    Value::Str(sha256_bytes(changed_model.as_bytes())),
+                ),
+                (
+                    "fit_data_hash".to_string(),
+                    Value::Str(sha256_bytes(changed_fit_data.as_bytes())),
+                ),
+            ]),
+        ),
+    ]);
+    let response = handle_request(&json::write(&request).unwrap());
+    assert!(response.contains("model_data_fingerprint"), "{response}");
+}
+
+#[test]
+fn posterior_accepts_every_fit_metadata_variant_accepted_by_diagnose() {
+    let (model, _, _, data) = linear_parts();
+    let fit = sampled_fit(&model, &data);
+    let mut lines = fit.lines().map(str::to_string).collect::<Vec<_>>();
+    let trailer_index = lines.len() - 1;
+    for line in &mut lines[1..trailer_index] {
+        let mut draw = json::parse(line).unwrap();
+        let Value::Object(fields) = &mut draw else {
+            unreachable!()
+        };
+        fields.retain(|(name, _)| {
+            !matches!(
+                name.as_str(),
+                "draw_index"
+                    | "draws_format"
+                    | "artifact_kind"
+                    | "artifact_scope"
+                    | "chain_index_base"
+                    | "draw_index_base"
+                    | "draw_count"
+                    | "seed"
+            )
+        });
+        *line = json::write(&draw).unwrap();
+    }
+    let legacy = lines.join("\n");
+    diagnose_ndjson(&legacy).unwrap();
+    generated_datasets_ndjson_lines(posterior_request(legacy, 7)).unwrap();
+}
+
+#[test]
+fn canonical_integer_design_rejects_fractional_payloads() {
+    let (model, mut design, parameters, _) = linear_parts();
+    let variables = object_entry_mut(&mut design, "variables");
+    let x = object_entry_mut(variables, "x");
+    *object_entry_mut(x, "dtype") = Value::Str("int32".to_string());
+    *object_entry_mut(x, "values") = Value::Array((0..5).map(|_| Value::Float(0.5)).collect());
+    let error = generated_datasets_ndjson_lines(GenerationRequest {
+        model_document: json::write(&model).unwrap(),
+        design_document: json::write(&design).unwrap(),
+        generation_model_hash: hash(&model),
+        design_hash: hash(&design),
+        source: GenerationSource::Fixed {
+            parameters_hash: hash(&parameters),
+            parameters_document: json::write(&parameters).unwrap(),
+        },
+        count: 1,
+        seed: 7,
+    })
+    .unwrap_err();
+    assert!(error.message.contains("int32") || error.message.contains("integer"));
+}
+
+#[test]
+fn cli_requires_explicit_generation_count() {
+    let (model, design, parameters, _) = linear_parts();
+    let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "bayesite-generate-count-review-{}-{id}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, value) in [
+        ("model", model),
+        ("design", design),
+        ("parameters", parameters),
+    ] {
+        std::fs::write(
+            dir.join(format!("{name}.json")),
+            json::write(&value).unwrap(),
+        )
+        .unwrap();
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "generate",
+            "--model",
+            dir.join("model.json").to_str().unwrap(),
+            "--design",
+            dir.join("design.json").to_str().unwrap(),
+            "--source",
+            "fixed",
+            "--parameters",
+            dir.join("parameters.json").to_str().unwrap(),
+            "--seed",
+            "7",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("--count is required"));
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
