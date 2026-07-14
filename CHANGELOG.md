@@ -8,15 +8,18 @@ versioned on their own.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-14
+
 ### Added
 
 - Add a mandatory, stdlib-only SBC rank-uniformity conformance gate using
   Monte Carlo-calibrated simultaneous ECDF confidence bands.
 - Add self-contained HTML report options for the G6 and G11 statistical gates
   and upload their reports as conformance CI artifacts.
-- Add an optional `sample.thin` setting to `bayesite sbc` scenarios: ranks use
-  every thin-th retained draw per chain while R-hat/ESS diagnostics keep the
-  full series, and reports state `thin` and the thinned rank support ([#36]).
+- Add an optional `sample.thin` setting to `bayesite sbc` scenarios and
+  `settings.thin` to the protocol SBC command: ranks use every thin-th
+  retained draw per chain while R-hat/ESS diagnostics keep the full series,
+  and reports state `thin` and the thinned rank support ([#36]).
 
 ### Changed
 
@@ -78,7 +81,8 @@ versioned on their own.
 - Reproducible release archives and checksums for Linux, macOS, and Windows.
 
 [#36]: https://github.com/StefanSko/bayesite/issues/36
-[Unreleased]: https://github.com/StefanSko/bayesite/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/StefanSko/bayesite/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/StefanSko/bayesite/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/StefanSko/bayesite/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/StefanSko/bayesite/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/StefanSko/bayesite/releases/tag/v0.1.0
