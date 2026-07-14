@@ -1,0 +1,226 @@
+{
+  "bayeswire_ir": 1,
+  "model": {
+    "node": "ModelMeta",
+    "params": [
+      {
+        "name": "mu",
+        "value": {
+          "node": "ResolvedParam",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "constraint": null,
+          "size": 2
+        }
+      },
+      {
+        "name": "tau",
+        "value": {
+          "node": "ResolvedParam",
+          "distribution": {
+            "node": "Uniform",
+            "low": {
+              "node": "ConstNode",
+              "value": 0.5
+            },
+            "high": {
+              "node": "ConstNode",
+              "value": 2.0
+            }
+          },
+          "constraint": {
+            "node": "Interval",
+            "lower": 0.5,
+            "upper": 2.0
+          },
+          "size": null
+        }
+      },
+      {
+        "name": "x",
+        "value": {
+          "node": "ResolvedParam",
+          "distribution": {
+            "node": "MultivariateNormal",
+            "mean": {
+              "node": "ParamRef",
+              "name": "mu"
+            },
+            "scale_tril": {
+              "node": "BinOp",
+              "op": "*",
+              "left": {
+                "node": "ParamRef",
+                "name": "tau"
+              },
+              "right": {
+                "node": "DataRef",
+                "name": "chol"
+              }
+            }
+          },
+          "constraint": null,
+          "size": 2
+        }
+      }
+    ],
+    "data": [
+      {
+        "name": "chol",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": [
+              2,
+              2
+            ]
+          }
+        }
+      }
+    ],
+    "observed_nodes": [
+      {
+        "node": "ResolvedObserved",
+        "name": "y",
+        "distribution": {
+          "node": "Normal",
+          "loc": {
+            "node": "ParamRef",
+            "name": "x"
+          },
+          "scale": {
+            "node": "ConstNode",
+            "value": 0.5
+          }
+        }
+      }
+    ],
+    "expressions": [],
+    "free_values": [
+      {
+        "name": "mu",
+        "value": {
+          "node": "ResolvedFreeValue",
+          "constraint": null,
+          "size": 2
+        }
+      },
+      {
+        "name": "tau",
+        "value": {
+          "node": "ResolvedFreeValue",
+          "constraint": {
+            "node": "Interval",
+            "lower": 0.5,
+            "upper": 2.0
+          },
+          "size": null
+        }
+      },
+      {
+        "name": "x",
+        "value": {
+          "node": "ResolvedFreeValue",
+          "constraint": null,
+          "size": 2
+        }
+      }
+    ],
+    "stochastic_sites": [
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "mu",
+        "distribution": {
+          "node": "Normal",
+          "loc": {
+            "node": "ConstNode",
+            "value": 0.0
+          },
+          "scale": {
+            "node": "ConstNode",
+            "value": 1.0
+          }
+        },
+        "value": {
+          "node": "ParamRef",
+          "name": "mu"
+        }
+      },
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "tau",
+        "distribution": {
+          "node": "Uniform",
+          "low": {
+            "node": "ConstNode",
+            "value": 0.5
+          },
+          "high": {
+            "node": "ConstNode",
+            "value": 2.0
+          }
+        },
+        "value": {
+          "node": "ParamRef",
+          "name": "tau"
+        }
+      },
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "x",
+        "distribution": {
+          "node": "MultivariateNormal",
+          "mean": {
+            "node": "ParamRef",
+            "name": "mu"
+          },
+          "scale_tril": {
+            "node": "BinOp",
+            "op": "*",
+            "left": {
+              "node": "ParamRef",
+              "name": "tau"
+            },
+            "right": {
+              "node": "DataRef",
+              "name": "chol"
+            }
+          }
+        },
+        "value": {
+          "node": "ParamRef",
+          "name": "x"
+        }
+      },
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "y",
+        "distribution": {
+          "node": "Normal",
+          "loc": {
+            "node": "ParamRef",
+            "name": "x"
+          },
+          "scale": {
+            "node": "ConstNode",
+            "value": 0.5
+          }
+        },
+        "value": {
+          "node": "DataRef",
+          "name": "y"
+        }
+      }
+    ]
+  }
+}

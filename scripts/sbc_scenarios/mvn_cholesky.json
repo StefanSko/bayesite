@@ -1,0 +1,27 @@
+{
+  "sbc_scenario": "v0-provisional",
+  "data": {
+    "chol": {
+      "dtype": "float64",
+      "shape": [
+        2,
+        2
+      ],
+      "values": [
+        1.0,
+        0.0,
+        0.8,
+        0.6
+      ]
+    }
+  },
+  "seed": 25240713,
+  "replicates": 400,
+  "sample": {
+    "chains": 1,
+    "warmup": 200,
+    "draws": 100,
+    "max_treedepth": 5,
+    "target_accept": 0.8
+  }
+}
