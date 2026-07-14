@@ -2368,6 +2368,49 @@ fn parse_fit_draw_line(
     })
 }
 
+fn validate_fit_source_identity(
+    document: &Value,
+    context: &str,
+    expected_model_data_fingerprint: Option<&str>,
+    expected_posterior_identity_hash: &str,
+) -> Result<(), Error> {
+    if let Some(value) = document.get("model_data_fingerprint") {
+        let got = value.as_str().ok_or_else(|| {
+            malformed_fit(format!(
+                "fit {context} model_data_fingerprint must be a sha256 string when present"
+            ))
+        })?;
+        let hex = got.strip_prefix("sha256:").unwrap_or_default();
+        if hex.len() != 64
+            || !hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(malformed_fit(format!(
+                "fit {context} model_data_fingerprint must be sha256: followed by 64 lowercase hex digits"
+            )));
+        }
+        if let Some(expected) = expected_model_data_fingerprint {
+            if got != expected {
+                return Err(malformed_fit(format!(
+                    "fit {context} model_data_fingerprint must match the supplied model and data; rerun `bayesite sample` for these inputs"
+                )));
+            }
+            return Ok(());
+        }
+    }
+    if document
+        .get("posterior_identity_hash")
+        .and_then(Value::as_str)
+        != Some(expected_posterior_identity_hash)
+    {
+        return Err(malformed_fit(format!(
+            "fit {context} posterior_identity_hash must match the supplied model and data; rerun `bayesite sample` for these inputs"
+        )));
+    }
+    Ok(())
+}
+
 fn parse_fit_stream(
     text: &str,
     expected_packing: &[(String, Vec<usize>)],
@@ -2390,31 +2433,12 @@ fn parse_fit_stream(
             "fit parameter order/shapes must match the model and data; rerun `bayesite sample` for this model/data pair",
         ));
     }
-    if let Some(expected) = expected_model_data_fingerprint {
-        if let Some(got) = header.get("model_data_fingerprint").and_then(Value::as_str) {
-            if got != expected {
-                return Err(malformed_fit(
-                    "fit model_data_fingerprint must match the supplied model and data; rerun `bayesite sample` for these inputs",
-                ));
-            }
-        } else if header
-            .get("posterior_identity_hash")
-            .and_then(Value::as_str)
-            != Some(expected_posterior_identity_hash)
-        {
-            return Err(malformed_fit(
-                "fit posterior_identity_hash must match the supplied model and data; rerun `bayesite sample` for these inputs",
-            ));
-        }
-    } else if header
-        .get("posterior_identity_hash")
-        .and_then(Value::as_str)
-        != Some(expected_posterior_identity_hash)
-    {
-        return Err(malformed_fit(
-            "fit posterior_identity_hash must match the supplied model and data; rerun `bayesite sample` for these inputs",
-        ));
-    }
+    validate_fit_source_identity(
+        &header,
+        "header",
+        expected_model_data_fingerprint,
+        expected_posterior_identity_hash,
+    )?;
     let source_seed = header
         .get("seed")
         .and_then(Value::as_i64)
@@ -2471,34 +2495,12 @@ fn parse_fit_stream(
             "fit trailer artifact_scope must match posterior_draws sample output",
         ));
     }
-    if let Some(expected) = expected_model_data_fingerprint {
-        if let Some(got) = trailer
-            .get("model_data_fingerprint")
-            .and_then(Value::as_str)
-        {
-            if got != expected {
-                return Err(malformed_fit(
-                    "fit trailer model_data_fingerprint must match the supplied model and data; rerun `bayesite sample` for these inputs",
-                ));
-            }
-        } else if trailer
-            .get("posterior_identity_hash")
-            .and_then(Value::as_str)
-            != Some(expected_posterior_identity_hash)
-        {
-            return Err(malformed_fit(
-                "fit trailer posterior_identity_hash must match the supplied model and data; rerun `bayesite sample` for these inputs",
-            ));
-        }
-    } else if trailer
-        .get("posterior_identity_hash")
-        .and_then(Value::as_str)
-        != Some(expected_posterior_identity_hash)
-    {
-        return Err(malformed_fit(
-            "fit trailer posterior_identity_hash must match the supplied model and data; rerun `bayesite sample` for these inputs",
-        ));
-    }
+    validate_fit_source_identity(
+        &trailer,
+        "trailer",
+        expected_model_data_fingerprint,
+        expected_posterior_identity_hash,
+    )?;
     if trailer.get("seed").and_then(Value::as_i64) != Some(source_seed) {
         return Err(malformed_fit(
             "fit trailer seed must match fit header seed; rerun `bayesite sample`",

@@ -73,7 +73,7 @@ The endgame CLI is a single binary with machine-readable commands:
 bayesite sample           --model model.json --data data.json --out fit.jsonl
 bayesite diagnose         --fit fit.jsonl
 bayesite prior-predictive --model model.json --data data.json --out pp.jsonl
-bayesite generate         --model model.json --design design.json --source model-prior --count 100 --out generated.jsonl
+bayesite generate         --model model.json --design design.json --source model-prior --count 100 --seed 1 --out generated.jsonl
 bayesite recover          --model model.json --scenario scenario.json
 bayesite sbc              --model model.json --scenario scenario.json --replicates 100
 ```
