@@ -395,6 +395,24 @@ fn protocol_rejects_byte_distinct_posterior_fingerprint_inputs() {
     *object_entry_mut(identities, "fit_hash") = Value::Str(sha256_bytes(malformed_fit.as_bytes()));
     let response = handle_request(&json::write(&request).unwrap());
     assert!(response.contains("model_data_fingerprint"), "{response}");
+
+    let valid_field = format!("\"model_data_fingerprint\":\"{fingerprint}\"");
+    let changed_fingerprint = model_data_fingerprint(&changed_model, &changed_fit_data);
+    let duplicate_fit = fit.replace(
+        &valid_field,
+        &format!(
+            "\"model_data_fingerprint\":\"{changed_fingerprint}\",\"model_data_fingerprint\":null"
+        ),
+    );
+    let source = object_entry_mut(&mut request, "parameter_source");
+    *object_entry_mut(source, "fit") = Value::Str(duplicate_fit.clone());
+    let identities = object_entry_mut(&mut request, "identities");
+    *object_entry_mut(identities, "fit_hash") = Value::Str(sha256_bytes(duplicate_fit.as_bytes()));
+    let response = handle_request(&json::write(&request).unwrap());
+    assert!(
+        response.contains("duplicate model_data_fingerprint"),
+        "{response}"
+    );
 }
 
 #[test]
