@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import random
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -64,6 +65,16 @@ class UniformityResult:
     min_band_margin: float
     rejected: bool
     diagnosis: str | None
+
+
+@dataclass(frozen=True)
+class ThinningSelection:
+    scenario: str
+    thin: int
+    ess_stat: float | None
+    tau_hat: float | None
+    main_seed_span: tuple[int, int]
+    pilot_seed_span: tuple[int, int] | None
 
 
 SCENARIOS = (
@@ -143,7 +154,15 @@ def resolve_tied_ranks(
     return resolved
 
 
-def parse_rank_facts(report: object, scenario: str, *, seed: int) -> list[RankSeries]:
+def parse_rank_facts(
+    report: object,
+    scenario: str,
+    *,
+    seed: int,
+    expected_chains: int | None = None,
+    expected_draws: int | None = None,
+    expected_thin: int | None = None,
+) -> list[RankSeries]:
     """Extract coordinate-marginal ranks using documented SBC artifact fields."""
     if not isinstance(report, dict):
         raise ConformanceError(f"{scenario}: SBC report must be a JSON object")
@@ -171,7 +190,34 @@ def parse_rank_facts(report: object, scenario: str, *, seed: int) -> list[RankSe
         if report.get(field) != expected:
             raise ConformanceError(f"{scenario}: {field} must be {expected!r}")
 
+    report_thin = _require_int(report.get("thin"), "thin")
+    settings = report.get("settings")
+    if not isinstance(settings, dict):
+        raise ConformanceError(f"{scenario}: settings must be an object")
+    report_chains = _require_int(settings.get("chains"), "settings.chains")
+    report_draws = _require_int(settings.get("num_draws"), "settings.num_draws")
+    if report_thin < 1 or report_draws < 1 or report_draws % report_thin != 0:
+        raise ConformanceError(
+            f"{scenario}: thin must be positive and divide settings.num_draws"
+        )
+    for actual, expected, label in (
+        (report_chains, expected_chains, "chains"),
+        (report_draws, expected_draws, "draws"),
+        (report_thin, expected_thin, "thin"),
+    ):
+        if expected is not None and actual != expected:
+            raise ConformanceError(
+                f"{scenario}: bayesite sbc reported {label}={actual}, expected "
+                f"the requested {expected}; ensure sample.{label} is honored"
+            )
+
     report_rank_draws = _require_int(report.get("rank_draws"), "rank_draws")
+    expected_rank_draws = report_chains * (report_draws // report_thin)
+    if report_rank_draws != expected_rank_draws:
+        raise ConformanceError(
+            f"{scenario}: rank_draws must equal chains * draws / thin "
+            f"({expected_rank_draws})"
+        )
     report_rank_bounds = report.get("rank_bounds")
     if not isinstance(report_rank_bounds, dict):
         raise ConformanceError(f"{scenario}: rank_bounds must be an object")
@@ -496,10 +542,22 @@ def calibrated_gamma(
     return minima[quantile_index]
 
 
-def _classify_deviation(above: list[int], below: list[int]) -> str:
-    if above and not below:
-        return "ranks skew low (biased estimates)"
-    if below and not above:
+def _classify_deviation(
+    above: list[int], below: list[int], ranks: Sequence[int], support_max: int
+) -> str:
+    if (above and not below) or (below and not above):
+        mean_rank = sum(ranks) / len(ranks)
+        standard_error = math.sqrt(support_max * (support_max + 2) / 12) / math.sqrt(
+            len(ranks)
+        )
+        z_score = (mean_rank - support_max / 2) / standard_error
+        if abs(z_score) < 3:
+            return (
+                "extreme ranks exceed envelope without a mean shift (dispersion or "
+                "residual rank dependence; verify ESS-adaptive thinning)"
+            )
+        if above:
+            return "ranks skew low (biased estimates)"
         return "ranks skew high (biased estimates)"
     if sum(above) / len(above) < sum(below) / len(below):
         return "too many extreme ranks (posterior underdispersed)"
@@ -556,7 +614,9 @@ def test_rank_uniformity(
         elif cumulative < lower:
             below.append(grid_index)
     rejected = bool(above or below)
-    diagnosis = _classify_deviation(above, below) if rejected else None
+    diagnosis = (
+        _classify_deviation(above, below, ranks, support_max) if rejected else None
+    )
     return rejected, min_margin_count / sample_count, diagnosis
 
 
@@ -612,19 +672,48 @@ def evaluate_reports(
     return evaluate_rank_series(all_series, alpha=alpha, simulations=simulations)
 
 
-def _load_scenario(spec: ScenarioSpec, args: argparse.Namespace, scenario_index: int) -> dict:
+def autocorrelation_time(*, chains: int, draws: int, ess: float) -> float:
+    """Estimate integrated autocorrelation time from a total-ESS statistic.
+
+    Bayesite reports ESS pooled across chains (raw count chains * draws), so
+    the per-draw autocorrelation time is the total draw count over the ESS.
+    """
+    if chains < 1 or draws < 1 or not math.isfinite(ess) or ess <= 0.0:
+        raise ValueError("chains, draws, and ess must be positive")
+    return chains * draws / ess
+
+
+def smallest_divisor_at_least(draws: int, required_stride: int) -> int:
+    """Return the smallest divisor of draws no smaller than required_stride."""
+    if draws < 1 or required_stride < 1:
+        raise ValueError("draws and required_stride must be positive")
+    for candidate in range(required_stride, draws + 1):
+        if draws % candidate == 0:
+            return candidate
+    return draws
+
+
+def _load_scenario(
+    spec: ScenarioSpec,
+    args: argparse.Namespace,
+    *,
+    seed: int,
+    replicates: int,
+    thin: int,
+) -> dict:
     try:
         scenario = json.loads(spec.scenario_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ConformanceError(f"cannot read scenario {spec.scenario_path}: {error}") from error
     if not isinstance(scenario, dict):
         raise ConformanceError(f"{spec.scenario_path} must contain a JSON object")
-    scenario["seed"] = args.seed + scenario_index * 1_000_000
-    scenario["replicates"] = args.replicates
+    scenario["seed"] = seed
+    scenario["replicates"] = replicates
     scenario["sample"] = {
         "chains": args.chains,
         "warmup": args.warmup,
         "draws": args.draws,
+        "thin": thin,
         "max_treedepth": args.max_treedepth,
         "target_accept": args.target_accept,
     }
@@ -642,13 +731,132 @@ def validate_requested_replicates(report: object, scenario: str, expected: int) 
         )
 
 
-def run_scenarios(binary: Path, args: argparse.Namespace) -> list[tuple[str, object]]:
+def _run_sbc(
+    binary: Path,
+    model_path: Path,
+    scenario_path: Path,
+    *,
+    scenario: str,
+    replicates: int,
+) -> object:
+    command = [
+        str(binary),
+        "sbc",
+        "--model",
+        str(model_path),
+        "--scenario",
+        str(scenario_path),
+        "--replicates",
+        str(replicates),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise ConformanceError(f"cannot execute {binary}: {error}") from error
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "no diagnostic"
+        raise ConformanceError(
+            f"{scenario}: bayesite sbc failed with exit code "
+            f"{completed.returncode}: {detail}"
+        )
+    if completed.stderr:
+        raise ConformanceError(f"{scenario}: successful bayesite sbc wrote stderr")
+    try:
+        report = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise ConformanceError(
+            f"{scenario}: bayesite sbc stdout is not one JSON report: {error}"
+        ) from error
+    validate_requested_replicates(report, scenario, replicates)
+    return report
+
+
+def _flatten_finite_numbers(value: object, path: str) -> list[float]:
+    if isinstance(value, list):
+        flattened: list[float] = []
+        for index, item in enumerate(value):
+            flattened.extend(_flatten_finite_numbers(item, f"{path}[{index}]"))
+        return flattened
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConformanceError(f"{path} must contain finite numeric ESS values")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0.0:
+        raise ConformanceError(f"{path} must contain positive finite ESS values")
+    return [number]
+
+
+def pilot_ess_stat(report: object, scenario: str) -> float:
+    if not isinstance(report, dict):
+        raise ConformanceError(f"{scenario}: pilot SBC report must be a JSON object")
+    parameter_order = _require_list(report.get("parameter_order"), "parameter_order")
+    replicate_reports = _require_list(report.get("replicate_reports"), "replicate_reports")
+    ess_by_parameter: dict[str, list[list[float]]] = {
+        name: [] for name in parameter_order if isinstance(name, str)
+    }
+    if len(ess_by_parameter) != len(parameter_order) or not ess_by_parameter:
+        raise ConformanceError(f"{scenario}: pilot report needs named parameters")
+    for replicate_index, replicate in enumerate(replicate_reports):
+        if not isinstance(replicate, dict) or not isinstance(replicate.get("parameters"), dict):
+            raise ConformanceError(
+                f"{scenario}: pilot replicate {replicate_index} needs parameter diagnostics"
+            )
+        parameters = replicate["parameters"]
+        for name in ess_by_parameter:
+            parameter = parameters.get(name)
+            if not isinstance(parameter, dict):
+                raise ConformanceError(
+                    f"{scenario}: pilot replicate {replicate_index} is missing {name!r}"
+                )
+            values = _flatten_finite_numbers(
+                parameter.get("ess"),
+                f"{scenario}/pilot/replicate_reports/{replicate_index}/parameters/{name}/ess",
+            )
+            previous = ess_by_parameter[name]
+            if previous and len(values) != len(previous[0]):
+                raise ConformanceError(
+                    f"{scenario}: pilot ESS shape for {name!r} changed across replicates"
+                )
+            previous.append(values)
+    parameter_medians: list[float] = []
+    for values_by_replicate in ess_by_parameter.values():
+        for coordinate in range(len(values_by_replicate[0])):
+            parameter_medians.append(
+                statistics.median(
+                    values[coordinate] for values in values_by_replicate
+                )
+            )
+    return min(parameter_medians)
+
+
+def _fixed_thin(value: str) -> int | None:
+    if value == "auto":
+        return None
+    try:
+        thin = int(value)
+    except ValueError as error:
+        raise ConformanceError("--thin must be 'auto' or a positive integer") from error
+    if thin < 1:
+        raise ConformanceError("--thin must be 'auto' or a positive integer")
+    return thin
+
+
+def run_scenarios(
+    binary: Path, args: argparse.Namespace
+) -> tuple[list[tuple[str, object]], list[ThinningSelection]]:
     if not binary.is_file():
         raise ConformanceError(
             f"Bayesite release binary not found at {binary}; run cargo build --release "
             "--manifest-path crates/core/Cargo.toml"
         )
+    fixed_thin = _fixed_thin(args.thin)
     reports: list[tuple[str, object]] = []
+    selections: list[ThinningSelection] = []
     with tempfile.TemporaryDirectory(prefix="bayesite-sbc-uniformity-") as tmp:
         tmp_path = Path(tmp)
         for scenario_index, spec in enumerate(SCENARIOS):
@@ -661,53 +869,114 @@ def run_scenarios(binary: Path, args: argparse.Namespace) -> list[tuple[str, obj
             model_path = tmp_path / f"{spec.name}-model.json"
             scenario_path = tmp_path / f"{spec.name}-scenario.json"
             model_path.write_text(json.dumps(model), encoding="utf-8")
+            main_seed = args.seed + scenario_index * 1_000_000
+            ess_stat: float | None = None
+            tau_hat: float | None = None
+            pilot_span: tuple[int, int] | None = None
+            thin = fixed_thin
+            if thin is None:
+                pilot_seed = main_seed + 500_000
+                pilot_span = (pilot_seed, pilot_seed + 2 * args.pilot_replicates - 1)
+                scenario_path.write_text(
+                    json.dumps(
+                        _load_scenario(
+                            spec,
+                            args,
+                            seed=pilot_seed,
+                            replicates=args.pilot_replicates,
+                            thin=1,
+                        )
+                    ),
+                    encoding="utf-8",
+                )
+                pilot_report = _run_sbc(
+                    binary,
+                    model_path,
+                    scenario_path,
+                    scenario=f"{spec.name} pilot",
+                    replicates=args.pilot_replicates,
+                )
+                parse_rank_facts(
+                    pilot_report,
+                    f"{spec.name} pilot",
+                    seed=pilot_seed,
+                    expected_chains=args.chains,
+                    expected_draws=args.draws,
+                    expected_thin=1,
+                )
+                ess_stat = pilot_ess_stat(pilot_report, spec.name)
+                tau_hat = autocorrelation_time(
+                    chains=args.chains, draws=args.draws, ess=ess_stat
+                )
+                required_stride = math.ceil(args.ess_safety * tau_hat)
+                thin = smallest_divisor_at_least(args.draws, required_stride)
+                if required_stride > args.draws or thin == args.draws:
+                    raise ConformanceError(
+                        f"{spec.name}: ESS-adaptive thinning requires stride "
+                        f"{required_stride}, leaving fewer than two rank draws; increase --draws"
+                    )
+            assert thin is not None
             scenario_path.write_text(
-                json.dumps(_load_scenario(spec, args, scenario_index)), encoding="utf-8"
+                json.dumps(
+                    _load_scenario(
+                        spec,
+                        args,
+                        seed=main_seed,
+                        replicates=args.replicates,
+                        thin=thin,
+                    )
+                ),
+                encoding="utf-8",
             )
-            command = [
-                str(binary),
-                "sbc",
-                "--model",
-                str(model_path),
-                "--scenario",
-                str(scenario_path),
-                "--replicates",
-                str(args.replicates),
-            ]
-            try:
-                completed = subprocess.run(
-                    command,
-                    cwd=REPO_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            except OSError as error:
-                raise ConformanceError(f"cannot execute {binary}: {error}") from error
-            if completed.returncode != 0:
-                detail = completed.stderr.strip() or completed.stdout.strip() or "no diagnostic"
-                raise ConformanceError(
-                    f"{spec.name}: bayesite sbc failed with exit code "
-                    f"{completed.returncode}: {detail}"
-                )
-            if completed.stderr:
-                raise ConformanceError(f"{spec.name}: successful bayesite sbc wrote stderr")
-            try:
-                report = json.loads(completed.stdout)
-            except json.JSONDecodeError as error:
-                raise ConformanceError(
-                    f"{spec.name}: bayesite sbc stdout is not one JSON report: {error}"
-                ) from error
-            validate_requested_replicates(report, spec.name, args.replicates)
+            report = _run_sbc(
+                binary,
+                model_path,
+                scenario_path,
+                scenario=spec.name,
+                replicates=args.replicates,
+            )
+            parse_rank_facts(
+                report,
+                spec.name,
+                seed=main_seed,
+                expected_chains=args.chains,
+                expected_draws=args.draws,
+                expected_thin=thin,
+            )
             reports.append((spec.name, report))
-    return reports
+            selections.append(
+                ThinningSelection(
+                    scenario=spec.name,
+                    thin=thin,
+                    ess_stat=ess_stat,
+                    tau_hat=tau_hat,
+                    main_seed_span=(main_seed, main_seed + 2 * args.replicates - 1),
+                    pilot_seed_span=pilot_span,
+                )
+            )
+    return reports, selections
 
 
 def _validate_args(args: argparse.Namespace) -> None:
     if args.replicates < 1:
         raise ConformanceError("--replicates must be positive")
-    if args.seed < 0 or args.seed + (len(SCENARIOS) - 1) * 1_000_000 + 2 * args.replicates > 2**63 - 1:
-        raise ConformanceError("--seed must leave room for every deterministic SBC replicate seed")
+    if args.pilot_replicates < 1:
+        raise ConformanceError("--pilot-replicates must be positive")
+    if 2 * args.replicates > 500_000:
+        raise ConformanceError(
+            "--replicates must be at most 250000 so the main SBC seed span ends "
+            "before the pilot span; reduce --replicates"
+        )
+    if 2 * args.pilot_replicates > 499_999:
+        raise ConformanceError(
+            "--pilot-replicates must be at most 249999 so the pilot seed span stays "
+            "inside its scenario block; reduce --pilot-replicates"
+        )
+    last_seed = args.seed + (len(SCENARIOS) - 1) * 1_000_000 + 999_998
+    if args.seed < 0 or last_seed > 2**63 - 1:
+        raise ConformanceError(
+            "--seed must leave room for every main and pilot SBC seed span; reduce --seed"
+        )
     if not 0.0 < args.alpha < 1.0:
         raise ConformanceError("--alpha must be in (0, 1)")
     if args.chains < 1:
@@ -716,6 +985,13 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ConformanceError("--warmup must be non-negative")
     if args.draws < 4:
         raise ConformanceError("--draws must be at least 4 because SBC reports diagnostics")
+    fixed_thin = _fixed_thin(args.thin)
+    if fixed_thin is not None and args.draws % fixed_thin != 0:
+        raise ConformanceError(
+            "--thin must divide --draws exactly; pick a positive --thin that divides --draws"
+        )
+    if not math.isfinite(args.ess_safety) or args.ess_safety <= 0.0:
+        raise ConformanceError("--ess-safety must be a positive finite number")
     if not 1 <= args.max_treedepth <= 20:
         raise ConformanceError("--max-treedepth must be in 1..=20")
     if not 0.0 < args.target_accept < 1.0:
@@ -730,6 +1006,23 @@ def failure_messages(results: Sequence[UniformityResult]) -> list[str]:
         for result in results
         if result.rejected
     ]
+
+
+def _print_thinning(selections: Sequence[ThinningSelection]) -> None:
+    print("ESS-adaptive rank thinning:")
+    for selection in selections:
+        ess = "not run" if selection.ess_stat is None else f"{selection.ess_stat:.6g}"
+        tau = "not run" if selection.tau_hat is None else f"{selection.tau_hat:.6g}"
+        pilot = (
+            "not run"
+            if selection.pilot_seed_span is None
+            else f"[{selection.pilot_seed_span[0]}, {selection.pilot_seed_span[1]}]"
+        )
+        print(
+            f"  {selection.scenario}: thin={selection.thin}, ess_stat={ess}, "
+            f"tau_hat={tau}, main_seed_span=[{selection.main_seed_span[0]}, "
+            f"{selection.main_seed_span[1]}], pilot_seed_span={pilot}"
+        )
 
 
 def _print_results(results: Sequence[UniformityResult]) -> None:
@@ -970,6 +1263,7 @@ def render_sbc_report(
     series: Sequence[RankSeries],
     results: Sequence[UniformityResult],
     *,
+    selections: Sequence[ThinningSelection],
     scenario_count: int,
     replicates: int,
     draws: int,
@@ -996,7 +1290,35 @@ def render_sbc_report(
         ("calibration set count", simulations),
         ("overall", "PASS" if passed else "FAIL"),
     )
-    sections = [report_html.section_heading("Rank histograms")]
+    thinning_rows = []
+    for selection in selections:
+        thinning_rows.append(
+            (
+                (
+                    selection.scenario,
+                    selection.thin,
+                    "not run"
+                    if selection.ess_stat is None
+                    else f"{selection.ess_stat:.6g}",
+                    "not run"
+                    if selection.tau_hat is None
+                    else f"{selection.tau_hat:.6g}",
+                    f"[{selection.main_seed_span[0]}, {selection.main_seed_span[1]}]",
+                    "not run"
+                    if selection.pilot_seed_span is None
+                    else f"[{selection.pilot_seed_span[0]}, {selection.pilot_seed_span[1]}]",
+                ),
+                False,
+            )
+        )
+    sections = [
+        report_html.section_heading("ESS-adaptive rank thinning"),
+        report_html.data_table(
+            ("Scenario", "Thin", "ESS statistic", "Tau estimate", "Main seed span", "Pilot seed span"),
+            thinning_rows,
+        ),
+        report_html.section_heading("Rank histograms"),
+    ]
     sections.extend(
         _histogram_figure(rank_series, result)
         for rank_series, result in zip(series, results)
@@ -1041,7 +1363,10 @@ def main() -> None:
     parser.add_argument("--alpha", type=float, default=0.01)
     parser.add_argument("--chains", type=int, default=1)
     parser.add_argument("--warmup", type=int, default=200)
-    parser.add_argument("--draws", type=int, default=100)
+    parser.add_argument("--draws", type=int, default=500)
+    parser.add_argument("--thin", default="auto")
+    parser.add_argument("--pilot-replicates", type=int, default=16)
+    parser.add_argument("--ess-safety", type=float, default=3.0)
     parser.add_argument("--max-treedepth", type=int, default=5)
     parser.add_argument("--target-accept", type=float, default=0.8)
     parser.add_argument("--report", type=Path)
@@ -1049,7 +1374,8 @@ def main() -> None:
 
     try:
         _validate_args(args)
-        reports = run_scenarios(args.bayesite_bin, args)
+        reports, selections = run_scenarios(args.bayesite_bin, args)
+        _print_thinning(selections)
         series = rank_series_from_reports(reports, seed=args.seed)
         results = evaluate_rank_series(series, alpha=args.alpha)
     except ConformanceError as error:
@@ -1060,6 +1386,7 @@ def main() -> None:
             render_sbc_report(
                 series,
                 results,
+                selections=selections,
                 scenario_count=len(SCENARIOS),
                 replicates=args.replicates,
                 draws=args.draws,

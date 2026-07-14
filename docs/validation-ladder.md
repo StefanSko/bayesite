@@ -243,9 +243,14 @@ development ladder now applies a mandatory, default-on conformance verdict in
 randomization and tests each parameter-coordinate rank ECDF against a
 Monte Carlo-calibrated simultaneous binomial confidence band, with Bonferroni
 control across scenarios and parameters, following Säilynoja, Bürkner & Vehtari
-(2021). Pass `--report PATH` for rank-histogram and calibrated ECDF-band HTML
-visualizations; conformance CI uploads the report as a run artifact. Broader
-data-averaged SBC variants remain future G11 work.
+(2021). Because that calibration assumes iid ranks, rank construction uses an
+ESS-adaptive pilot to thin retained draws to effective independence before the
+main run. An SBC seed schedule occupies `[seed, seed + 2*replicates - 1]`; pilots
+use `[seed + 500_000, ...]`, and independent stability runs must use base seeds
+spaced by at least 1,000,000 per scenario block. Pass `--report PATH` for
+rank-histogram and calibrated ECDF-band HTML visualizations; conformance CI
+uploads the report as a run artifact. Broader data-averaged SBC variants remain
+future G11 work.
 
 ### G12 — Posterior predictive checks
 

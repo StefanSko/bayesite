@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import random
 import sys
 import unittest
@@ -32,6 +33,8 @@ def scalar_report(parameter: str, ranks: list[int], support_max: int = 40) -> di
         "rank_statistic": "count_posterior_draws_less_than_truth",
         "rank_scope": "per_parameter_coordinate_marginal",
         "tie_statistic": "count_posterior_draws_equal_to_truth",
+        "thin": 1,
+        "settings": {"chains": 1, "num_draws": support_max},
         "rank_draws": support_max,
         "rank_bounds": {"min": 0, "max": support_max},
         "rank_bin_count": support_max + 1,
@@ -66,6 +69,25 @@ def scalar_report(parameter: str, ranks: list[int], support_max: int = 40) -> di
 
 
 class SbcUniformityTests(unittest.TestCase):
+    @staticmethod
+    def _ar1_ranks(
+        *, seed: int, replicates: int, draws: int, thin: int, rho: float
+    ) -> list[int]:
+        rng = random.Random(seed)
+        innovation_sd = (1.0 - rho * rho) ** 0.5
+        ranks: list[int] = []
+        for _ in range(replicates):
+            truth = rng.gauss(0.0, 1.0)
+            state = rng.gauss(0.0, 1.0)
+            rank = 0
+            for draw_index in range(draws):
+                if draw_index > 0:
+                    state = rho * state + innovation_sd * rng.gauss(0.0, 1.0)
+                if (draw_index + 1) % thin == 0 and state < truth:
+                    rank += 1
+            ranks.append(rank)
+        return ranks
+
     def test_exact_binomial_pvalues_and_frozen_calibration_count(self) -> None:
         self.assertEqual(sbc.MONTE_CARLO_SETS, 4000)
         self.assertEqual(sbc._binomial_pointwise_pvalues(2, 0.5), [0.5, 1.0, 0.5])
@@ -115,6 +137,55 @@ class SbcUniformityTests(unittest.TestCase):
             diagnosis, "too many extreme ranks (posterior underdispersed)"
         )
 
+    def test_ess_adaptive_divisor_selection(self) -> None:
+        self.assertEqual(sbc.smallest_divisor_at_least(1200, 12), 12)
+        self.assertEqual(sbc.smallest_divisor_at_least(500, 13), 20)
+        self.assertEqual(sbc.smallest_divisor_at_least(101, 2), 101)
+        with self.assertRaises(ValueError):
+            sbc.smallest_divisor_at_least(0, 1)
+
+    def test_consecutive_autocorrelated_correct_draws_are_falsely_rejected(self) -> None:
+        ranks = self._ar1_ranks(
+            seed=3606, replicates=2000, draws=100, thin=1, rho=0.6
+        )
+        rejected, _, _ = sbc.test_rank_uniformity(ranks, 100, 0.01)
+        self.assertTrue(rejected, "consecutive correct-marginal AR(1) draws expose the bug")
+
+    def test_ess_adaptive_thinning_restores_the_iid_rank_null(self) -> None:
+        rho = 0.6
+        draws = 1200
+        true_tau = (1.0 + rho) / (1.0 - rho)
+        required_stride = math.ceil(3.0 * true_tau)
+        thin = sbc.smallest_divisor_at_least(draws, required_stride)
+        self.assertEqual(thin, 12)
+        ranks = self._ar1_ranks(
+            seed=3606, replicates=2000, draws=draws, thin=thin, rho=rho
+        )
+        rejected, _, diagnosis = sbc.test_rank_uniformity(
+            ranks, draws // thin, 0.01
+        )
+        self.assertFalse(rejected)
+        self.assertIsNone(diagnosis)
+
+    def test_autocorrelation_time_accounts_for_chain_count(self) -> None:
+        self.assertEqual(
+            sbc.autocorrelation_time(chains=1, draws=500, ess=250.0), 2.0
+        )
+        self.assertEqual(
+            sbc.autocorrelation_time(chains=4, draws=500, ess=250.0), 8.0
+        )
+        with self.assertRaises(ValueError):
+            sbc.autocorrelation_time(chains=1, draws=500, ess=0.0)
+
+    def test_one_sided_exit_requires_mean_shift_for_bias_label(self) -> None:
+        ranks = [0, 100] * 100
+        diagnosis = sbc._classify_deviation([0], [], ranks, 100)
+        self.assertEqual(
+            diagnosis,
+            "extreme ranks exceed envelope without a mean shift (dispersion or residual rank dependence; verify ESS-adaptive thinning)",
+        )
+        self.assertNotIn("biased estimates", diagnosis)
+
     def test_tie_resolution_is_deterministic(self) -> None:
         ranks = [2, 5, 7, 0]
         ties = [3, 0, 2, 8]
@@ -162,6 +233,17 @@ class SbcUniformityTests(unittest.TestCase):
         report = scalar_report("theta", [0])
         with self.assertRaisesRegex(sbc.ConformanceError, "expected the requested 100"):
             sbc.validate_requested_replicates(report, "doctored", 100)
+
+    def test_parser_requires_thin_and_validates_thinned_rank_draws(self) -> None:
+        report = scalar_report("theta", [0, 1, 2, 3])
+        del report["thin"]
+        with self.assertRaisesRegex(sbc.ConformanceError, "thin must be a JSON integer"):
+            sbc.parse_rank_facts(report, "doctored", seed=1)
+
+        report = scalar_report("theta", [0, 1, 2, 3])
+        report["thin"] = 2
+        with self.assertRaisesRegex(sbc.ConformanceError, r"chains \* draws / thin"):
+            sbc.parse_rank_facts(report, "doctored", seed=1)
 
     def test_parser_rejects_incoherent_artifact_identity_and_order(self) -> None:
         report = scalar_report("theta", [0, 1, 2, 3])
@@ -213,6 +295,10 @@ class SbcUniformityTests(unittest.TestCase):
             ),
         ]
         kwargs = {
+            "selections": [
+                sbc.ThinningSelection("healthy", 1, 20.0, 0.2, (7, 46), (500007, 500046)),
+                sbc.ThinningSelection("doctored", 1, 20.0, 0.2, (1000007, 1000046), (1500007, 1500046)),
+            ],
             "scenario_count": 2,
             "replicates": 20,
             "draws": 4,
@@ -238,6 +324,7 @@ class SbcUniformityTests(unittest.TestCase):
         report = sbc.render_sbc_report(
             series,
             results,
+            selections=[sbc.ThinningSelection("healthy", 1, None, None, (7, 46), None)],
             scenario_count=1,
             replicates=20,
             draws=4,

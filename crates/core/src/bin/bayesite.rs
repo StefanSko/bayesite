@@ -1099,6 +1099,7 @@ fn apply_sample_settings(
     sample_doc: &Value,
     sampler: &mut Settings,
     chains: &mut u64,
+    thin: Option<&mut usize>,
     context: &str,
 ) -> Result<(), Error> {
     if !matches!(sample_doc, Value::Object(_)) {
@@ -1106,17 +1107,25 @@ fn apply_sample_settings(
             "{context} scenario sample must be an object"
         )));
     }
-    reject_unknown_fields(
-        sample_doc,
-        &format!("{context} scenario sample"),
+    let allowed = if thin.is_some() {
+        &[
+            "chains",
+            "warmup",
+            "draws",
+            "thin",
+            "max_treedepth",
+            "target_accept",
+        ][..]
+    } else {
         &[
             "chains",
             "warmup",
             "draws",
             "max_treedepth",
             "target_accept",
-        ],
-    )?;
+        ][..]
+    };
+    reject_unknown_fields(sample_doc, &format!("{context} scenario sample"), allowed)?;
     let chains_label = format!("{context} scenario sample.chains");
     let parsed_chains = scenario_reportable_int(
         sample_doc,
@@ -1163,6 +1172,26 @@ fn apply_sample_settings(
         &draws_label,
     )?;
     validate_diagnostic_draws(sampler.num_draws, &draws_label, "workflow reports")?;
+    if let Some(thin) = thin {
+        let thin_label = format!("{context} scenario sample.thin");
+        *thin = positive_usize(
+            scenario_reportable_int(
+                sample_doc,
+                "thin",
+                *thin as i64,
+                &thin_label,
+                &format!(
+                    "{thin_label} must be in 1..=9223372036854775807 because workflow reports sample.thin as a JSON integer"
+                ),
+            )?,
+            &thin_label,
+        )?;
+        if !sampler.num_draws.is_multiple_of(*thin) {
+            return Err(usage_error(format!(
+                "{thin_label} must divide sample.draws exactly; pick a thin that divides sample.draws"
+            )));
+        }
+    }
     let max_treedepth_label = format!("{context} scenario sample.max_treedepth");
     sampler.max_treedepth = positive_usize(
         scenario_reportable_int(
@@ -1218,6 +1247,7 @@ fn parse_recover_scenario(document: &Value) -> Result<RecoverScenario, Error> {
             sample_doc,
             &mut settings.sampler,
             &mut settings.chains,
+            None,
             "recover",
         )?;
     }
@@ -1265,6 +1295,7 @@ fn parse_sbc_scenario(document: &Value) -> Result<SbcScenario, Error> {
             sample_doc,
             &mut settings.sampler,
             &mut settings.chains,
+            Some(&mut settings.thin),
             "sbc",
         )?;
     }

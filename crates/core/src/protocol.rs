@@ -3000,6 +3000,22 @@ fn setting_reportable_replicates(settings: Option<&Value>, default: i64) -> Resu
     }
 }
 
+fn setting_reportable_thin(settings: Option<&Value>, default: i64) -> Result<i64, Error> {
+    let Some(settings) = settings else {
+        return Ok(default);
+    };
+    let Some(value) = settings.get("thin") else {
+        return Ok(default);
+    };
+    match value {
+        Value::Int(thin) => Ok(*thin),
+        Value::Float(number) if *number >= i64::MAX as f64 => Err(invalid_request(
+            "sbc request settings.thin must be in 1..=9223372036854775807 because workflow reports thin as a JSON integer",
+        )),
+        _ => Err(invalid_request("sbc request settings.thin must be an integer")),
+    }
+}
+
 fn setting_bounded_treedepth(
     settings: Option<&Value>,
     default: i64,
@@ -3324,6 +3340,7 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
                     "chains",
                     "num_warmup",
                     "num_draws",
+                    "thin",
                     "max_treedepth",
                     "target_accept",
                 ],
@@ -3337,6 +3354,10 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
                 setting_reportable_chains(settings_doc, settings.chains as i64, "sbc")?,
                 "sbc request settings.chains",
             )? as u64;
+            settings.thin = positive_usize(
+                setting_reportable_thin(settings_doc, settings.thin as i64)?,
+                "sbc request settings.thin",
+            )?;
             apply_sampler_settings(settings_doc, &mut settings.sampler, "sbc")?;
             let seed = request_seed(&request, "sbc")?;
             sbc_report(meta, data, &settings, seed)

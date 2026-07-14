@@ -4324,6 +4324,77 @@ fn sbc_command_returns_rank_report_without_verdict() {
 }
 
 #[test]
+fn sbc_command_honors_thin_for_rank_support() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    let request = Value::Object(vec![
+        ("command".to_string(), Value::Str("sbc".to_string())),
+        ("model".to_string(), fixture.get("ir").unwrap().clone()),
+        (
+            "data".to_string(),
+            fixture_declared_data("linear_regression", &["x"]),
+        ),
+        (
+            "settings".to_string(),
+            json::parse(
+                r#"{"replicates": 1, "chains": 1, "num_warmup": 20,
+                    "num_draws": 20, "thin": 4, "max_treedepth": 4}"#,
+            )
+            .unwrap(),
+        ),
+        ("seed".to_string(), Value::Int(29)),
+    ]);
+    let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        response.get("sbc_format").and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    assert_eq!(response.get("thin").and_then(Value::as_i64), Some(4));
+    assert_eq!(response.get("rank_draws").and_then(Value::as_i64), Some(5));
+    assert_eq!(
+        response
+            .get("posterior_draws_per_replicate")
+            .and_then(Value::as_i64),
+        Some(20)
+    );
+}
+
+#[test]
+fn sbc_command_rejects_invalid_thin() {
+    let fixture = json::parse(&fixture_text("linear_regression")).unwrap();
+    for (thin, message) in [
+        ("0", "sbc request settings.thin must be at least 1"),
+        (
+            "3",
+            "sbc sample.thin must divide sample.draws exactly; pick a thin that divides sample.draws",
+        ),
+    ] {
+        let request = Value::Object(vec![
+            ("command".to_string(), Value::Str("sbc".to_string())),
+            ("model".to_string(), fixture.get("ir").unwrap().clone()),
+            (
+                "data".to_string(),
+                fixture_declared_data("linear_regression", &["x"]),
+            ),
+            (
+                "settings".to_string(),
+                json::parse(&format!(
+                    r#"{{"replicates": 1, "chains": 1, "num_warmup": 20,
+                        "num_draws": 20, "thin": {thin}, "max_treedepth": 4}}"#,
+                ))
+                .unwrap(),
+            ),
+            ("seed".to_string(), Value::Int(29)),
+        ]);
+        let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+        assert_eq!(
+            response.get("message").and_then(Value::as_str),
+            Some(message),
+            "thin={thin}"
+        );
+    }
+}
+
+#[test]
 fn sbc_command_integer_generated_observed_values_are_json_integers() {
     let fixture = json::parse(&fixture_text("bounded_rates")).unwrap();
     let request = Value::Object(vec![

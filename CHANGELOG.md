@@ -14,9 +14,15 @@ versioned on their own.
   Monte Carlo-calibrated simultaneous ECDF confidence bands.
 - Add self-contained HTML report options for the G6 and G11 statistical gates
   and upload their reports as conformance CI artifacts.
+- Add an optional `sample.thin` setting to `bayesite sbc` scenarios: ranks use
+  every thin-th retained draw per chain while R-hat/ESS diagnostics keep the
+  full series, and reports state `thin` and the thinned rank support ([#36]).
 
 ### Changed
 
+- Make G11 SBC ranks use ESS-adaptive thinning so its iid ECDF calibration no
+  longer falsely rejects autocorrelated NUTS draws, and guard bias diagnoses
+  against centered envelope exits ([#36]).
 - Replicate the G6 nuts-rs statistical oracle across deterministic seeds and
   add signed Stouffer aggregation to detect small systematic sampler biases.
 
@@ -71,6 +77,7 @@ versioned on their own.
   workflows, recovery, and SBC.
 - Reproducible release archives and checksums for Linux, macOS, and Windows.
 
+[#36]: https://github.com/StefanSko/bayesite/issues/36
 [Unreleased]: https://github.com/StefanSko/bayesite/compare/v0.2.1...HEAD
 [0.2.1]: https://github.com/StefanSko/bayesite/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/StefanSko/bayesite/compare/v0.1.0...v0.2.0
