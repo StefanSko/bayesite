@@ -99,7 +99,7 @@ are self-contained Rust tests in files such as
 `crates/core/tests/sampler_stats.rs` and
 `crates/core/tests/prior_predictive_stats.rs`.
 
-### G6 — Independent NUTS statistical oracle
+### G6 — NUTS cross-engine oracle (nuts-rs)
 
 Mandatory development gate using a pinned `nuts-rs` checkout as an independent
 NUTS implementation. The gate samples analytic Gaussian targets with Bayesite
@@ -148,7 +148,7 @@ execution path. Pass `--report PATH` to write a deterministic, self-contained
 HTML visualization; conformance CI uploads that report as a run artifact on
 scheduled, manually dispatched, and release-tag runs.
 
-### G7 — Cross-backend posterior comparison
+### G7 — Posterior cross-backend oracle (bayesjax)
 
 Optional local conformance gate using `bayesjax` + BlackJAX as an oracle.
 Compare posterior summaries over the golden corpus, not bit-identical draws:
@@ -163,7 +163,7 @@ This gate must not become part of the default agent path. The conformance CI
 workflow also runs it on a schedule, manual dispatch, and release tags, so
 cross-backend drift is visible without adding Python/JAX to the shipped binary.
 After each Bayescycle release, the pin advances in a reviewed Bayesite change
-only after G7 passes.
+only after the posterior cross-backend oracle (ladder rung G7) passes.
 
 ### G8 — CmdStan comparison
 
@@ -217,7 +217,7 @@ Current limitation: recover is a single-scenario factual report, and
 recover-check supports same-shape targets rather than transformed estimands.
 Repeated-scenario coverage summaries remain future G10 conformance work.
 
-### G11 — SBC
+### G11 — SBC calibration (rank uniformity)
 
 `bayesite sbc` currently runs v0-provisional simulation-based calibration
 scenarios through the pure runtime path:
@@ -238,15 +238,41 @@ G11 pins:
 
 The binary deliberately remains a verdict-free factual reporter: `bayesite sbc`
 still emits ranks and histograms, not a uniformity verdict or p-value. The
-development ladder now applies a mandatory, default-on conformance verdict in
-`scripts/check_sbc_uniformity.py`. It resolves exact ties by seeded uniform
-randomization and tests each parameter-coordinate rank ECDF against a
-Monte Carlo-calibrated simultaneous binomial confidence band, with Bonferroni
-control across scenarios and parameters, following Säilynoja, Bürkner & Vehtari
-(2021). Because that calibration assumes iid ranks, rank construction uses an
-ESS-adaptive pilot to thin retained draws to effective independence before the
-main run. An SBC seed schedule occupies `[seed, seed + 2*replicates - 1]`; pilots
-use `[seed + 500_000, ...]`, and independent stability runs must use base seeds
+SBC calibration CI job (ladder rung G11) applies a mandatory, default-on
+conformance verdict in `scripts/check_sbc_uniformity.py`. Its scenario inventory
+is:
+
+- `bounded_rates`, using the matching golden-corpus fixture;
+- `linear_regression`, using the matching fixture at its five-point design;
+- `linear_regression_n64`, reusing the linear-regression fixture with 64 design
+  points;
+- `eight_schools_non_centered`, covering non-centered hierarchical geometry;
+- `varying_intercepts_poisson`, covering a hierarchical Poisson GLM;
+- `mvn_cholesky`, covering an MVN with a parameter-scaled Cholesky factor; and
+- `centered_eight_schools`, the must-reject centered-funnel negative control.
+
+The MVN and centered-eight-schools model documents live under
+`scripts/sbc_models/`. They are hand-authored conformance-script inputs, like
+the inline analytic targets used by the NUTS cross-engine oracle (ladder rung
+G6), not fixtures in the hash-checked vendored golden corpus.
+
+The script resolves exact ties by seeded uniform randomization and tests each
+parameter-coordinate rank ECDF against a Monte Carlo-calibrated simultaneous
+binomial confidence band, with Bonferroni control across scenarios and
+parameters, following Säilynoja, Bürkner & Vehtari (2021). Because that
+calibration assumes iid ranks, rank construction uses an ESS-adaptive pilot to
+thin retained draws to effective independence before the main run. Ordinary
+scenarios fail on any rejected series. For the centered-eight-schools negative
+control, a correct NUTS implementation is expected to be miscalibrated on the
+centered funnel under the frozen gate settings; the gate therefore asserts
+that `tau` is rejected. The diagnosis is reported factually: at the CI
+replicate count of 2000 it lands in the low-rank bias class, while at lower
+local replicate counts it may classify as dispersion. A missing rejection
+fails because the control has lost power or the test machinery has weakened.
+Other rejected series in that control remain visible but informational.
+
+An SBC seed schedule occupies `[seed, seed + 2*replicates - 1]`; pilots use
+`[seed + 500_000, ...]`, and independent stability runs must use base seeds
 spaced by at least 1,000,000 per scenario block. Pass `--report PATH` for
 rank-histogram and calibrated ECDF-band HTML visualizations; conformance CI
 uploads the report as a run artifact. Broader data-averaged SBC variants remain

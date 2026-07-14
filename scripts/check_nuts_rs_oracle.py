@@ -320,16 +320,20 @@ def run_bayesite(
 def check_nuts_rs_path(path: Path) -> None:
     if not path.exists():
         sys.exit(
-            f"G6 nuts-rs oracle requires a nuts-rs checkout at {path}. "
+            f"NUTS cross-engine oracle (nuts-rs) requires a nuts-rs checkout at {path}. "
             "Clone with: git clone https://github.com/pymc-devs/nuts-rs /tmp/nuts-rs"
         )
     if not (path / "Cargo.toml").exists():
-        sys.exit(f"G6 nuts-rs oracle path {path} does not look like a nuts-rs checkout")
+        sys.exit(
+            f"NUTS cross-engine oracle (nuts-rs) path {path} does not look "
+            "like a nuts-rs checkout"
+        )
     result = _run_capture("verify pinned nuts-rs revision", ["git", "-C", str(path), "rev-parse", "HEAD"])
     rev = result.stdout.strip()
     if rev != EXPECTED_NUTS_RS_REV:
         sys.exit(
-            f"G6 nuts-rs oracle expected nuts-rs revision {EXPECTED_NUTS_RS_REV}, got {rev}. "
+            "NUTS cross-engine oracle (nuts-rs) expected nuts-rs revision "
+            f"{EXPECTED_NUTS_RS_REV}, got {rev}. "
             f"Run: git -C {path} fetch && git -C {path} checkout {EXPECTED_NUTS_RS_REV}"
         )
 
@@ -763,7 +767,7 @@ def render_oracle_report(
     seed: int,
     passed: bool,
 ) -> str:
-    """Render the deterministic, self-contained G6 statistical report."""
+    """Render the deterministic, self-contained cross-engine report."""
     settings = (
         ("targets count", target_count),
         ("replicates K", replicates),
@@ -814,7 +818,7 @@ def render_oracle_report(
             )
         )
     return report_html.html_document(
-        "G6 nuts-rs statistical oracle", settings, passed, sections
+        "nuts-rs cross-engine statistical oracle", settings, passed, sections
     )
 
 

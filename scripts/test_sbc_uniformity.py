@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import math
 import random
 import sys
@@ -267,6 +268,83 @@ class SbcUniformityTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertIn("parameter biased_theta", messages[0])
         self.assertIn("ranks skew low (biased estimates)", messages[0])
+
+    def test_must_reject_satisfied_has_no_failure(self) -> None:
+        result = sbc.UniformityResult(
+            "centered_eight_schools",
+            "tau",
+            400,
+            -0.1,
+            True,
+            "ranks skew low (biased estimates)",
+        )
+        self.assertEqual(sbc.failure_messages([result]), [])
+        self.assertEqual(sbc._result_verdict(result), ("REJECTED (expected)", False))
+
+    def test_must_reject_missing_rejection_fails_clearly(self) -> None:
+        result = sbc.UniformityResult(
+            "centered_eight_schools", "tau", 400, 0.01, False, None
+        )
+        messages = sbc.failure_messages([result])
+        self.assertEqual(len(messages), 1)
+        self.assertIn("missing expected rejection", messages[0])
+        self.assertIn("control lost power / test machinery weakened", messages[0])
+
+    def test_must_reject_dispersion_diagnosis_satisfies_control(self) -> None:
+        result = sbc.UniformityResult(
+            "centered_eight_schools",
+            "tau",
+            400,
+            -0.1,
+            True,
+            "extreme ranks exceed envelope without a mean shift (dispersion or residual rank dependence; verify ESS-adaptive thinning)",
+        )
+        self.assertEqual(sbc.failure_messages([result]), [])
+        self.assertEqual(sbc._result_verdict(result), ("REJECTED (expected)", False))
+
+    def test_positive_scenario_rejection_still_fails(self) -> None:
+        result = sbc.UniformityResult(
+            "linear_regression",
+            "beta",
+            400,
+            -0.1,
+            True,
+            "ranks skew high (biased estimates)",
+        )
+        messages = sbc.failure_messages([result])
+        self.assertEqual(len(messages), 1)
+        self.assertIn("unexpected rejection (calibration bug)", messages[0])
+
+    def test_scenario_table_integrity(self) -> None:
+        names = [spec.name for spec in sbc.SCENARIOS]
+        self.assertEqual(len(names), len(set(names)))
+        controls = [spec for spec in sbc.SCENARIOS if spec.must_reject is not None]
+        self.assertEqual(len(controls), 1)
+        for spec in sbc.SCENARIOS:
+            self.assertTrue(spec.scenario_path.is_file(), spec.scenario_path)
+            source = spec.model_source
+            if source.fixture is not None:
+                model_path = (
+                    REPO_ROOT
+                    / "tests"
+                    / "golden_ir"
+                    / "fixtures"
+                    / f"{source.fixture}.json"
+                )
+            else:
+                self.assertIsNotNone(source.path)
+                model_path = source.path
+            assert model_path is not None
+            self.assertTrue(model_path.is_file(), model_path)
+        control = controls[0]
+        self.assertIsNotNone(control.model_source.path)
+        assert control.model_source.path is not None
+        model = json.loads(control.model_source.path.read_text(encoding="utf-8"))
+        parameter_names = {
+            entry["name"] for entry in model["model"]["params"]
+        }
+        assert control.must_reject is not None
+        self.assertIn(control.must_reject.parameter, parameter_names)
 
     def test_report_smoke_failure_highlight_and_byte_determinism(self) -> None:
         series = [

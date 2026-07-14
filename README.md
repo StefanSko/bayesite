@@ -127,9 +127,10 @@ This default development gate checks:
 - release CLI build and JSON-error smoke test;
 - Rust tests;
 - wasm build;
-- G6 statistical agreement against a pinned `nuts-rs` checkout.
+- NUTS cross-engine agreement against a pinned `nuts-rs` checkout (ladder rung G6).
 
-By default, G6 expects `/tmp/nuts-rs` at the pinned revision documented in
+By default, the NUTS cross-engine oracle (ladder rung G6) expects `/tmp/nuts-rs`
+at the pinned revision documented in
 [`docs/validation-ladder.md`](docs/validation-ladder.md), or pass
 `--nuts-rs-path` explicitly.
 
@@ -149,8 +150,9 @@ Pass `--bayescycle-path ../bayescycle` to test an unpublished monorepo checkout
 instead.
 
 The optional oracle path may use Python/JAX/BlackJAX. It is not part of the
-agent execution path. GitHub Actions also runs G6/G7 conformance on a schedule,
-manual dispatch, and release tags.
+agent execution path. GitHub Actions also runs the NUTS cross-engine oracle
+(ladder rung G6) and posterior cross-backend oracle (ladder rung G7) on a
+schedule, manual dispatch, and release tags.
 
 ## CLI examples
 

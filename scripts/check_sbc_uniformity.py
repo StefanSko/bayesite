@@ -25,6 +25,7 @@ import gate_report as report_html
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCENARIO_DIR = REPO_ROOT / "scripts" / "sbc_scenarios"
+MODEL_DIR = REPO_ROOT / "scripts" / "sbc_models"
 DEFAULT_BINARY = REPO_ROOT / "target" / "release" / "bayesite"
 MONTE_CARLO_SETS = 4000
 CALIBRATION_SEED = 0x5BC2021
@@ -43,10 +44,26 @@ FORBIDDEN_VERDICT_FIELDS = {
 
 
 @dataclass(frozen=True)
+class ModelSource:
+    fixture: str | None = None
+    path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if (self.fixture is None) == (self.path is None):
+            raise ValueError("model source must name exactly one fixture or model path")
+
+
+@dataclass(frozen=True)
+class MustRejectSpec:
+    parameter: str
+
+
+@dataclass(frozen=True)
 class ScenarioSpec:
     name: str
-    fixture: str
+    model_source: ModelSource
     scenario_path: Path
+    must_reject: MustRejectSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -78,11 +95,41 @@ class ThinningSelection:
 
 
 SCENARIOS = (
-    ScenarioSpec("bounded_rates", "bounded_rates", SCENARIO_DIR / "bounded_rates.json"),
+    ScenarioSpec(
+        "bounded_rates",
+        ModelSource(fixture="bounded_rates"),
+        SCENARIO_DIR / "bounded_rates.json",
+    ),
     ScenarioSpec(
         "linear_regression",
-        "linear_regression",
+        ModelSource(fixture="linear_regression"),
         SCENARIO_DIR / "linear_regression.json",
+    ),
+    ScenarioSpec(
+        "linear_regression_n64",
+        ModelSource(fixture="linear_regression"),
+        SCENARIO_DIR / "linear_regression_n64.json",
+    ),
+    ScenarioSpec(
+        "eight_schools_non_centered",
+        ModelSource(fixture="eight_schools_non_centered"),
+        SCENARIO_DIR / "eight_schools_non_centered.json",
+    ),
+    ScenarioSpec(
+        "varying_intercepts_poisson",
+        ModelSource(fixture="varying_intercepts_poisson"),
+        SCENARIO_DIR / "varying_intercepts_poisson.json",
+    ),
+    ScenarioSpec(
+        "mvn_cholesky",
+        ModelSource(path=MODEL_DIR / "mvn_cholesky.json"),
+        SCENARIO_DIR / "mvn_cholesky.json",
+    ),
+    ScenarioSpec(
+        "centered_eight_schools",
+        ModelSource(path=MODEL_DIR / "centered_eight_schools.json"),
+        SCENARIO_DIR / "centered_eight_schools.json",
+        MustRejectSpec(parameter="tau"),
     ),
 )
 
@@ -846,6 +893,32 @@ def _fixed_thin(value: str) -> int | None:
     return thin
 
 
+def _load_model(spec: ScenarioSpec) -> object:
+    source = spec.model_source
+    if source.fixture is not None:
+        fixture_path = (
+            REPO_ROOT
+            / "tests"
+            / "golden_ir"
+            / "fixtures"
+            / f"{source.fixture}.json"
+        )
+        try:
+            fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+            return fixture["ir"]
+        except (OSError, json.JSONDecodeError, KeyError) as error:
+            raise ConformanceError(
+                f"cannot load model fixture {fixture_path}: {error}"
+            ) from error
+    assert source.path is not None
+    try:
+        return json.loads(source.path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ConformanceError(
+            f"cannot load SBC model document {source.path}: {error}"
+        ) from error
+
+
 def run_scenarios(
     binary: Path, args: argparse.Namespace
 ) -> tuple[list[tuple[str, object]], list[ThinningSelection]]:
@@ -860,12 +933,7 @@ def run_scenarios(
     with tempfile.TemporaryDirectory(prefix="bayesite-sbc-uniformity-") as tmp:
         tmp_path = Path(tmp)
         for scenario_index, spec in enumerate(SCENARIOS):
-            fixture_path = REPO_ROOT / "tests" / "golden_ir" / "fixtures" / f"{spec.fixture}.json"
-            try:
-                fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-                model = fixture["ir"]
-            except (OSError, json.JSONDecodeError, KeyError) as error:
-                raise ConformanceError(f"cannot load model fixture {fixture_path}: {error}") from error
+            model = _load_model(spec)
             model_path = tmp_path / f"{spec.name}-model.json"
             scenario_path = tmp_path / f"{spec.name}-scenario.json"
             model_path.write_text(json.dumps(model), encoding="utf-8")
@@ -998,14 +1066,64 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ConformanceError("--target-accept must be in (0, 1)")
 
 
+def _scenario_spec(name: str) -> ScenarioSpec | None:
+    return next((spec for spec in SCENARIOS if spec.name == name), None)
+
+
+def _result_verdict(result: UniformityResult) -> tuple[str, bool]:
+    spec = _scenario_spec(result.scenario)
+    must_reject = None if spec is None else spec.must_reject
+    if must_reject is None:
+        return (
+            ("REJECTED (unexpected)", True)
+            if result.rejected
+            else ("NOT REJECTED", False)
+        )
+    if result.parameter != must_reject.parameter:
+        return (
+            ("REJECTED (informational)", False)
+            if result.rejected
+            else ("NOT REJECTED (informational)", False)
+        )
+    if not result.rejected:
+        return "MISSING EXPECTED REJECTION", True
+    return "REJECTED (expected)", False
+
+
 def failure_messages(results: Sequence[UniformityResult]) -> list[str]:
-    return [
-        f"G11 SBC rank uniformity failed: scenario {result.scenario}, "
-        f"parameter {result.parameter}: {result.diagnosis}; inspect the rank "
-        "histogram and sampler facts, then repair calibration or sampling."
-        for result in results
-        if result.rejected
-    ]
+    messages: list[str] = []
+    result_keys = {(result.scenario, result.parameter) for result in results}
+    result_scenarios = {result.scenario for result in results}
+    for spec in SCENARIOS:
+        if spec.must_reject is None or spec.name not in result_scenarios:
+            continue
+        key = (spec.name, spec.must_reject.parameter)
+        if key not in result_keys:
+            messages.append(
+                "SBC calibration (rank uniformity) failed: negative-control "
+                f"scenario {spec.name} has no series for parameter "
+                f"{spec.must_reject.parameter}; missing expected rejection "
+                "(control lost power / test machinery weakened)."
+            )
+    for result in results:
+        verdict, failed = _result_verdict(result)
+        if not failed:
+            continue
+        if verdict == "MISSING EXPECTED REJECTION":
+            messages.append(
+                "SBC calibration (rank uniformity) failed: negative-control "
+                f"scenario {result.scenario}, parameter {result.parameter}: "
+                "missing expected rejection (control lost power / test machinery "
+                "weakened); inspect the rank test and sampler facts."
+            )
+        else:
+            messages.append(
+                "SBC calibration (rank uniformity) failed: unexpected rejection "
+                f"(calibration bug) in scenario {result.scenario}, parameter "
+                f"{result.parameter}: {result.diagnosis}; inspect the rank histogram "
+                "and sampler facts, then repair calibration or sampling."
+            )
+    return messages
 
 
 def _print_thinning(selections: Sequence[ThinningSelection]) -> None:
@@ -1026,11 +1144,15 @@ def _print_thinning(selections: Sequence[ThinningSelection]) -> None:
 
 
 def _print_results(results: Sequence[UniformityResult]) -> None:
-    print(f"{'scenario':20s} {'parameter':18s} {'N':>5s} {'min band margin':>15s}")
+    print(
+        f"{'scenario':28s} {'parameter':18s} {'N':>5s} "
+        f"{'min band margin':>15s}  verdict"
+    )
     for result in results:
+        verdict, _ = _result_verdict(result)
         print(
-            f"{result.scenario:20s} {result.parameter:18s} "
-            f"{result.sample_count:5d} {result.min_band_margin:15.4f}"
+            f"{result.scenario:28s} {result.parameter:18s} "
+            f"{result.sample_count:5d} {result.min_band_margin:15.4f}  {verdict}"
         )
 
 
@@ -1273,12 +1395,12 @@ def render_sbc_report(
     alpha: float,
     simulations: int = MONTE_CARLO_SETS,
 ) -> str:
-    """Render the deterministic, self-contained G11 statistical report."""
+    """Render the deterministic, self-contained SBC calibration report."""
     if not series:
         raise ValueError("at least one rank series is required")
     if len(series) != len(results):
         raise ValueError("rank series and uniformity results must have equal lengths")
-    passed = not any(result.rejected for result in results)
+    passed = not failure_messages(results)
     settings = (
         ("scenarios", scenario_count),
         ("replicates N", replicates),
@@ -1330,20 +1452,22 @@ def render_sbc_report(
             report_html.section_heading("Uniformity results"),
         )
     )
-    rows = [
-        (
+    rows = []
+    for result in results:
+        verdict, failed = _result_verdict(result)
+        rows.append(
             (
-                result.scenario,
-                result.parameter,
-                result.sample_count,
-                f"{result.min_band_margin:.4f}",
-                "FAIL" if result.rejected else "PASS",
-                result.diagnosis or "none",
-            ),
-            result.rejected,
+                (
+                    result.scenario,
+                    result.parameter,
+                    result.sample_count,
+                    f"{result.min_band_margin:.4f}",
+                    verdict,
+                    result.diagnosis or "none",
+                ),
+                failed,
+            )
         )
-        for result in results
-    ]
     sections.append(
         report_html.data_table(
             ("Scenario", "Parameter", "N", "Min band margin", "Verdict", "Diagnosis"),
@@ -1351,12 +1475,14 @@ def render_sbc_report(
         )
     )
     return report_html.html_document(
-        "G11 SBC rank uniformity", settings, passed, sections
+        "SBC calibration (rank uniformity)", settings, passed, sections
     )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="SBC calibration (rank uniformity) conformance gate"
+    )
     parser.add_argument("--bayesite-bin", type=Path, default=DEFAULT_BINARY)
     parser.add_argument("--replicates", type=int, default=400)
     parser.add_argument("--seed", type=int, default=20240713)
@@ -1379,7 +1505,7 @@ def main() -> None:
         series = rank_series_from_reports(reports, seed=args.seed)
         results = evaluate_rank_series(series, alpha=args.alpha)
     except ConformanceError as error:
-        sys.exit(f"G11 SBC rank uniformity failed: {error}")
+        sys.exit(f"SBC calibration (rank uniformity) failed: {error}")
 
     if args.report is not None:
         args.report.write_text(
@@ -1398,15 +1524,16 @@ def main() -> None:
             encoding="utf-8",
         )
 
-    failures = [result for result in results if result.rejected]
-    if failures:
-        for message in failure_messages(results):
-            print(message, file=sys.stderr)
-        sys.exit(f"{len(failures)} SBC parameter rank uniformity check(s) failed")
     _print_results(results)
+    failures = failure_messages(results)
+    if failures:
+        for message in failures:
+            print(message, file=sys.stderr)
+        sys.exit(f"{len(failures)} SBC calibration check(s) failed")
     print(
-        f"\nG11 SBC rank uniformity passed: {len(results)} parameter-coordinate "
-        f"series, alpha {args.alpha}, {MONTE_CARLO_SETS} calibration sets"
+        f"\nSBC calibration (rank uniformity) passed: {len(results)} "
+        f"parameter-coordinate series, alpha {args.alpha}, "
+        f"{MONTE_CARLO_SETS} calibration sets"
     )
 
 

@@ -215,13 +215,19 @@ def main() -> None:
     parser.add_argument(
         "--skip-oracle",
         action="store_true",
-        help="skip the mandatory nuts-rs statistical oracle gate (G6)",
+        help=(
+            "skip the mandatory NUTS cross-engine oracle "
+            "(nuts-rs; ladder rung G6)"
+        ),
     )
     parser.add_argument(
         "--nuts-rs-path",
         type=Path,
         default=Path("/tmp/nuts-rs"),
-        help="path to a pinned nuts-rs checkout for the mandatory NUTS oracle gate",
+        help=(
+            "path to a pinned nuts-rs checkout for the NUTS cross-engine "
+            "oracle (nuts-rs; ladder rung G6)"
+        ),
     )
     parser.add_argument("--nuts-rs-draws", type=int, default=1000)
     parser.add_argument("--nuts-rs-warmup", type=int, default=500)
@@ -231,13 +237,18 @@ def main() -> None:
     parser.add_argument(
         "--skip-sbc-uniformity",
         action="store_true",
-        help="skip the mandatory G11 SBC rank-uniformity gate",
+        help=(
+            "skip SBC calibration (rank uniformity; ladder rung G11)"
+        ),
     )
     parser.add_argument(
         "--sbc-replicates",
         type=int,
         default=400,
-        help="replicates per scenario for the G11 SBC rank-uniformity gate",
+        help=(
+            "replicates per scenario for SBC calibration "
+            "(rank uniformity; ladder rung G11)"
+        ),
     )
     parser.add_argument(
         "--posterior",
@@ -275,11 +286,24 @@ def main() -> None:
         ],
     )
     _run("release packaging helper tests", ["python3", "scripts/test_release_tooling.py"])
-    _run("G6 oracle aggregation helper tests", ["python3", "scripts/test_oracle_stats.py"])
+    _run(
+        "NUTS cross-engine oracle helper tests (nuts-rs; ladder rung G6)",
+        ["python3", "scripts/test_oracle_stats.py"],
+    )
+    _run(
+        "conformance summary helper tests",
+        ["python3", "scripts/test_conformance_summary.py"],
+    )
     _check_release_cli_binary()
     if not args.skip_sbc_uniformity:
-        _run("G11 SBC uniformity helper tests", ["python3", "scripts/test_sbc_uniformity.py"])
-        _run("G11 SBC rank uniformity", _sbc_uniformity_command(args))
+        _run(
+            "SBC calibration helper tests (rank uniformity; ladder rung G11)",
+            ["python3", "scripts/test_sbc_uniformity.py"],
+        )
+        _run(
+            "SBC calibration (rank uniformity; ladder rung G11)",
+            _sbc_uniformity_command(args),
+        )
     _run(
         "G1-G5 fixture, log-density, sampler, and protocol tests",
         ["cargo", "test", "--manifest-path", str(CORE_MANIFEST)],
@@ -298,12 +322,21 @@ def main() -> None:
         )
 
     if not args.skip_oracle:
-        _run("G6 nuts-rs NUTS statistical oracle", _nuts_rs_command(args))
+        _run(
+            "NUTS cross-engine oracle (nuts-rs; ladder rung G6)",
+            _nuts_rs_command(args),
+        )
 
     if args.posterior:
         if shutil.which("uv") is None:
-            sys.exit("G7 posterior oracle requires uv")
-        _run("G7 bayesjax/BlackJAX posterior oracle", _posterior_command(args))
+            sys.exit(
+                "posterior cross-backend oracle (bayesjax; ladder rung G7) "
+                "requires uv"
+            )
+        _run(
+            "Posterior cross-backend oracle (bayesjax; ladder rung G7)",
+            _posterior_command(args),
+        )
 
     print("\nvalidation ladder passed")
 

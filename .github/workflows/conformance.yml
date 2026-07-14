@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   nuts-rs-oracle:
-    name: G6 nuts-rs oracle
+    name: NUTS cross-engine oracle (nuts-rs)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -35,23 +35,23 @@ jobs:
           git -C /tmp/nuts-rs fetch --depth=1 origin "$NUTS_RS_REV"
           git -C /tmp/nuts-rs checkout --detach FETCH_HEAD
 
-      - name: Run G6 independent NUTS oracle
+      - name: Run NUTS cross-engine oracle (nuts-rs)
         shell: bash
         run: >-
           python3 scripts/check_nuts_rs_oracle.py
           --nuts-rs-path /tmp/nuts-rs
-          --report g6-report.html
+          --report nuts-rs-oracle-report.html
 
-      - name: Upload G6 oracle report
+      - name: Upload nuts-rs oracle report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: g6-oracle-report
-          path: g6-report.html
+          name: nuts-rs-oracle-report
+          path: nuts-rs-oracle-report.html
           retention-days: 14
 
   posterior-oracle:
-    name: G7 bayesjax posterior oracle
+    name: Posterior cross-backend oracle (bayesjax)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -61,15 +61,15 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
-      - name: Run G7 cross-backend posterior oracle
+      - name: Run posterior cross-backend oracle (bayesjax)
         working-directory: bayesite
         shell: bash
         run: uv run scripts/check_rust_backend_posterior.py
 
-  sbc-uniformity:
-    name: G11 SBC rank uniformity
+  sbc-calibration:
+    name: SBC calibration (rank uniformity)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -81,17 +81,50 @@ jobs:
           cargo build --release --locked --bin bayesite
           --manifest-path crates/core/Cargo.toml
 
-      - name: Run G11 SBC rank uniformity
+      - name: Run SBC calibration (rank uniformity)
         shell: bash
         run: >-
           python3 scripts/check_sbc_uniformity.py
           --replicates 2000
-          --report g11-sbc-report.html
+          --report sbc-calibration-report.html
 
-      - name: Upload G11 SBC report
+      - name: Upload SBC calibration report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: g11-sbc-report
-          path: g11-sbc-report.html
+          name: sbc-calibration-report
+          path: sbc-calibration-report.html
+          retention-days: 14
+
+  conformance-summary:
+    name: Conformance summary
+    needs: [nuts-rs-oracle, posterior-oracle, sbc-calibration]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download per-gate reports
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: reports/
+
+      - name: Render conformance summary
+        shell: bash
+        run: >-
+          python3 scripts/conformance_summary.py
+          --stage "NUTS cross-engine oracle (nuts-rs)=${{ needs.nuts-rs-oracle.result }}"
+          --stage "Posterior cross-backend oracle (bayesjax)=${{ needs.posterior-oracle.result }}"
+          --stage "SBC calibration (rank uniformity)=${{ needs.sbc-calibration.result }}"
+          --reports-dir reports/
+          --report conformance-summary.html
+          --step-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload conformance summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-summary
+          path: conformance-summary.html
           retention-days: 14

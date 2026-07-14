@@ -8,6 +8,24 @@ versioned on their own.
 
 ## [Unreleased]
 
+### Added
+
+- Expand SBC calibration with `eight_schools_non_centered` for non-centered
+  hierarchical geometry, `varying_intercepts_poisson` for a hierarchical
+  Poisson GLM, `linear_regression_n64` for n=64 regression, and `mvn_cholesky`
+  for an MVN with a parameter-scaled Cholesky factor.
+- Add `centered_eight_schools` as a must-reject SBC negative control that
+  asserts the rank-uniformity gate detects the centered funnel's known
+  miscalibration.
+- Add a deterministic conformance summary report job that combines stage
+  results and links the per-gate reports found in CI artifacts.
+
+### Changed
+
+- Rename the G6, G7, and G11 conformance CI gates to descriptive cross-engine,
+  cross-backend, and SBC calibration names while retaining ladder-rung
+  references in validation documentation.
+
 ## [0.2.2] - 2026-07-14
 
 ### Added

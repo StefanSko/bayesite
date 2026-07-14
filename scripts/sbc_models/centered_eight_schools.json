@@ -1,0 +1,216 @@
+{
+  "bayeswire_ir": 1,
+  "model": {
+    "node": "ModelMeta",
+    "params": [
+      {
+        "name": "mu",
+        "value": {
+          "node": "ResolvedParam",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 5.0
+            }
+          },
+          "constraint": null,
+          "size": null
+        }
+      },
+      {
+        "name": "tau",
+        "value": {
+          "node": "ResolvedParam",
+          "distribution": {
+            "node": "HalfNormal",
+            "scale": {
+              "node": "ConstNode",
+              "value": 5.0
+            }
+          },
+          "constraint": {
+            "node": "Positive"
+          },
+          "size": null
+        }
+      },
+      {
+        "name": "theta",
+        "value": {
+          "node": "ResolvedParam",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ParamRef",
+              "name": "mu"
+            },
+            "scale": {
+              "node": "ParamRef",
+              "name": "tau"
+            }
+          },
+          "constraint": null,
+          "size": {
+            "node": "DataRef",
+            "name": "n_schools"
+          }
+        }
+      }
+    ],
+    "data": [
+      {
+        "name": "n_schools",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": []
+          }
+        }
+      },
+      {
+        "name": "sigma",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": [
+              {
+                "node": "DataDimRef",
+                "name": "n_schools"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "observed_nodes": [
+      {
+        "node": "ResolvedObserved",
+        "name": "y",
+        "distribution": {
+          "node": "Normal",
+          "loc": {
+            "node": "ParamRef",
+            "name": "theta"
+          },
+          "scale": {
+            "node": "DataRef",
+            "name": "sigma"
+          }
+        }
+      }
+    ],
+    "expressions": [],
+    "free_values": [
+      {
+        "name": "mu",
+        "value": {
+          "node": "ResolvedFreeValue",
+          "constraint": null,
+          "size": null
+        }
+      },
+      {
+        "name": "tau",
+        "value": {
+          "node": "ResolvedFreeValue",
+          "constraint": {
+            "node": "Positive"
+          },
+          "size": null
+        }
+      },
+      {
+        "name": "theta",
+        "value": {
+          "node": "ResolvedFreeValue",
+          "constraint": null,
+          "size": {
+            "node": "DataRef",
+            "name": "n_schools"
+          }
+        }
+      }
+    ],
+    "stochastic_sites": [
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "mu",
+        "distribution": {
+          "node": "Normal",
+          "loc": {
+            "node": "ConstNode",
+            "value": 0.0
+          },
+          "scale": {
+            "node": "ConstNode",
+            "value": 5.0
+          }
+        },
+        "value": {
+          "node": "ParamRef",
+          "name": "mu"
+        }
+      },
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "tau",
+        "distribution": {
+          "node": "HalfNormal",
+          "scale": {
+            "node": "ConstNode",
+            "value": 5.0
+          }
+        },
+        "value": {
+          "node": "ParamRef",
+          "name": "tau"
+        }
+      },
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "theta",
+        "distribution": {
+          "node": "Normal",
+          "loc": {
+            "node": "ParamRef",
+            "name": "mu"
+          },
+          "scale": {
+            "node": "ParamRef",
+            "name": "tau"
+          }
+        },
+        "value": {
+          "node": "ParamRef",
+          "name": "theta"
+        }
+      },
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "y",
+        "distribution": {
+          "node": "Normal",
+          "loc": {
+            "node": "ParamRef",
+            "name": "theta"
+          },
+          "scale": {
+            "node": "DataRef",
+            "name": "sigma"
+          }
+        },
+        "value": {
+          "node": "DataRef",
+          "name": "y"
+        }
+      }
+    ]
+  }
+}
