@@ -2374,7 +2374,20 @@ fn validate_fit_source_identity(
     expected_model_data_fingerprint: Option<&str>,
     expected_posterior_identity_hash: &str,
 ) -> Result<(), Error> {
-    if let Some(value) = document.get("model_data_fingerprint") {
+    let Value::Object(fields) = document else {
+        return Err(malformed_fit(format!("fit {context} must be an object")));
+    };
+    let fingerprints = fields
+        .iter()
+        .filter(|(name, _)| name == "model_data_fingerprint")
+        .map(|(_, value)| value)
+        .collect::<Vec<_>>();
+    if fingerprints.len() > 1 {
+        return Err(malformed_fit(format!(
+            "fit {context} has duplicate model_data_fingerprint fields"
+        )));
+    }
+    if let Some(value) = fingerprints.first() {
         let got = value.as_str().ok_or_else(|| {
             malformed_fit(format!(
                 "fit {context} model_data_fingerprint must be a sha256 string when present"
