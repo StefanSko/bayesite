@@ -3263,3 +3263,302 @@ pub fn posterior_check_report_with_model_data_fingerprint(
     ]);
     json::write(&report)
 }
+
+#[derive(Clone, Debug)]
+pub(crate) enum GenerationLineage {
+    Fixed,
+    ModelPrior {
+        source_draw_index: usize,
+    },
+    Posterior {
+        source_draw_index: usize,
+        chain: i64,
+        draw: i64,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GenerationPair {
+    pub(crate) parameters: Vec<(String, DataValue)>,
+    pub(crate) outcomes: Vec<(String, DataValue)>,
+    pub(crate) lineage: GenerationLineage,
+}
+
+fn validate_generation_model(meta: &ModelMeta) -> Result<(), Error> {
+    let free = meta.resolved_free_values();
+    if free.len() != meta.params.len()
+        || free
+            .iter()
+            .zip(&meta.params)
+            .any(|((free_name, free), (param_name, param))| {
+                free_name != param_name
+                    || free.constraint != param.constraint
+                    || free.size != param.size
+            })
+    {
+        return Err(invalid(
+            "generate supports declaration-backed Params only; the model has a non-Param free value or incompatible free-value layout",
+        ));
+    }
+    let sites = meta.resolved_stochastic_sites();
+    validate_prior_predictive_site_inventory(meta, &sites)?;
+    for site in sites {
+        if !matches!(site.value, Expr::Param(_) | Expr::Data(_)) {
+            return Err(invalid(format!(
+                "generate stochastic site \"{}\" is not directly assignable; only ParamRef and DataRef sites are supported",
+                site.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn generation_design(
+    meta: &ModelMeta,
+    design: Vec<(String, DataValue)>,
+) -> Result<HashMap<String, DataValue>, Error> {
+    if design.len() != meta.data.len()
+        || design
+            .iter()
+            .zip(&meta.data)
+            .any(|((got, _), (expected, _))| got != expected)
+    {
+        return Err(mismatch(
+            "generate design variable order must exactly match the model's declared data order",
+        ));
+    }
+    bind_declared_data(meta, design)
+}
+
+fn simulate_generation_outcomes(
+    meta: &ModelMeta,
+    data: &HashMap<String, DataValue>,
+    parameter_values: HashMap<String, Tensor>,
+    rng: &mut Xoshiro256PlusPlus,
+) -> Result<Vec<(String, DataValue)>, Error> {
+    let mut env = ForwardEnv {
+        values: parameter_values,
+        data,
+    };
+    let mut outcomes = Vec::new();
+    for site in meta.resolved_stochastic_sites() {
+        match &site.value {
+            Expr::Param(_) => {}
+            Expr::Data(name) => {
+                if data.contains_key(name) || env.values.contains_key(name) {
+                    return Err(mismatch(format!(
+                        "generate stochastic site \"{}\" writes duplicate data value \"{name}\"",
+                        site.name
+                    )));
+                }
+                let value = sample_distribution(rng, &env, &site.distribution, None)?;
+                let integer = distribution_has_integer_support(&site.distribution);
+                env.values.insert(name.clone(), value.clone());
+                outcomes.push((
+                    name.clone(),
+                    DataValue {
+                        shape: value.shape().to_vec(),
+                        values: value.data().to_vec(),
+                        integer,
+                    },
+                ));
+            }
+            _ => {
+                return Err(invalid(format!(
+                    "generate stochastic site \"{}\" is not directly assignable",
+                    site.name
+                )))
+            }
+        }
+    }
+    if outcomes.is_empty() {
+        return Err(invalid(
+            "generate needs at least one directly assignable observed outcome",
+        ));
+    }
+    Ok(outcomes)
+}
+
+pub(crate) fn fixed_generation_pairs(
+    meta: ModelMeta,
+    design: Vec<(String, DataValue)>,
+    parameters: Vec<(String, DataValue)>,
+    count: usize,
+    seed: u64,
+) -> Result<Vec<GenerationPair>, Error> {
+    validate_generation_model(&meta)?;
+    if parameters.len() != meta.params.len()
+        || parameters
+            .iter()
+            .zip(&meta.params)
+            .any(|((got, _), (expected, _))| got != expected)
+    {
+        return Err(mismatch(
+            "generate fixed parameter order must exactly match the model's Param order",
+        ));
+    }
+    let data = generation_design(&meta, design)?;
+    let free_specs = free_specs(&meta, &data)?;
+    let parameter_values = validate_fixed_truth(&free_specs, parameters.clone(), "generate fixed")?;
+    let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
+    let mut pairs = Vec::with_capacity(count);
+    for _ in 0..count {
+        pairs.push(GenerationPair {
+            parameters: parameters.clone(),
+            outcomes: simulate_generation_outcomes(
+                &meta,
+                &data,
+                parameter_values.clone(),
+                &mut rng,
+            )?,
+            lineage: GenerationLineage::Fixed,
+        });
+    }
+    Ok(pairs)
+}
+
+pub(crate) fn model_prior_generation_pairs(
+    meta: ModelMeta,
+    design: Vec<(String, DataValue)>,
+    count: usize,
+    seed: u64,
+) -> Result<Vec<GenerationPair>, Error> {
+    validate_generation_model(&meta)?;
+    generation_design(&meta, design.clone())?;
+    let run = simulate_prior_predictive(
+        meta.clone(),
+        design,
+        &PriorPredictiveSettings { num_draws: count },
+        seed,
+    )?;
+    let mut pairs = Vec::with_capacity(count);
+    for (draw_index, draw) in run.draws.into_iter().enumerate() {
+        let mut parameter_map = HashMap::new();
+        let mut outcomes = Vec::new();
+        for (site, (name, value)) in run.sites.iter().zip(draw.values) {
+            let data_value = DataValue {
+                shape: value.shape().to_vec(),
+                values: value.data().to_vec(),
+                integer: site.integer,
+            };
+            match site.role {
+                PriorPredictiveRole::Parameter => {
+                    parameter_map.insert(name, data_value);
+                }
+                PriorPredictiveRole::Observed => outcomes.push((name, data_value)),
+            }
+        }
+        let parameters = meta
+            .params
+            .iter()
+            .map(|(name, _)| {
+                Ok((
+                    name.clone(),
+                    parameter_map.remove(name).ok_or_else(|| {
+                        mismatch(format!(
+                            "model-prior generation is missing parameter \"{name}\""
+                        ))
+                    })?,
+                ))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        if !parameter_map.is_empty() {
+            return Err(mismatch(
+                "model-prior generation produced undeclared parameter values",
+            ));
+        }
+        pairs.push(GenerationPair {
+            parameters,
+            outcomes,
+            lineage: GenerationLineage::ModelPrior {
+                source_draw_index: draw_index,
+            },
+        });
+    }
+    Ok(pairs)
+}
+
+fn uniform_fit_index(rng: &mut Xoshiro256PlusPlus, count: usize) -> usize {
+    let count = count as u64;
+    let zone = u64::MAX - (u64::MAX % count);
+    loop {
+        let value = rng.next_u64();
+        if value < zone {
+            return (value % count) as usize;
+        }
+    }
+}
+
+pub(crate) fn posterior_generation_pairs(
+    meta: ModelMeta,
+    design: Vec<(String, DataValue)>,
+    fit_data: Vec<(String, DataValue)>,
+    fit_ndjson: &str,
+    expected_model_data_fingerprint: Option<&str>,
+    count: usize,
+    seed: u64,
+) -> Result<Vec<GenerationPair>, Error> {
+    validate_generation_model(&meta)?;
+    let posterior = Posterior::new(meta.clone(), fit_data)?;
+    let fit = parse_fit_stream(
+        fit_ndjson,
+        &posterior.packing(),
+        posterior.identity_hash(),
+        expected_model_data_fingerprint,
+    )?;
+    let data = generation_design(&meta, design)?;
+    let free_specs = free_specs(&meta, &data)?;
+    for (spec, (name, free)) in fit.params.iter().zip(meta.resolved_free_values()) {
+        let shape = match free.size {
+            Size::Scalar => Vec::new(),
+            Size::Fixed(size) => vec![size as usize],
+            Size::Data(ref data_name) => {
+                let size = scalar_int_data(&data, data_name)?;
+                if size < 1 {
+                    return Err(mismatch(format!(
+                        "generation design parameter size \"{data_name}\" must be positive"
+                    )));
+                }
+                vec![size as usize]
+            }
+        };
+        if spec.name != name || spec.shape != shape {
+            return Err(mismatch(
+                "posterior parameter order/shapes are incompatible with the generation design",
+            ));
+        }
+    }
+    let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
+    let mut pairs = Vec::with_capacity(count);
+    for _ in 0..count {
+        let source_index = uniform_fit_index(&mut rng, fit.draws.len());
+        let fit_draw = &fit.draws[source_index];
+        let parameters = fit
+            .params
+            .iter()
+            .zip(&fit_draw.values)
+            .map(|(spec, value)| {
+                (
+                    spec.name.clone(),
+                    DataValue {
+                        shape: value.shape().to_vec(),
+                        values: value.data().to_vec(),
+                        integer: false,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let values = validate_fixed_truth(&free_specs, parameters.clone(), "generate posterior")?;
+        let outcomes = simulate_generation_outcomes(&meta, &data, values, &mut rng)?;
+        pairs.push(GenerationPair {
+            parameters,
+            outcomes,
+            lineage: GenerationLineage::Posterior {
+                source_draw_index: fit_draw.draw_index,
+                chain: fit_draw.chain,
+                draw: fit_draw.draw,
+            },
+        });
+    }
+    Ok(pairs)
+}

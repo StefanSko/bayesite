@@ -37,6 +37,9 @@ use std::io::Write;
 
 use bayesite_core::error::{Error, ErrorKind};
 use bayesite_core::fingerprint::model_data_fingerprint;
+use bayesite_core::generation::{
+    generated_datasets_ndjson_lines, sha256_bytes, GenerationRequest, GenerationSource,
+};
 use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, data_to_json, DataValue, Posterior};
@@ -199,6 +202,7 @@ enum Command {
     Sample(SampleArgs),
     Diagnose(DiagnoseArgs),
     PriorPredictive(PriorPredictiveArgs),
+    Generate(GenerateArgs),
     PosteriorPredictive(PosteriorPredictiveArgs),
     PosteriorCheck(PosteriorCheckArgs),
     Simulate(SimulateArgs),
@@ -221,6 +225,9 @@ const COMMANDS: &[(&str, ParseCommandFn)] = &[
     }),
     ("prior-predictive", |argv| {
         parse_prior_predictive_args(argv).map(Command::PriorPredictive)
+    }),
+    ("generate", |argv| {
+        parse_generate_args(argv).map(Command::Generate)
     }),
     ("posterior-predictive", |argv| {
         parse_posterior_predictive_args(argv).map(Command::PosteriorPredictive)
@@ -261,6 +268,26 @@ struct PriorPredictiveArgs {
     out_path: String,
     seed: u64,
     settings: PriorPredictiveSettings,
+}
+
+enum GenerateSourceArgs {
+    Fixed {
+        parameters_path: String,
+    },
+    ModelPrior,
+    Posterior {
+        fit_path: String,
+        fit_data_path: String,
+    },
+}
+
+struct GenerateArgs {
+    model_path: String,
+    design_path: String,
+    source: GenerateSourceArgs,
+    out_path: String,
+    count: usize,
+    seed: u64,
 }
 
 struct PosteriorPredictiveArgs {
@@ -327,6 +354,10 @@ fn usage() -> &'static str {
      usage: bayesite diagnose --fit <fit.jsonl|-> [--out <diagnostics.json|->]\n\
      usage: bayesite prior-predictive --model <ir.json|-> --data <data.json|-> \
      [--seed N] [--draws D] [--out <pp.jsonl|->]\n\
+     usage: bayesite generate --model <ir.json|-> --design <data.json|-> \
+     --source <fixed|model-prior|posterior> [--parameters <params.json|->] \
+     [--fit <fit.jsonl|-> --fit-data <data.json|->] [--count N] [--seed N] \
+     [--out <generated.jsonl|->]\n\
      usage: bayesite posterior-predictive --model <ir.json|-> --data <data.json|-> \
      --fit <fit.jsonl|-> [--seed N] [--out <yrep.jsonl|->]\n\
      usage: bayesite posterior-check --model <ir.json|-> --data <data.json|-> \
@@ -586,6 +617,140 @@ fn parse_prior_predictive_args(argv: &[String]) -> Result<PriorPredictiveArgs, E
         out_path,
         seed,
         settings,
+    })
+}
+
+fn parse_generate_args(argv: &[String]) -> Result<GenerateArgs, Error> {
+    reject_duplicate_flags(
+        "generate",
+        argv,
+        &[
+            "--model",
+            "--design",
+            "--source",
+            "--parameters",
+            "--fit",
+            "--fit-data",
+            "--out",
+            "--count",
+            "--seed",
+        ],
+    )?;
+    let mut model_path: Option<String> = None;
+    let mut design_path: Option<String> = None;
+    let mut source_kind: Option<String> = None;
+    let mut parameters_path: Option<String> = None;
+    let mut fit_path: Option<String> = None;
+    let mut fit_data_path: Option<String> = None;
+    let mut out_path = "-".to_string();
+    let mut count = 100usize;
+    let mut seed = 0u64;
+    let mut iter = argv.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--model" => model_path = Some(value_for_flag(&mut iter, "--model")?.clone()),
+            "--design" => design_path = Some(value_for_flag(&mut iter, "--design")?.clone()),
+            "--source" => source_kind = Some(value_for_flag(&mut iter, "--source")?.clone()),
+            "--parameters" => {
+                parameters_path = Some(value_for_flag(&mut iter, "--parameters")?.clone())
+            }
+            "--fit" => fit_path = Some(value_for_flag(&mut iter, "--fit")?.clone()),
+            "--fit-data" => fit_data_path = Some(value_for_flag(&mut iter, "--fit-data")?.clone()),
+            "--out" => out_path = value_for_flag(&mut iter, "--out")?.clone(),
+            "--count" => {
+                count = parse_reportable_draw_count(
+                    value_for_flag(&mut iter, "--count")?,
+                    "--count",
+                    "generated-dataset artifacts",
+                )?
+            }
+            "--seed" => seed = parse_artifact_seed(value_for_flag(&mut iter, "--seed")?)?,
+            other => {
+                return Err(usage_error(format!(
+                    "unknown flag {other}; see `bayesite generate` usage"
+                )))
+            }
+        }
+    }
+    let model_path =
+        model_path.ok_or_else(|| usage_error("--model is required (a path or - for stdin)"))?;
+    let design_path =
+        design_path.ok_or_else(|| usage_error("--design is required (a path or - for stdin)"))?;
+    let source_kind = source_kind
+        .ok_or_else(|| usage_error("--source is required (fixed, model-prior, or posterior)"))?;
+    if count == 0 || count > 1000 {
+        return Err(usage_error("--count must be in 1..=1000"));
+    }
+    if seed > 9_007_199_254_740_991 {
+        return Err(usage_error(
+            "--seed must be in 0..=9007199254740991 for generation interoperability",
+        ));
+    }
+    let source = match source_kind.as_str() {
+        "fixed" => {
+            let parameters_path = parameters_path
+                .ok_or_else(|| usage_error("--parameters is required when --source fixed"))?;
+            if fit_path.is_some() || fit_data_path.is_some() {
+                return Err(usage_error(
+                    "--fit and --fit-data are only valid when --source posterior",
+                ));
+            }
+            GenerateSourceArgs::Fixed { parameters_path }
+        }
+        "model-prior" => {
+            if parameters_path.is_some() || fit_path.is_some() || fit_data_path.is_some() {
+                return Err(usage_error(
+                    "model-prior generation does not accept --parameters, --fit, or --fit-data",
+                ));
+            }
+            GenerateSourceArgs::ModelPrior
+        }
+        "posterior" => {
+            if parameters_path.is_some() {
+                return Err(usage_error(
+                    "--parameters is only valid when --source fixed",
+                ));
+            }
+            let fit_path =
+                fit_path.ok_or_else(|| usage_error("--fit is required when --source posterior"))?;
+            let fit_data_path = fit_data_path
+                .ok_or_else(|| usage_error("--fit-data is required when --source posterior"))?;
+            GenerateSourceArgs::Posterior {
+                fit_path,
+                fit_data_path,
+            }
+        }
+        other => {
+            return Err(usage_error(format!(
+                "--source must be fixed, model-prior, or posterior; got {other:?}"
+            )))
+        }
+    };
+    let mut inputs = vec![
+        ("--model", model_path.as_str()),
+        ("--design", design_path.as_str()),
+    ];
+    match &source {
+        GenerateSourceArgs::Fixed { parameters_path } => {
+            inputs.push(("--parameters", parameters_path.as_str()));
+        }
+        GenerateSourceArgs::ModelPrior => {}
+        GenerateSourceArgs::Posterior {
+            fit_path,
+            fit_data_path,
+        } => {
+            inputs.push(("--fit", fit_path.as_str()));
+            inputs.push(("--fit-data", fit_data_path.as_str()));
+        }
+    }
+    validate_single_stdin_input("generate", &inputs)?;
+    Ok(GenerateArgs {
+        model_path,
+        design_path,
+        source,
+        out_path,
+        count,
+        seed,
     })
 }
 
@@ -950,6 +1115,59 @@ fn run_prior_predictive(args: PriorPredictiveArgs) -> Result<(), Error> {
     let data_doc = json::parse(&read_input(&args.data_path)?)?;
     let data = cli_data_from_json(&data_doc, "prior-predictive")?;
     let lines = prior_predictive_ndjson_lines(meta, data, &args.settings, args.seed)?;
+    write_lines(&args.out_path, lines)
+}
+
+fn run_generate(args: GenerateArgs) -> Result<(), Error> {
+    let model_text = read_input(&args.model_path)?;
+    let design_text = read_input(&args.design_path)?;
+    let model_doc = json::parse(&model_text)?;
+    let meta = decode_model(&model_doc)?;
+    let design = json::parse(&design_text)?;
+    let generation_model_hash = sha256_bytes(model_text.as_bytes());
+    let design_hash = sha256_bytes(design_text.as_bytes());
+    let source = match args.source {
+        GenerateSourceArgs::Fixed { parameters_path } => {
+            let parameters_text = read_input(&parameters_path)?;
+            let parameters = json::parse(&parameters_text)?;
+            GenerationSource::Fixed {
+                parameters,
+                parameters_hash: sha256_bytes(parameters_text.as_bytes()),
+            }
+        }
+        GenerateSourceArgs::ModelPrior => GenerationSource::ModelPrior {
+            model_hash: generation_model_hash.clone(),
+            authored_provenance: None,
+        },
+        GenerateSourceArgs::Posterior {
+            fit_path,
+            fit_data_path,
+        } => {
+            let fit_ndjson = read_input(&fit_path)?;
+            let fit_data_text = read_input(&fit_data_path)?;
+            let fit_data = json::parse(&fit_data_text)?;
+            GenerationSource::Posterior {
+                fit_hash: sha256_bytes(fit_ndjson.as_bytes()),
+                fit_model_hash: generation_model_hash.clone(),
+                fit_data_hash: sha256_bytes(fit_data_text.as_bytes()),
+                expected_model_data_fingerprint: Some(model_data_fingerprint(
+                    &model_text,
+                    &fit_data_text,
+                )),
+                fit_ndjson,
+                fit_data,
+            }
+        }
+    };
+    let lines = generated_datasets_ndjson_lines(GenerationRequest {
+        meta,
+        design,
+        source,
+        count: args.count,
+        seed: args.seed,
+        generation_model_hash,
+        design_hash,
+    })?;
     write_lines(&args.out_path, lines)
 }
 
@@ -1383,6 +1601,7 @@ fn run() -> Result<(), Error> {
         Command::Sample(args) => run_sample(args),
         Command::Diagnose(args) => run_diagnose(args),
         Command::PriorPredictive(args) => run_prior_predictive(args),
+        Command::Generate(args) => run_generate(args),
         Command::PosteriorPredictive(args) => run_posterior_predictive(args),
         Command::PosteriorCheck(args) => run_posterior_check(args),
         Command::Simulate(args) => run_simulate(args),

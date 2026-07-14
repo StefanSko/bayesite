@@ -107,6 +107,16 @@ fn sha256_digest(input: &[u8]) -> [u8; 32] {
     digest
 }
 
+/// Return a lowercase prefixed SHA-256 digest for exact received bytes.
+pub fn sha256_bytes(input: &[u8]) -> String {
+    let digest = sha256_digest(input);
+    let mut out = String::from("sha256:");
+    for byte in digest {
+        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    out
+}
+
 /// Fingerprint a model/data pair per the bayeswire spec
 /// `model-data-fingerprint-v1.md`: sha256 over
 /// `b"bayescycle-model-data-v1\n" + model + b"\n" + data`, rendered as
@@ -120,10 +130,5 @@ pub fn model_data_fingerprint(model_text: &str, data_text: &str) -> String {
     input.extend_from_slice(model_text.as_bytes());
     input.push(b'\n');
     input.extend_from_slice(data_text.as_bytes());
-    let digest = sha256_digest(&input);
-    let mut out = String::from("sha256:");
-    for byte in digest {
-        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    out
+    sha256_bytes(&input)
 }
