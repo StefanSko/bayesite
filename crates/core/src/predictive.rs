@@ -1875,6 +1875,7 @@ fn collect_expr_data_refs(expr: &Expr, refs: &mut Vec<String>) {
 
 fn validate_fixed_truth(
     free_specs: &HashMap<String, FreeSpec>,
+    free_order: &[String],
     truth: Vec<(String, DataValue)>,
     context: &str,
 ) -> Result<HashMap<String, Tensor>, Error> {
@@ -1925,7 +1926,10 @@ fn validate_fixed_truth(
     }
 
     let mut tensors = HashMap::new();
-    for (name, spec) in free_specs {
+    for name in free_order {
+        let spec = free_specs
+            .get(name)
+            .expect("free-value order and specifications came from the same model");
         let (shape, values) = truth_map.remove(name).expect("truth was validated");
         if shape != spec.shape {
             return Err(mismatch(format!(
@@ -1960,7 +1964,12 @@ pub fn simulate_data_from_truth(
     let output_declared_data = declared_data.clone();
     let data = bind_declared_data(&meta, declared_data)?;
     let free_specs = free_specs(&meta, &data)?;
-    let truth_values = validate_fixed_truth(&free_specs, truth, "simulate")?;
+    let free_order = meta
+        .resolved_free_values()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
+    let truth_values = validate_fixed_truth(&free_specs, &free_order, truth, "simulate")?;
     let mut env = ForwardEnv {
         values: truth_values,
         data: &data,
@@ -3399,7 +3408,17 @@ pub(crate) fn fixed_generation_pairs(
     }
     let data = generation_design(&meta, design)?;
     let free_specs = free_specs(&meta, &data)?;
-    let parameter_values = validate_fixed_truth(&free_specs, parameters.clone(), "generate fixed")?;
+    let free_order = meta
+        .resolved_free_values()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
+    let parameter_values = validate_fixed_truth(
+        &free_specs,
+        &free_order,
+        parameters.clone(),
+        "generate fixed",
+    )?;
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
     let mut pairs = Vec::with_capacity(count);
     for _ in 0..count {
@@ -3499,6 +3518,9 @@ pub(crate) fn posterior_generation_pairs(
     seed: u64,
 ) -> Result<Vec<GenerationPair>, Error> {
     validate_generation_model(&meta)?;
+    // Generation accepts exactly the fit streams accepted by the native
+    // diagnostic validator rather than maintaining a weaker parser contract.
+    crate::protocol::diagnose_ndjson(fit_ndjson)?;
     let posterior = Posterior::new(meta.clone(), fit_data)?;
     let fit = parse_fit_stream(
         fit_ndjson,
@@ -3528,6 +3550,34 @@ pub(crate) fn posterior_generation_pairs(
             ));
         }
     }
+    let free_order = meta
+        .resolved_free_values()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
+    for fit_draw in &fit.draws {
+        let parameters = fit
+            .params
+            .iter()
+            .zip(&fit_draw.values)
+            .map(|(spec, value)| {
+                (
+                    spec.name.clone(),
+                    DataValue {
+                        shape: value.shape().to_vec(),
+                        values: value.data().to_vec(),
+                        integer: false,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        validate_fixed_truth(
+            &free_specs,
+            &free_order,
+            parameters,
+            "generate posterior fit draw",
+        )?;
+    }
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
     let mut pairs = Vec::with_capacity(count);
     for _ in 0..count {
@@ -3548,7 +3598,12 @@ pub(crate) fn posterior_generation_pairs(
                 )
             })
             .collect::<Vec<_>>();
-        let values = validate_fixed_truth(&free_specs, parameters.clone(), "generate posterior")?;
+        let values = validate_fixed_truth(
+            &free_specs,
+            &free_order,
+            parameters.clone(),
+            "generate posterior",
+        )?;
         let outcomes = simulate_generation_outcomes(&meta, &data, values, &mut rng)?;
         pairs.push(GenerationPair {
             parameters,

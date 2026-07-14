@@ -644,7 +644,7 @@ fn parse_generate_args(argv: &[String]) -> Result<GenerateArgs, Error> {
     let mut fit_data_path: Option<String> = None;
     let mut out_path = "-".to_string();
     let mut count = 100usize;
-    let mut seed = 0u64;
+    let mut seed: Option<u64> = None;
     let mut iter = argv.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
@@ -664,7 +664,7 @@ fn parse_generate_args(argv: &[String]) -> Result<GenerateArgs, Error> {
                     "generated-dataset artifacts",
                 )?
             }
-            "--seed" => seed = parse_artifact_seed(value_for_flag(&mut iter, "--seed")?)?,
+            "--seed" => seed = Some(parse_artifact_seed(value_for_flag(&mut iter, "--seed")?)?),
             other => {
                 return Err(usage_error(format!(
                     "unknown flag {other}; see `bayesite generate` usage"
@@ -681,6 +681,7 @@ fn parse_generate_args(argv: &[String]) -> Result<GenerateArgs, Error> {
     if count == 0 || count > 1000 {
         return Err(usage_error("--count must be in 1..=1000"));
     }
+    let seed = seed.ok_or_else(|| usage_error("--seed is required for generation"))?;
     if seed > 9_007_199_254_740_991 {
         return Err(usage_error(
             "--seed must be in 0..=9007199254740991 for generation interoperability",
@@ -1121,18 +1122,14 @@ fn run_prior_predictive(args: PriorPredictiveArgs) -> Result<(), Error> {
 fn run_generate(args: GenerateArgs) -> Result<(), Error> {
     let model_text = read_input(&args.model_path)?;
     let design_text = read_input(&args.design_path)?;
-    let model_doc = json::parse(&model_text)?;
-    let meta = decode_model(&model_doc)?;
-    let design = json::parse(&design_text)?;
     let generation_model_hash = sha256_bytes(model_text.as_bytes());
     let design_hash = sha256_bytes(design_text.as_bytes());
     let source = match args.source {
         GenerateSourceArgs::Fixed { parameters_path } => {
             let parameters_text = read_input(&parameters_path)?;
-            let parameters = json::parse(&parameters_text)?;
             GenerationSource::Fixed {
-                parameters,
                 parameters_hash: sha256_bytes(parameters_text.as_bytes()),
+                parameters_document: parameters_text,
             }
         }
         GenerateSourceArgs::ModelPrior => GenerationSource::ModelPrior {
@@ -1145,7 +1142,6 @@ fn run_generate(args: GenerateArgs) -> Result<(), Error> {
         } => {
             let fit_ndjson = read_input(&fit_path)?;
             let fit_data_text = read_input(&fit_data_path)?;
-            let fit_data = json::parse(&fit_data_text)?;
             GenerationSource::Posterior {
                 fit_hash: sha256_bytes(fit_ndjson.as_bytes()),
                 fit_model_hash: generation_model_hash.clone(),
@@ -1155,13 +1151,13 @@ fn run_generate(args: GenerateArgs) -> Result<(), Error> {
                     &fit_data_text,
                 )),
                 fit_ndjson,
-                fit_data,
+                fit_data_document: fit_data_text,
             }
         }
     };
     let lines = generated_datasets_ndjson_lines(GenerationRequest {
-        meta,
-        design,
+        model_document: model_text,
+        design_document: design_text,
         source,
         count: args.count,
         seed: args.seed,

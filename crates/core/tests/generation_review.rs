@@ -76,16 +76,16 @@ fn sampled_fit(model: &Value, data: &Value) -> String {
 fn posterior_request(fit: String, seed: u64) -> GenerationRequest {
     let (model, design, _, fit_data) = linear_parts();
     GenerationRequest {
-        meta: decode_model(&model).unwrap(),
+        model_document: json::write(&model).unwrap(),
+        design_document: json::write(&design).unwrap(),
         generation_model_hash: hash(&model),
         design_hash: hash(&design),
-        design,
         source: GenerationSource::Posterior {
             fit_hash: sha256_bytes(fit.as_bytes()),
             fit_model_hash: hash(&model),
             fit_data_hash: hash(&fit_data),
             fit_ndjson: fit,
-            fit_data,
+            fit_data_document: json::write(&fit_data).unwrap(),
             expected_model_data_fingerprint: None,
         },
         count: 1,
@@ -189,9 +189,16 @@ fn protocol_rejects_forged_exact_hashes() {
             ]),
         ),
     ]);
-    let response = handle_request(&json::write(&request).unwrap());
-    assert!(response.starts_with("{\"error\":\"InvalidSettings\""));
-    assert!(response.contains("hash"));
+    let response = json::parse(&handle_request(&json::write(&request).unwrap())).unwrap();
+    assert_eq!(
+        response.get("error").and_then(Value::as_str),
+        Some("InvalidSettings")
+    );
+    assert!(response
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap()
+        .contains("hash"));
 }
 
 #[test]
@@ -239,13 +246,13 @@ fn output_bound_preflights_before_parameter_or_sampling_work() {
     let sigma = object_entry_mut(variables, "sigma");
     *object_entry_mut(sigma, "values") = Value::Array(vec![Value::Float(-1.0)]);
     let error = generated_datasets_ndjson_lines(GenerationRequest {
-        meta: decode_model(&model).unwrap(),
+        model_document: json::write(&model).unwrap(),
+        design_document: json::write(&design).unwrap(),
         generation_model_hash: hash(&model),
         design_hash: hash(&design),
-        design,
         source: GenerationSource::Fixed {
             parameters_hash: hash(&parameters),
-            parameters,
+            parameters_document: json::write(&parameters).unwrap(),
         },
         count: 1000,
         seed: 7,
@@ -266,13 +273,13 @@ fn canonical_design_rejects_bad_specs_and_accepts_top_level_reordering() {
     };
     spec.push(("extra".to_string(), Value::Int(123)));
     let bad = GenerationRequest {
-        meta: decode_model(&model).unwrap(),
+        model_document: json::write(&model).unwrap(),
+        design_document: json::write(&malformed).unwrap(),
         generation_model_hash: hash(&model),
         design_hash: hash(&malformed),
-        design: malformed,
         source: GenerationSource::Fixed {
             parameters_hash: hash(&parameters),
-            parameters: parameters.clone(),
+            parameters_document: json::write(&parameters).unwrap(),
         },
         count: 1,
         seed: 7,
@@ -288,13 +295,13 @@ fn canonical_design_rejects_bad_specs_and_accepts_top_level_reordering() {
         ),
     ]);
     let good = GenerationRequest {
-        meta: decode_model(&model).unwrap(),
+        model_document: json::write(&model).unwrap(),
+        design_document: json::write(&reordered).unwrap(),
         generation_model_hash: hash(&model),
         design_hash: hash(&reordered),
-        design: reordered,
         source: GenerationSource::Fixed {
             parameters_hash: hash(&parameters),
-            parameters,
+            parameters_document: json::write(&parameters).unwrap(),
         },
         count: 1,
         seed: 7,

@@ -3,7 +3,7 @@
 use crate::artifact::V0_PROVISIONAL;
 use crate::error::{Error, ErrorKind};
 use crate::fingerprint;
-use crate::ir::ModelMeta;
+use crate::ir::decode_model;
 use crate::json::{self, Value};
 use crate::model::{data_from_json, data_to_json, DataValue};
 use crate::predictive::{
@@ -37,7 +37,7 @@ pub struct AuthoredProvenance {
 #[derive(Clone, Debug)]
 pub enum GenerationSource {
     Fixed {
-        parameters: Value,
+        parameters_document: String,
         parameters_hash: String,
     },
     ModelPrior {
@@ -46,7 +46,7 @@ pub enum GenerationSource {
     },
     Posterior {
         fit_ndjson: String,
-        fit_data: Value,
+        fit_data_document: String,
         fit_hash: String,
         fit_model_hash: String,
         fit_data_hash: String,
@@ -56,8 +56,10 @@ pub enum GenerationSource {
 
 #[derive(Clone, Debug)]
 pub struct GenerationRequest {
-    pub meta: ModelMeta,
-    pub design: Value,
+    /// Exact JSON bytes (as UTF-8 text) whose hash is recorded as model lineage.
+    pub model_document: String,
+    /// Exact JSON bytes (as UTF-8 text) whose hash is recorded as design lineage.
+    pub design_document: String,
     pub source: GenerationSource,
     pub count: usize,
     pub seed: u64,
@@ -117,25 +119,90 @@ fn workflow_phases_value() -> Value {
     )
 }
 
+fn unique_field<'a>(
+    fields: &'a [(String, Value)],
+    name: &str,
+    label: &str,
+) -> Result<&'a Value, Error> {
+    let mut matches = fields.iter().filter(|(key, _)| key == name);
+    let value = matches
+        .next()
+        .map(|(_, value)| value)
+        .ok_or_else(|| malformed(format!("{label} needs {name}")))?;
+    if matches.next().is_some() {
+        return Err(malformed(format!("{label} has duplicate {name}")));
+    }
+    Ok(value)
+}
+
 fn canonical_variables(document: &Value, label: &str) -> Result<Vec<(String, Value)>, Error> {
     let Value::Object(fields) = document else {
         return Err(malformed(format!(
             "{label} must be a canonical data object"
         )));
     };
-    if fields.len() != 2 || fields[0].0 != "format" || fields[1].0 != "variables" {
+    if fields.len() != 2
+        || fields
+            .iter()
+            .any(|(name, _)| name != "format" && name != "variables")
+    {
         return Err(malformed(format!(
-            "{label} must contain exactly format then variables"
+            "{label} must contain exactly format and variables"
         )));
     }
-    if fields[0].1.as_str() != Some("bayescycle.data.json.v1") {
+    if unique_field(fields, "format", label)?.as_str() != Some("bayescycle.data.json.v1") {
         return Err(malformed(format!(
             "{label} format must be \"bayescycle.data.json.v1\""
         )));
     }
-    let Value::Object(variables) = &fields[1].1 else {
+    let Value::Object(variables) = unique_field(fields, "variables", label)? else {
         return Err(malformed(format!("{label} variables must be an object")));
     };
+    let mut names = std::collections::HashSet::new();
+    for (name, spec) in variables {
+        if name.is_empty() || !names.insert(name) {
+            return Err(malformed(format!(
+                "{label} has an empty or duplicate variable name {name:?}"
+            )));
+        }
+        let Value::Object(spec_fields) = spec else {
+            return Err(malformed(format!(
+                "{label} variable {name:?} must be a typed value object"
+            )));
+        };
+        if spec_fields.len() != 3
+            || spec_fields
+                .iter()
+                .any(|(key, _)| key != "dtype" && key != "shape" && key != "values")
+        {
+            return Err(malformed(format!(
+                "{label} variable {name:?} must contain exactly dtype, shape, and values"
+            )));
+        }
+        let dtype = unique_field(spec_fields, "dtype", &format!("{label} variable {name:?}"))?
+            .as_str()
+            .ok_or_else(|| {
+                malformed(format!("{label} variable {name:?} dtype must be a string"))
+            })?;
+        if !matches!(dtype, "bool" | "int32" | "int64" | "float32" | "float64") {
+            return Err(malformed(format!(
+                "{label} variable {name:?} has unsupported dtype {dtype:?}"
+            )));
+        }
+        if unique_field(spec_fields, "shape", &format!("{label} variable {name:?}"))?
+            .as_array()
+            .is_none()
+            || unique_field(spec_fields, "values", &format!("{label} variable {name:?}"))?
+                .as_array()
+                .is_none()
+        {
+            return Err(malformed(format!(
+                "{label} variable {name:?} shape and values must be arrays"
+            )));
+        }
+    }
+    // Reuse the binder's numeric, shape-product, boolean, and finite checks.
+    data_from_json(document)?;
     Ok(variables.clone())
 }
 
@@ -345,18 +412,51 @@ pub fn generated_datasets_ndjson_lines(request: GenerationRequest) -> Result<Vec
     }
     validate_hash(&request.generation_model_hash, "generation_model_hash")?;
     validate_hash(&request.design_hash, "design_hash")?;
-    let design_variables = normalized_variables(&request.design, "generate design")?;
-    let design_data = data_from_json(&request.design)?;
+    if request.generation_model_hash != sha256_bytes(request.model_document.as_bytes()) {
+        return Err(invalid(
+            "generation model hash must match the exact received model bytes",
+        ));
+    }
+    if request.design_hash != sha256_bytes(request.design_document.as_bytes()) {
+        return Err(invalid(
+            "design hash must match the exact received design bytes",
+        ));
+    }
+    let model = json::parse(&request.model_document)?;
+    let meta = decode_model(&model)?;
+    let design = json::parse(&request.design_document)?;
+    let design_variables = normalized_variables(&design, "generate design")?;
+    let design_data = data_from_json(&design)?;
+
+    // Every draw line contains this compact canonical design. Reject a request
+    // that cannot possibly fit before parameter validation or RNG work clones it.
+    let compact_design = json::write(&canonical_document(design_variables.clone()))?;
+    let minimum_design_bytes = compact_design
+        .len()
+        .checked_mul(request.count)
+        .ok_or_else(|| invalid("generated-dataset artifact size overflowed this build"))?;
+    if minimum_design_bytes > MAX_ARTIFACT_BYTES {
+        return Err(invalid(format!(
+            "generated-dataset artifact exceeds {MAX_ARTIFACT_BYTES} bytes"
+        )));
+    }
+
     let source = source_descriptor(&request.source)?;
     let pairs = match &request.source {
         GenerationSource::Fixed {
-            parameters,
-            parameters_hash: _,
+            parameters_document,
+            parameters_hash,
         } => {
-            canonical_variables(parameters, "generate fixed parameters")?;
-            let parameter_data = data_from_json(parameters)?;
+            if *parameters_hash != sha256_bytes(parameters_document.as_bytes()) {
+                return Err(invalid(
+                    "fixed parameters hash must match the exact received parameter bytes",
+                ));
+            }
+            let parameters = json::parse(parameters_document)?;
+            canonical_variables(&parameters, "generate fixed parameters")?;
+            let parameter_data = data_from_json(&parameters)?;
             fixed_generation_pairs(
-                request.meta.clone(),
+                meta.clone(),
                 design_data.clone(),
                 parameter_data,
                 request.count,
@@ -370,7 +470,7 @@ pub fn generated_datasets_ndjson_lines(request: GenerationRequest) -> Result<Vec
                 ));
             }
             model_prior_generation_pairs(
-                request.meta.clone(),
+                meta.clone(),
                 design_data.clone(),
                 request.count,
                 request.seed,
@@ -378,11 +478,11 @@ pub fn generated_datasets_ndjson_lines(request: GenerationRequest) -> Result<Vec
         }
         GenerationSource::Posterior {
             fit_ndjson,
-            fit_data,
+            fit_data_document,
             fit_hash,
             fit_model_hash,
+            fit_data_hash,
             expected_model_data_fingerprint,
-            ..
         } => {
             if fit_model_hash != &request.generation_model_hash {
                 return Err(invalid(
@@ -394,10 +494,16 @@ pub fn generated_datasets_ndjson_lines(request: GenerationRequest) -> Result<Vec
                     "posterior fit hash must match the exact posterior bytes",
                 ));
             }
+            if *fit_data_hash != sha256_bytes(fit_data_document.as_bytes()) {
+                return Err(invalid(
+                    "posterior fit data hash must match the exact received fit-data bytes",
+                ));
+            }
+            let fit_data = json::parse(fit_data_document)?;
             posterior_generation_pairs(
-                request.meta.clone(),
+                meta.clone(),
                 design_data.clone(),
-                data_from_json(fit_data)?,
+                data_from_json(&fit_data)?,
                 fit_ndjson,
                 expected_model_data_fingerprint.as_deref(),
                 request.count,
@@ -408,24 +514,12 @@ pub fn generated_datasets_ndjson_lines(request: GenerationRequest) -> Result<Vec
     if pairs.len() != request.count {
         return Err(invalid("generate core returned the wrong pair count"));
     }
-    let mut pair_documents_values = Vec::with_capacity(pairs.len());
-    for pair in &pairs {
-        pair_documents_values.push(pair_documents(pair, &design_variables)?);
-    }
-    let Some((first_parameters, first_dataset)) = pair_documents_values.first() else {
+    let Some(first_pair) = pairs.first() else {
         unreachable!("count was validated positive")
     };
-    let parameter_schema = schema(first_parameters, "generated parameters")?;
-    let dataset_schema = schema(first_dataset, "generated dataset")?;
-    for (parameters, dataset) in &pair_documents_values[1..] {
-        if schema(parameters, "generated parameters")? != parameter_schema
-            || schema(dataset, "generated dataset")? != dataset_schema
-        {
-            return Err(invalid(
-                "generated parameter or dataset schema changed across draws",
-            ));
-        }
-    }
+    let (first_parameters, first_dataset) = pair_documents(first_pair, &design_variables)?;
+    let parameter_schema = schema(&first_parameters, "generated parameters")?;
+    let dataset_schema = schema(&first_dataset, "generated dataset")?;
 
     let mut header = common_fields();
     header.extend([
@@ -445,14 +539,20 @@ pub fn generated_datasets_ndjson_lines(request: GenerationRequest) -> Result<Vec
             "draw_index_base".to_string(),
             Value::Str(DRAW_INDEX_BASE.to_string()),
         ),
-        ("parameter_schema".to_string(), parameter_schema),
-        ("dataset_schema".to_string(), dataset_schema),
+        ("parameter_schema".to_string(), parameter_schema.clone()),
+        ("dataset_schema".to_string(), dataset_schema.clone()),
     ]);
     let mut values = Vec::with_capacity(request.count + 2);
     values.push(Value::Object(header));
-    for (draw_index, ((parameters, dataset), pair)) in
-        pair_documents_values.into_iter().zip(&pairs).enumerate()
-    {
+    for (draw_index, pair) in pairs.iter().enumerate() {
+        let (parameters, dataset) = pair_documents(pair, &design_variables)?;
+        if schema(&parameters, "generated parameters")? != parameter_schema
+            || schema(&dataset, "generated dataset")? != dataset_schema
+        {
+            return Err(invalid(
+                "generated parameter or dataset schema changed across draws",
+            ));
+        }
         let mut draw = common_fields();
         draw.extend([
             ("draw_index".to_string(), Value::Int(draw_index as i64)),

@@ -53,10 +53,10 @@ fn document_hash(value: &Value) -> String {
 fn request(source: GenerationSource, count: usize, seed: u64) -> GenerationRequest {
     let (model, design, _, _) = linear_parts();
     GenerationRequest {
-        meta: decode_model(&model).unwrap(),
+        model_document: json::write(&model).unwrap(),
+        design_document: json::write(&design).unwrap(),
         generation_model_hash: document_hash(&model),
         design_hash: document_hash(&design),
-        design,
         source,
         count,
         seed,
@@ -87,7 +87,7 @@ fn fixed_generation_redraws_outcomes_and_repeats_natural_parameters() {
     let (_, _, parameters, _) = linear_parts();
     let source = GenerationSource::Fixed {
         parameters_hash: document_hash(&parameters),
-        parameters,
+        parameters_document: json::write(&parameters).unwrap(),
     };
     let lines = generated_datasets_ndjson_lines(request(source.clone(), 3, 17)).unwrap();
     let again = generated_datasets_ndjson_lines(request(source, 3, 17)).unwrap();
@@ -156,15 +156,15 @@ fn posterior_generation_samples_fit_draws_with_replacement_and_fresh_outcomes() 
         fit_model_hash: document_hash(&model),
         fit_data_hash: document_hash(&full_data),
         fit_ndjson: fit,
-        fit_data: full_data,
+        fit_data_document: json::write(&full_data).unwrap(),
         expected_model_data_fingerprint: None,
     };
     let documents = docs(
         &generated_datasets_ndjson_lines(GenerationRequest {
-            meta,
+            model_document: json::write(&model).unwrap(),
+            design_document: json::write(&design).unwrap(),
             design_hash: document_hash(&design),
             generation_model_hash: document_hash(&model),
-            design,
             source,
             count: 10,
             seed: 37,
@@ -195,7 +195,7 @@ fn generation_rejects_bounds_non_param_free_values_and_identity_mismatch() {
     let (_, _, parameters, _) = linear_parts();
     let fixed = GenerationSource::Fixed {
         parameters_hash: document_hash(&parameters),
-        parameters,
+        parameters_document: json::write(&parameters).unwrap(),
     };
     assert!(
         generated_datasets_ndjson_lines(request(fixed.clone(), 0, 1))
@@ -212,10 +212,10 @@ fn generation_rejects_bounds_non_param_free_values_and_identity_mismatch() {
     let design = partial.get("data").unwrap().clone();
     let model = partial.get("ir").unwrap().clone();
     let error = generated_datasets_ndjson_lines(GenerationRequest {
-        meta: decode_model(&model).unwrap(),
+        model_document: json::write(&model).unwrap(),
+        design_document: json::write(&design).unwrap(),
         design_hash: document_hash(&design),
         generation_model_hash: document_hash(&model),
-        design,
         source: GenerationSource::ModelPrior {
             model_hash: document_hash(&model),
             authored_provenance: None,
