@@ -200,6 +200,16 @@ fit to its exact model and data bytes is specified in
 
 ## Changelog
 
+### 1 — authoring-time complete prior replacement
+
+`bayeswire_ir` stays at 1: `with_prior(Target, prior=Source)` factors and
+composes two already-closed authoring models, validates complete same-name Param
+wiring, then closes to ordinary flat `ModelMeta` before serialization. Source,
+target, wiring, and dependency metadata are not model IR. No node tag, field
+list, or encoding rule changed; all pre-existing corpus documents remain
+byte-identical. New prior-composition corpus cases are ordinary closed model
+documents and consumers require no composition behavior.
+
 ### 1 — authoring-time closed model composition
 
 `bayeswire_ir` stays at 1: `Submodel` is flattened before `ModelMeta`, so no
