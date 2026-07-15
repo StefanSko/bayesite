@@ -8,6 +8,12 @@ versioned on their own.
 
 ## [Unreleased]
 
+### Changed
+
+- Refresh the vendored Bayeswire conformance corpus with the flat
+  `alternative_prior_regression` model, confirming authoring-time prior
+  composition requires no Bayesite decoder or runtime changes.
+
 ## [0.3.0] - 2026-07-14
 
 ### Added

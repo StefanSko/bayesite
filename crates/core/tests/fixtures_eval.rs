@@ -5,7 +5,8 @@ use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, Posterior};
 
-const ALL_FIXTURES: [&str; 10] = [
+const ALL_FIXTURES: [&str; 11] = [
+    "alternative_prior_regression",
     "bounded_rates",
     "censored_exponential",
     "composed_measurements",
