@@ -10,6 +10,11 @@ versioned on their own.
 
 ### Changed
 
+- Derive stable ancestral execution plans for forward simulation instead of
+  treating stochastic-factor metadata order as draw order, while preserving
+  metadata-order artifacts and existing seeded behavior for already-ancestral
+  models. Generated partially observed ancestors now propagate their complete
+  simulated vectors to descendants without mutating conditioning data ([#43]).
 - Refresh the vendored Bayeswire conformance corpus with the flat
   `alternative_prior_regression` model, confirming authoring-time prior
   composition requires no Bayesite decoder or runtime changes.
@@ -111,6 +116,7 @@ versioned on their own.
 - Reproducible release archives and checksums for Linux, macOS, and Windows.
 
 [#36]: https://github.com/StefanSko/bayesite/issues/36
+[#43]: https://github.com/StefanSko/bayesite/issues/43
 [Unreleased]: https://github.com/StefanSko/bayesite/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/StefanSko/bayesite/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/StefanSko/bayesite/compare/v0.2.1...v0.2.2

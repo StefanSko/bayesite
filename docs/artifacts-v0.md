@@ -158,6 +158,16 @@ against the trailer chain aggregates: the per-draw diverging count must match
 `treedepth_histogram`, and the mean of `tree_accept` must match `mean_accept`
 (within 1e-9).
 
+## Forward execution and artifact order
+
+Forward workflows derive a stable ancestral execution plan from generated-value
+references. The plan chooses the earliest metadata site whose dependencies are
+available, so already-ancestral models retain their existing seeded draw order.
+Execution order is internal: stochastic-site order remains unchanged in site
+metadata, generated data documents, dataset schemas, and streamed value
+objects. Cyclic or unavailable generative references fail before drawing and
+name the unresolved references.
+
 ## `bayesite generate`
 
 `generate` consumes one closed model, a canonical design document, one explicit
@@ -208,9 +218,11 @@ Header/trailer facts include:
 Each draw line includes the same format/artifact identity, draw index metadata,
 seed, counts/orders, and generated values keyed by site name.
 
-Current scope: directly assignable stochastic sites only. In practice, v0 prior
-predictive supports stochastic sites whose value expression is a parameter or a
-data reference. Non-assignable stochastic-site expressions fail with a typed
+Current scope: declaration-backed directly assignable parameter/data sites and
+canonical `PartiallyObserved` `VectorScatter` owners. Additional density factors
+are rejected before drawing. Generated partial ancestors retain their complete
+simulated vectors for descendants while artifacts continue to expose metadata
+site order. Other non-assignable stochastic-site expressions fail with a typed
 repair error.
 
 ## `bayesite posterior-predictive`
@@ -240,7 +252,9 @@ observed values keyed by observed data name.
 
 Current scope: directly assignable observed stochastic sites only. In practice,
 v0 posterior predictive supports observed stochastic sites whose value
-expression is a data reference.
+expression is a data reference and whose distribution structurally matches the
+observed declaration. Replicated observed dependencies execute ancestrally but
+remain in stochastic-site order in the artifact.
 
 ## `bayesite posterior-check`
 

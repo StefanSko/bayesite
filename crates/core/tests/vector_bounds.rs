@@ -117,6 +117,36 @@ fn partially_observed_data(lower: f64) -> Vec<(String, DataValue)> {
     ]
 }
 
+fn partially_observed_ancestor_model(reversed_sites: bool) -> ModelMeta {
+    let mut model = partially_observed_model(normal(), 3);
+    let distribution = Distribution::Normal {
+        loc: model.stochastic_sites[0].value.clone(),
+        scale: Expr::Const(1e-9),
+    };
+    model.observed_nodes.push(ResolvedObserved {
+        name: "z".to_string(),
+        distribution: distribution.clone(),
+    });
+    model.stochastic_sites.push(ResolvedStochasticSite {
+        name: "z_site".to_string(),
+        distribution,
+        value: Expr::Data("z".to_string()),
+    });
+    if reversed_sites {
+        model.stochastic_sites.reverse();
+    }
+    model
+}
+
+fn partially_observed_ancestor_data() -> Vec<(String, DataValue)> {
+    vec![
+        data("lower", vec![0.0]),
+        data("missing_idx", vec![1.0]),
+        data("observed_idx", vec![0.0, 2.0]),
+        data("observed_values", vec![-1_000.0, 1_000.0]),
+    ]
+}
+
 #[test]
 fn vector_bounds_reject_wrong_bound_length() {
     let model = vector_model(
@@ -518,6 +548,183 @@ fn vector_scatter_propagates_the_missing_free_value_to_later_sites() {
             consumer.data(),
             assembled.data()[1]
         );
+    }
+}
+
+#[test]
+fn generated_partial_ancestor_propagates_its_full_vector() {
+    let declared_data = partially_observed_ancestor_data();
+    let run = simulate_prior_predictive(
+        partially_observed_ancestor_model(false),
+        declared_data.clone(),
+        &PriorPredictiveSettings { num_draws: 4 },
+        223,
+    )
+    .expect("PartiallyObserved ancestor simulation succeeds");
+
+    for draw in run.draws {
+        let ancestor = &draw.values[0].1;
+        let child = &draw.values[1].1;
+        assert_eq!(ancestor.shape(), &[3]);
+        assert_eq!(child.shape(), &[3]);
+        assert_ne!(ancestor.data()[0], -1_000.0);
+        assert_ne!(ancestor.data()[2], 1_000.0);
+        for (ancestor, child) in ancestor.data().iter().zip(child.data()) {
+            assert!(
+                (ancestor - child).abs() < 1e-7,
+                "child {child} should consume full generated ancestor {ancestor}"
+            );
+        }
+    }
+    assert_eq!(
+        declared_data
+            .iter()
+            .find(|(name, _)| name == "observed_values")
+            .expect("conditioning data")
+            .1
+            .values,
+        [-1_000.0, 1_000.0]
+    );
+}
+
+#[test]
+fn generated_partial_ancestors_sharing_conditioning_data_remain_isolated() {
+    let scatter = |name: &str| Expr::VectorScatter {
+        length: Box::new(Expr::Const(2.0)),
+        observed_idx: Box::new(Expr::Data("shared_observed_idx".to_string())),
+        observed_values: Box::new(Expr::Data("shared_observed_values".to_string())),
+        missing_idx: Box::new(Expr::Data("shared_missing_idx".to_string())),
+        missing_values: Box::new(Expr::Param(name.to_string())),
+    };
+    let first_distribution = Distribution::Normal {
+        loc: Expr::Const(-20.0),
+        scale: Expr::Const(0.01),
+    };
+    let second_distribution = Distribution::Normal {
+        loc: Expr::Const(20.0),
+        scale: Expr::Const(0.01),
+    };
+    let first_child_distribution = Distribution::Normal {
+        loc: scatter("first"),
+        scale: Expr::Const(1e-9),
+    };
+    let second_child_distribution = Distribution::Normal {
+        loc: scatter("second"),
+        scale: Expr::Const(1e-9),
+    };
+    let model = ModelMeta {
+        params: vec![],
+        data: [
+            "shared_observed_idx",
+            "shared_observed_values",
+            "shared_missing_idx",
+        ]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                ResolvedData {
+                    schema: DataSchema::Rank(1),
+                },
+            )
+        })
+        .collect(),
+        observed_nodes: vec![
+            ResolvedObserved {
+                name: "first_child".to_string(),
+                distribution: first_child_distribution.clone(),
+            },
+            ResolvedObserved {
+                name: "second_child".to_string(),
+                distribution: second_child_distribution.clone(),
+            },
+        ],
+        expressions: vec![],
+        free_values: ["first", "second"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    ResolvedFreeValue {
+                        constraint: None,
+                        size: Size::Fixed(1),
+                    },
+                )
+            })
+            .collect(),
+        stochastic_sites: vec![
+            ResolvedStochasticSite {
+                name: "first".to_string(),
+                distribution: first_distribution,
+                value: scatter("first"),
+            },
+            ResolvedStochasticSite {
+                name: "second".to_string(),
+                distribution: second_distribution,
+                value: scatter("second"),
+            },
+            ResolvedStochasticSite {
+                name: "first_child_site".to_string(),
+                distribution: first_child_distribution,
+                value: Expr::Data("first_child".to_string()),
+            },
+            ResolvedStochasticSite {
+                name: "second_child_site".to_string(),
+                distribution: second_child_distribution,
+                value: Expr::Data("second_child".to_string()),
+            },
+        ],
+    };
+    let declared_data = vec![
+        data("shared_observed_idx", vec![0.0]),
+        data("shared_observed_values", vec![100.0]),
+        data("shared_missing_idx", vec![1.0]),
+    ];
+    let run = simulate_prior_predictive(
+        model,
+        declared_data,
+        &PriorPredictiveSettings { num_draws: 2 },
+        225,
+    )
+    .expect("shared partial ancestors simulate independently");
+
+    for draw in run.draws {
+        let first = &draw.values[0].1;
+        let second = &draw.values[1].1;
+        let first_child = &draw.values[2].1;
+        let second_child = &draw.values[3].1;
+        assert!(first.data()[0] < -10.0, "{:?}", first.data());
+        assert!(second.data()[0] > 10.0, "{:?}", second.data());
+        for (ancestor, child) in first.data().iter().zip(first_child.data()) {
+            assert!((ancestor - child).abs() < 1e-7);
+        }
+        for (ancestor, child) in second.data().iter().zip(second_child.data()) {
+            assert!((ancestor - child).abs() < 1e-7);
+        }
+    }
+}
+
+#[test]
+fn reversed_partial_ancestor_is_scheduled_but_emitted_in_metadata_order() {
+    let run = simulate_prior_predictive(
+        partially_observed_ancestor_model(true),
+        partially_observed_ancestor_data(),
+        &PriorPredictiveSettings { num_draws: 1 },
+        227,
+    )
+    .expect("PartiallyObserved dependency order is derived structurally");
+
+    assert_eq!(
+        run.sites
+            .iter()
+            .map(|site| site.name.as_str())
+            .collect::<Vec<_>>(),
+        ["z", "y"]
+    );
+    let child = &run.draws[0].values[0].1;
+    let ancestor = &run.draws[0].values[1].1;
+    for (ancestor, child) in ancestor.data().iter().zip(child.data()) {
+        assert!((ancestor - child).abs() < 1e-7);
     }
 }
 
