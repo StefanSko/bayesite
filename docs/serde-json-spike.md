@@ -21,7 +21,7 @@ feature, adapter, parser switch, or typed second decoder is retained.
 
 ## Scope and call-site inventory
 
-Baseline: `82d5d7c399fa768e85aae582ada7ef40f8860e01` (2026-07-14), on Apple
+Baseline: `82d5d7c399fa768e85aae582ada7ef40f8860e01` (2026-07-16), on Apple
 `aarch64-apple-darwin`, rustc 1.91.1 (LLVM 21.1.2). The frozen inventory command
 from the issue plan produced 623 matches:
 
@@ -86,18 +86,22 @@ On the baseline host, representative median results were:
 
 | Workload | Bytes/s | Documents/s |
 |---|---:|---:|
-| tiny request | 299,894,760 | 11,534,414 |
-| escaped UTF-8 | 361,449,848 | 13,387,031 |
-| 64 KiB object | 295,202,189 | 4,505 |
-| depth 256 | 61,092,216 | 119,088 |
-| golden `linear_regression` parse | 539,659,827 | 90,714 |
-| golden parse + `decode_model` | 432,798,253 | 72,751 |
+| tiny request | 285,176,305 | 10,968,319 |
+| escaped UTF-8 | 375,636,966 | 13,912,480 |
+| 64 KiB object | 302,203,252 | 4,612 |
+| depth 256 | 64,614,489 | 125,954 |
+| golden `linear_regression` parse | 570,467,989 | 95,893 |
+| complete 33-document golden corpus parse | 526,012,574 | 117,762 |
+| golden parse + `decode_model` | 456,739,643 | 76,776 |
 
 The release artifact snapshot is native 1,747,792 bytes, raw wasm 1,269,504
 bytes, and deterministic gzip wasm 386,810 bytes. The new stdlib-only
 `scripts/check_wasm_json_boundary.mjs` invokes the actual release ABI and
 requires typed, non-trapping results for depth 256, depth 257, 100,000-level
-hostile input, and invalid UTF-8.
+hostile input, and invalid UTF-8. Its CSV retains all nine raw samples plus
+MAD and range. The native `protocol` integration test runs the same UTF-8
+depth/hostile matrix, so both shells assert the same typed outcomes at their
+shared pure request boundary.
 
 ## Validation and residual risk
 

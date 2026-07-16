@@ -35,8 +35,8 @@ function expectError(name, bytes, kind) {
 // The root request object consumes one of json::MAX_DEPTH's 256 levels.
 const validDepth = `{"command":"capabilities","padding":${"[".repeat(255)}0${"]".repeat(255)}}`;
 const valid = invoke(encoder.encode(validDepth));
-if (valid.error === "MalformedJson") {
-  throw new Error(`depth 256 was rejected as malformed JSON: ${JSON.stringify(valid)}`);
+if (valid.error !== "InvalidSettings" || typeof valid.message !== "string") {
+  throw new Error(`depth 256 must reach protocol validation: ${JSON.stringify(valid)}`);
 }
 expectError("depth 257", encoder.encode(`{"command":"capabilities","padding":${"[".repeat(256)}0${"]".repeat(256)}}`), "MalformedJson");
 expectError("hostile depth", encoder.encode("[".repeat(100_000)), "MalformedJson");

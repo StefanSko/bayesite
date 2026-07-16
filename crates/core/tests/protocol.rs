@@ -9,6 +9,32 @@ use bayesite_core::predictive::{prior_predictive_ndjson_lines, PriorPredictiveSe
 use bayesite_core::protocol::{diagnose_ndjson, handle_request, ndjson_lines};
 use bayesite_core::sampler::{sample, Settings};
 
+#[test]
+fn native_json_boundary_matches_wasm_matrix() {
+    let valid_depth = format!(
+        r#"{{"command":"capabilities","padding":{}0{}}}"#,
+        "[".repeat(255),
+        "]".repeat(255)
+    );
+    let too_deep = format!(
+        r#"{{"command":"capabilities","padding":{}0{}}}"#,
+        "[".repeat(256),
+        "]".repeat(256)
+    );
+    for (request, expected) in [
+        (valid_depth, ErrorKind::InvalidSettings),
+        (too_deep, ErrorKind::MalformedJson),
+        ("[".repeat(100_000), ErrorKind::MalformedJson),
+    ] {
+        let response = json::parse(&handle_request(&request)).expect("native response is JSON");
+        let kind = response
+            .get("error")
+            .and_then(Value::as_str)
+            .expect("native response has error kind");
+        assert_eq!(kind, expected.name());
+    }
+}
+
 fn fixture_text(name: &str) -> String {
     // Conformance fixtures come from the vendored bayeswire corpus.
     let path = format!(
