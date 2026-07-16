@@ -557,7 +557,7 @@ fn partial_owner_value_dependencies_are_scheduled_ancestrally() {
     let Expr::VectorScatter { length, .. } = &mut model.stochastic_sites[0].value else {
         panic!("partial owner must be a scatter")
     };
-    *length = Box::new(Expr::Data("n".to_string()));
+    **length = Expr::Data("n".to_string());
     let n_distribution = Distribution::Bernoulli {
         probs: Expr::Const(1.0),
     };
@@ -594,7 +594,7 @@ fn partial_owner_value_dependency_cycles_fail_before_drawing() {
     let Expr::VectorScatter { length, .. } = &mut model.stochastic_sites[0].value else {
         panic!("partial owner must be a scatter")
     };
-    *length = Box::new(Expr::Data("n".to_string()));
+    **length = Expr::Data("n".to_string());
     let n_distribution = Distribution::Bernoulli {
         probs: Expr::Param("y".to_string()),
     };
