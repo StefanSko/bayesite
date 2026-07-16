@@ -10,6 +10,11 @@ versioned on their own.
 
 ### Changed
 
+- Retain the bounded in-tree strict JSON parser after an exact-pinned
+  `serde_json` spike found that its public visitor loses Bayesite's stable
+  `-0` integer versus `-0.0` float distinction; add adversarial numeric and
+  duplicate-key characterization, a dependency-free parse benchmark, and a
+  release-wasm hostile-input boundary gate ([#45]).
 - Replace the in-tree SHA-256 compression implementation with audited,
   exact-pinned RustCrypto `sha2`, preserving all received-byte fingerprints and
   model/data framing; native and wasm dependency closures are now exact
@@ -122,6 +127,7 @@ versioned on their own.
 
 [#36]: https://github.com/StefanSko/bayesite/issues/36
 [#43]: https://github.com/StefanSko/bayesite/issues/43
+[#45]: https://github.com/StefanSko/bayesite/issues/45
 [Unreleased]: https://github.com/StefanSko/bayesite/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/StefanSko/bayesite/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/StefanSko/bayesite/compare/v0.2.1...v0.2.2
