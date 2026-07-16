@@ -41,6 +41,14 @@ Core invariants that should remain true as Bayesite evolves.
   Additional density factors are rejected because Bayesite has no factor-aware
   ancestral sampler; they are never independently generated or silently
   discarded.
+- Forward simulation derives a stable ancestral execution plan from expression
+  dependencies. Original stochastic-site index breaks ready-site ties and
+  remains the factor/artifact order; planning never rewrites decoded metadata.
+- A generated `PartiallyObserved` value retains separate missing-coordinate and
+  complete-vector representations. Descendants evaluating that owner's
+  structurally identical scatter consume the complete generated vector without
+  mutating declared conditioning data; distinct scatter expressions retain
+  their own fields.
 
 ## IR boundary
 

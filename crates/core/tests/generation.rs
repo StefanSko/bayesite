@@ -24,6 +24,17 @@ fn fixture(name: &str) -> Value {
     json::parse(&fixture_text(name)).unwrap()
 }
 
+fn object_entry_mut<'a>(value: &'a mut Value, key: &str) -> &'a mut Value {
+    let Value::Object(entries) = value else {
+        panic!("expected object")
+    };
+    entries
+        .iter_mut()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value)
+        .unwrap_or_else(|| panic!("missing {key}"))
+}
+
 fn linear_parts() -> (Value, Value, Value, Value) {
     let fixture = fixture("linear_regression");
     let model = fixture.get("ir").unwrap().clone();
@@ -43,6 +54,71 @@ fn linear_parts() -> (Value, Value, Value, Value) {
         r#"{"format":"bayescycle.data.json.v1","variables":{"alpha":{"dtype":"float64","shape":[],"values":[0.5]},"beta":{"dtype":"float64","shape":[],"values":[1.2]},"sigma":{"dtype":"float64","shape":[],"values":[0.4]}}}"#,
     )
     .unwrap();
+    (model, design, parameters, full_data)
+}
+
+fn non_ancestral_outcome_parts() -> (Value, Value, Value, Value) {
+    let (mut model, design, parameters, mut full_data) = linear_parts();
+    let child_distribution = json::parse(
+        r#"{"node":"Normal","loc":{"node":"DataRef","name":"y"},"scale":{"node":"ConstNode","value":1e-9}}"#,
+    )
+    .unwrap();
+    let observed = Value::Object(vec![
+        (
+            "node".to_string(),
+            Value::Str("ResolvedObserved".to_string()),
+        ),
+        ("name".to_string(), Value::Str("z".to_string())),
+        ("distribution".to_string(), child_distribution.clone()),
+    ]);
+    let site = Value::Object(vec![
+        (
+            "node".to_string(),
+            Value::Str("ResolvedStochasticSite".to_string()),
+        ),
+        ("name".to_string(), Value::Str("z".to_string())),
+        ("distribution".to_string(), child_distribution),
+        (
+            "value".to_string(),
+            Value::Object(vec![
+                ("node".to_string(), Value::Str("DataRef".to_string())),
+                ("name".to_string(), Value::Str("z".to_string())),
+            ]),
+        ),
+    ]);
+    let hierarchical_beta = json::parse(
+        r#"{"node":"Normal","loc":{"node":"ParamRef","name":"alpha"},"scale":{"node":"ConstNode","value":1.0}}"#,
+    )
+    .unwrap();
+    let model_body = object_entry_mut(&mut model, "model");
+    let Value::Array(params) = object_entry_mut(model_body, "params") else {
+        panic!("expected params")
+    };
+    let beta = params
+        .iter_mut()
+        .find(|entry| entry.get("name").and_then(Value::as_str) == Some("beta"))
+        .expect("beta parameter");
+    let beta_value = object_entry_mut(beta, "value");
+    *object_entry_mut(beta_value, "distribution") = hierarchical_beta.clone();
+    let Value::Array(observed_nodes) = object_entry_mut(model_body, "observed_nodes") else {
+        panic!("expected observed_nodes")
+    };
+    observed_nodes.push(observed);
+    let Value::Array(sites) = object_entry_mut(model_body, "stochastic_sites") else {
+        panic!("expected stochastic_sites")
+    };
+    let beta_site = sites
+        .iter_mut()
+        .find(|entry| entry.get("name").and_then(Value::as_str) == Some("beta"))
+        .expect("beta site");
+    *object_entry_mut(beta_site, "distribution") = hierarchical_beta;
+    sites.swap(0, 1);
+    sites.insert(sites.len() - 1, site);
+    let y = full_data.get("y").expect("linear y data").clone();
+    let Value::Object(entries) = &mut full_data else {
+        panic!("fixture data must be an object")
+    };
+    entries.push(("z".to_string(), y));
     (model, design, parameters, full_data)
 }
 
@@ -80,6 +156,36 @@ fn draw_parameters(draw: &Value) -> &Value {
 
 fn draw_dataset(draw: &Value) -> &Value {
     variables(draw.get("dataset").expect("draw dataset"))
+}
+
+fn numeric_values(value: &Value) -> Vec<f64> {
+    value
+        .get("values")
+        .and_then(Value::as_array)
+        .expect("typed variable values")
+        .iter()
+        .map(|value| value.as_f64().expect("numeric value"))
+        .collect()
+}
+
+fn assert_non_ancestral_outcome_draw(draw: &Value) {
+    let dataset = draw_dataset(draw);
+    let Value::Object(entries) = dataset else {
+        panic!("dataset variables must be ordered object entries")
+    };
+    assert_eq!(
+        entries
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["x", "z", "y"]
+    );
+    let child = numeric_values(dataset.get("z").expect("z generated"));
+    let parent = numeric_values(dataset.get("y").expect("y generated"));
+    assert_eq!(child.len(), parent.len());
+    for (child, parent) in child.iter().zip(parent) {
+        assert!((child - parent).abs() < 1e-7);
+    }
 }
 
 #[test]
@@ -132,6 +238,98 @@ fn model_prior_redraws_parameters_per_dataset() {
             .and_then(Value::as_i64),
         Some(0)
     );
+}
+
+#[test]
+fn fixed_generation_schedules_outcomes_but_emits_metadata_order() {
+    let (model, design, parameters, _) = non_ancestral_outcome_parts();
+    let source = GenerationSource::Fixed {
+        parameters_hash: document_hash(&parameters),
+        parameters_document: json::write(&parameters).unwrap(),
+    };
+    let request = GenerationRequest {
+        model_document: json::write(&model).unwrap(),
+        design_document: json::write(&design).unwrap(),
+        generation_model_hash: document_hash(&model),
+        design_hash: document_hash(&design),
+        source,
+        count: 2,
+        seed: 29,
+    };
+    let documents = docs(&generated_datasets_ndjson_lines(request).unwrap());
+
+    for draw in &documents[1..3] {
+        assert_non_ancestral_outcome_draw(draw);
+    }
+}
+
+#[test]
+fn model_prior_generation_schedules_outcomes_but_emits_metadata_order() {
+    let (model, design, _, _) = non_ancestral_outcome_parts();
+    let source = GenerationSource::ModelPrior {
+        model_hash: document_hash(&model),
+        authored_provenance: None,
+    };
+    let request = GenerationRequest {
+        model_document: json::write(&model).unwrap(),
+        design_document: json::write(&design).unwrap(),
+        generation_model_hash: document_hash(&model),
+        design_hash: document_hash(&design),
+        source,
+        count: 2,
+        seed: 31,
+    };
+    let documents = docs(&generated_datasets_ndjson_lines(request).unwrap());
+
+    for draw in &documents[1..3] {
+        assert_non_ancestral_outcome_draw(draw);
+    }
+}
+
+#[test]
+fn posterior_generation_schedules_outcomes_but_preserves_lineage_and_metadata_order() {
+    let (model, design, _, full_data) = non_ancestral_outcome_parts();
+    let meta = decode_model(&model).unwrap();
+    let fit_data = data_from_json(&full_data).unwrap();
+    let posterior = Posterior::new(meta.clone(), fit_data).unwrap();
+    let settings = Settings {
+        num_warmup: 10,
+        num_draws: 4,
+        max_treedepth: 4,
+        target_accept: 0.8,
+        ..Settings::default()
+    };
+    let chain = sample(&posterior, &settings, 35, 0).unwrap();
+    let fit = ndjson_lines(&posterior, &settings, 35, &[(0, chain)])
+        .unwrap()
+        .join("\n");
+    let source = GenerationSource::Posterior {
+        fit_hash: sha256_bytes(fit.as_bytes()),
+        fit_model_hash: document_hash(&model),
+        fit_data_hash: document_hash(&full_data),
+        fit_ndjson: fit,
+        fit_data_document: json::write(&full_data).unwrap(),
+        expected_model_data_fingerprint: None,
+    };
+    let request = GenerationRequest {
+        model_document: json::write(&model).unwrap(),
+        design_document: json::write(&design).unwrap(),
+        generation_model_hash: document_hash(&model),
+        design_hash: document_hash(&design),
+        source,
+        count: 2,
+        seed: 37,
+    };
+    let documents = docs(&generated_datasets_ndjson_lines(request).unwrap());
+
+    for draw in &documents[1..3] {
+        assert_non_ancestral_outcome_draw(draw);
+        assert!(draw
+            .get("source_lineage")
+            .and_then(|lineage| lineage.get("source_draw_index"))
+            .and_then(Value::as_i64)
+            .is_some());
+    }
 }
 
 #[test]

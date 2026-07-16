@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::ancestral::{stable_site_order, ValueRef};
 use crate::artifact::{
     artifact_identity_entries, coordinate_order_value, entry_order_value, format_marker_field,
     shape_value, POSTERIOR_DRAWS, POSTERIOR_DRAW_INDEX_BASE, POSTERIOR_PREDICTIVE_DRAWS,
@@ -341,8 +342,14 @@ fn validate_prior_predictive_site_inventory(
     Ok(())
 }
 
+struct GeneratedFullValue {
+    owner_expression: Expr,
+    value: Tensor,
+}
+
 struct ForwardEnv<'a> {
     values: HashMap<String, Tensor>,
+    full_values: HashMap<String, GeneratedFullValue>,
     data: &'a HashMap<String, DataValue>,
 }
 
@@ -403,6 +410,13 @@ impl<'a> ForwardEnv<'a> {
                 missing_idx,
                 missing_values,
             } => {
+                if let Expr::Param(name) = missing_values.as_ref() {
+                    if let Some(full_value) = self.full_values.get(name) {
+                        if &full_value.owner_expression == expr {
+                            return Ok(full_value.value.clone());
+                        }
+                    }
+                }
                 let obs_pos = self.index_vector(observed_idx)?;
                 let mis_pos = self.index_vector(missing_idx)?;
                 let obs_values = self.evaluate(observed_values)?;
@@ -1614,6 +1628,15 @@ pub fn simulate_prior_predictive(
     let free_specs = free_specs(&meta, &data)?;
     let sites = meta.resolved_stochastic_sites();
     validate_prior_predictive_site_inventory(&meta, &sites)?;
+    let site_indices = (0..sites.len()).collect::<Vec<_>>();
+    let execution_order = stable_site_order(
+        &sites,
+        &site_indices,
+        meta.data
+            .iter()
+            .map(|(name, _)| ValueRef::data(name.clone())),
+        "prior-predictive",
+    )?;
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
     let mut draws = Vec::with_capacity(settings.num_draws);
     let mut site_specs: Option<Vec<PriorPredictiveSite>> = None;
@@ -1621,11 +1644,13 @@ pub fn simulate_prior_predictive(
     for _ in 0..settings.num_draws {
         let mut env = ForwardEnv {
             values: HashMap::new(),
+            full_values: HashMap::new(),
             data: &data,
         };
         let mut values = Vec::with_capacity(sites.len());
         let mut current_sites = Vec::with_capacity(sites.len());
-        for site in &sites {
+        for &site_index in &execution_order {
+            let site = &sites[site_index];
             match &site.value {
                 Expr::Param(name) => {
                     let free = free_specs.get(name).ok_or_else(|| {
@@ -1781,6 +1806,13 @@ pub fn simulate_prior_predictive(
                         Tensor::from_vec(vec![missing_idx.len()], entries)
                     };
                     env.values.insert(free_name.clone(), missing);
+                    env.full_values.insert(
+                        free_name.clone(),
+                        GeneratedFullValue {
+                            owner_expression: site.value.clone(),
+                            value: value.clone(),
+                        },
+                    );
                     current_sites.push(PriorPredictiveSite {
                         name: site.name.clone(),
                         stochastic_site: site.name.clone(),
@@ -1802,6 +1834,16 @@ pub fn simulate_prior_predictive(
                 }
             }
         }
+        let mut generated = execution_order
+            .iter()
+            .copied()
+            .zip(current_sites.into_iter().zip(values))
+            .collect::<Vec<_>>();
+        generated.sort_by_key(|(site_index, _)| *site_index);
+        let (current_sites, values): (Vec<_>, Vec<_>) = generated
+            .into_iter()
+            .map(|(_, generated)| generated)
+            .unzip();
         match &site_specs {
             None => site_specs = Some(current_sites),
             Some(expected) if expected.len() == current_sites.len() => {
@@ -1970,42 +2012,62 @@ pub fn simulate_data_from_truth(
         .map(|(name, _)| name)
         .collect::<Vec<_>>();
     let truth_values = validate_fixed_truth(&free_specs, &free_order, truth, "simulate")?;
+    let sites = meta.resolved_stochastic_sites();
+    let outcome_indices = directly_assignable_observed_site_indices(&meta, &sites, "simulate")?;
+    let initial_values = meta
+        .data
+        .iter()
+        .map(|(name, _)| ValueRef::data(name.clone()))
+        .chain(free_order.iter().map(|name| ValueRef::param(name.clone())))
+        .collect::<Vec<_>>();
+    let execution_order = stable_site_order(&sites, &outcome_indices, initial_values, "simulate")?;
     let mut env = ForwardEnv {
         values: truth_values,
+        full_values: HashMap::new(),
         data: &data,
     };
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
-    let mut output = output_declared_data;
     let mut generated_names = Vec::<String>::new();
-    for site in meta.resolved_stochastic_sites() {
+    let mut generated = Vec::with_capacity(execution_order.len());
+    for &site_index in &execution_order {
+        let site = &sites[site_index];
+        let Expr::Data(name) = &site.value else {
+            unreachable!("simulate plan contains directly assignable data sites only")
+        };
+        if data.contains_key(name) {
+            return Err(mismatch(format!(
+                "simulate stochastic site \"{}\" writes data value \"{name}\", but it is already bound as declared data",
+                site.name
+            )));
+        }
+        if generated_names.iter().any(|existing| existing == name) {
+            return Err(mismatch(format!(
+                "simulate stochastic site \"{}\" writes duplicate generated data value \"{name}\"",
+                site.name
+            )));
+        }
+        let value = sample_distribution(&mut rng, &env, &site.distribution, None)?;
+        let integer = distribution_has_integer_support(&site.distribution);
+        env.values.insert(name.clone(), value.clone());
+        generated_names.push(name.clone());
+        generated.push((
+            site_index,
+            (
+                name.clone(),
+                DataValue {
+                    shape: value.shape().to_vec(),
+                    values: value.data().to_vec(),
+                    integer,
+                },
+            ),
+        ));
+    }
+
+    // Preserve validation of ignored, non-assignable factor expressions after
+    // every directly generated data value is available.
+    for site in &sites {
         match &site.value {
-            Expr::Param(_) => {}
-            Expr::Data(name) => {
-                if data.contains_key(name) {
-                    return Err(mismatch(format!(
-                        "simulate stochastic site \"{}\" writes data value \"{name}\", but it is already bound as declared data",
-                        site.name
-                    )));
-                }
-                if generated_names.iter().any(|existing| existing == name) {
-                    return Err(mismatch(format!(
-                        "simulate stochastic site \"{}\" writes duplicate generated data value \"{name}\"",
-                        site.name
-                    )));
-                }
-                let value = sample_distribution(&mut rng, &env, &site.distribution, None)?;
-                let integer = distribution_has_integer_support(&site.distribution);
-                env.values.insert(name.clone(), value.clone());
-                generated_names.push(name.clone());
-                output.push((
-                    name.clone(),
-                    DataValue {
-                        shape: value.shape().to_vec(),
-                        values: value.data().to_vec(),
-                        integer,
-                    },
-                ));
-            }
+            Expr::Param(_) | Expr::Data(_) => {}
             Expr::VectorScatter { missing_values, .. } => {
                 if let Expr::Param(free_name) = missing_values.as_ref() {
                     let bounded = free_specs.get(free_name).is_some_and(|free| {
@@ -2059,6 +2121,10 @@ pub fn simulate_data_from_truth(
             }
         }
     }
+
+    generated.sort_by_key(|(site_index, _)| *site_index);
+    let mut output = output_declared_data;
+    output.extend(generated.into_iter().map(|(_, value)| value));
     Ok(output)
 }
 
@@ -2544,43 +2610,52 @@ fn parse_fit_stream(
     })
 }
 
-fn observed_data_names(meta: &ModelMeta) -> Vec<String> {
-    meta.observed_nodes
-        .iter()
-        .map(|observed| observed.name.clone())
-        .collect()
-}
-
 fn directly_assignable_observed_site_indices(
-    observed_names: &[String],
-    sites: &[crate::ir::ResolvedStochasticSite],
+    meta: &ModelMeta,
+    sites: &[ResolvedStochasticSite],
+    context: &str,
 ) -> Result<Vec<usize>, Error> {
-    let mut indices = Vec::with_capacity(observed_names.len());
-    let mut covered = vec![false; observed_names.len()];
-    for (site_index, site) in sites.iter().enumerate() {
-        let Expr::Data(name) = &site.value else {
-            continue;
-        };
-        let Some(observed_index) = observed_names.iter().position(|observed| observed == name)
-        else {
-            continue;
-        };
-        if covered[observed_index] {
+    let mut selected = vec![false; sites.len()];
+    for observed in &meta.observed_nodes {
+        let matching = sites
+            .iter()
+            .enumerate()
+            .filter_map(|(site_index, site)| {
+                (matches!(&site.value, Expr::Data(name) if name == &observed.name)
+                    && site.distribution == observed.distribution)
+                    .then_some(site_index)
+            })
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            let direct_count = sites
+                .iter()
+                .filter(|site| matches!(&site.value, Expr::Data(name) if name == &observed.name))
+                .count();
+            if direct_count == 0 {
+                return Err(invalid(format!(
+                    "{context} observed node {:?} is not directly assignable; only DataRef observed stochastic sites are supported",
+                    observed.name
+                )));
+            }
             return Err(invalid(format!(
-                "posterior-predictive observed node \"{name}\" has more than one directly assignable stochastic site"
+                "{context} observed node {:?} has {direct_count} directly assignable stochastic site(s), but none is a matching directly assignable site with the declaration distribution; keep one matching DataRef site",
+                observed.name
             )));
         }
-        covered[observed_index] = true;
-        indices.push(site_index);
-    }
-    for (observed_name, covered) in observed_names.iter().zip(covered) {
-        if !covered {
+        if matching.len() != 1 {
             return Err(invalid(format!(
-                "posterior-predictive observed node \"{observed_name}\" is not directly assignable; only DataRef observed stochastic sites are supported"
+                "{context} observed node {:?} requires exactly one matching directly assignable stochastic site, found {}; keep one DataRef site with the declaration distribution",
+                observed.name,
+                matching.len()
             )));
         }
+        selected[matching[0]] = true;
     }
-    Ok(indices)
+    Ok(selected
+        .into_iter()
+        .enumerate()
+        .filter_map(|(site_index, selected)| selected.then_some(site_index))
+        .collect())
 }
 
 fn full_data_map(data: &[(String, DataValue)]) -> Result<HashMap<String, DataValue>, Error> {
@@ -2929,14 +3004,27 @@ pub fn simulate_posterior_predictive_with_model_data_fingerprint(
     let data_map = full_data_map(&data)?;
     let declared_data = declared_data_from_full(&meta, &data_map)?;
     let declared_map = bind_declared_data(&meta, declared_data)?;
-    let observed_names = observed_data_names(&meta);
-    if observed_names.is_empty() {
+    if meta.observed_nodes.is_empty() {
         return Err(invalid(
             "posterior-predictive needs at least one observed node to simulate",
         ));
     }
     let sites = meta.resolved_stochastic_sites();
-    let observed_site_indices = directly_assignable_observed_site_indices(&observed_names, &sites)?;
+    let observed_site_indices =
+        directly_assignable_observed_site_indices(&meta, &sites, "posterior-predictive")?;
+    let execution_order = stable_site_order(
+        &sites,
+        &observed_site_indices,
+        meta.data
+            .iter()
+            .map(|(name, _)| ValueRef::data(name.clone()))
+            .chain(
+                fit.params
+                    .iter()
+                    .map(|param| ValueRef::param(param.name.clone())),
+            ),
+        "posterior-predictive",
+    )?;
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
     let mut draws = Vec::with_capacity(fit.draws.len());
     let mut site_specs: Option<Vec<PriorPredictiveSite>> = None;
@@ -2944,6 +3032,7 @@ pub fn simulate_posterior_predictive_with_model_data_fingerprint(
     for fit_draw in &fit.draws {
         let mut env = ForwardEnv {
             values: HashMap::new(),
+            full_values: HashMap::new(),
             data: &declared_map,
         };
         for (spec, value) in fit.params.iter().zip(&fit_draw.values) {
@@ -2951,7 +3040,7 @@ pub fn simulate_posterior_predictive_with_model_data_fingerprint(
         }
         let mut current_sites = Vec::new();
         let mut values = Vec::new();
-        for &site_index in &observed_site_indices {
+        for &site_index in &execution_order {
             let site = &sites[site_index];
             let Expr::Data(name) = &site.value else {
                 unreachable!("observed_site_indices only contains DataRef sites");
@@ -2981,6 +3070,16 @@ pub fn simulate_posterior_predictive_with_model_data_fingerprint(
                 "posterior-predictive currently supports directly assignable observed stochastic sites only",
             ));
         }
+        let mut generated = execution_order
+            .iter()
+            .copied()
+            .zip(current_sites.into_iter().zip(values))
+            .collect::<Vec<_>>();
+        generated.sort_by_key(|(site_index, _)| *site_index);
+        let (current_sites, values): (Vec<_>, Vec<_>) = generated
+            .into_iter()
+            .map(|(_, generated)| generated)
+            .unzip();
         match &site_specs {
             None => site_specs = Some(current_sites),
             Some(expected) if expected.len() == current_sites.len() => {
@@ -3348,47 +3447,67 @@ fn simulate_generation_outcomes(
     parameter_values: HashMap<String, Tensor>,
     rng: &mut Xoshiro256PlusPlus,
 ) -> Result<Vec<(String, DataValue)>, Error> {
+    let sites = meta.resolved_stochastic_sites();
+    let outcome_indices = sites
+        .iter()
+        .enumerate()
+        .filter_map(|(index, site)| matches!(site.value, Expr::Data(_)).then_some(index))
+        .collect::<Vec<_>>();
+    let initial_values = meta
+        .data
+        .iter()
+        .map(|(name, _)| ValueRef::data(name.clone()))
+        .chain(
+            meta.params
+                .iter()
+                .map(|(name, _)| ValueRef::param(name.clone())),
+        )
+        .collect::<Vec<_>>();
+    let execution_order = stable_site_order(
+        &sites,
+        &outcome_indices,
+        initial_values,
+        "generate outcomes",
+    )?;
     let mut env = ForwardEnv {
         values: parameter_values,
+        full_values: HashMap::new(),
         data,
     };
     let mut outcomes = Vec::new();
-    for site in meta.resolved_stochastic_sites() {
-        match &site.value {
-            Expr::Param(_) => {}
-            Expr::Data(name) => {
-                if data.contains_key(name) || env.values.contains_key(name) {
-                    return Err(mismatch(format!(
-                        "generate stochastic site \"{}\" writes duplicate data value \"{name}\"",
-                        site.name
-                    )));
-                }
-                let value = sample_distribution(rng, &env, &site.distribution, None)?;
-                let integer = distribution_has_integer_support(&site.distribution);
-                env.values.insert(name.clone(), value.clone());
-                outcomes.push((
-                    name.clone(),
-                    DataValue {
-                        shape: value.shape().to_vec(),
-                        values: value.data().to_vec(),
-                        integer,
-                    },
-                ));
-            }
-            _ => {
-                return Err(invalid(format!(
-                    "generate stochastic site \"{}\" is not directly assignable",
-                    site.name
-                )))
-            }
+    for &site_index in &execution_order {
+        let site = &sites[site_index];
+        let Expr::Data(name) = &site.value else {
+            unreachable!("generation outcome plan contains DataRef sites only")
+        };
+        if data.contains_key(name) || env.values.contains_key(name) {
+            return Err(mismatch(format!(
+                "generate stochastic site \"{}\" writes duplicate data value \"{name}\"",
+                site.name
+            )));
         }
+        let value = sample_distribution(rng, &env, &site.distribution, None)?;
+        let integer = distribution_has_integer_support(&site.distribution);
+        env.values.insert(name.clone(), value.clone());
+        outcomes.push((
+            site_index,
+            (
+                name.clone(),
+                DataValue {
+                    shape: value.shape().to_vec(),
+                    values: value.data().to_vec(),
+                    integer,
+                },
+            ),
+        ));
     }
     if outcomes.is_empty() {
         return Err(invalid(
             "generate needs at least one directly assignable observed outcome",
         ));
     }
-    Ok(outcomes)
+    outcomes.sort_by_key(|(site_index, _)| *site_index);
+    Ok(outcomes.into_iter().map(|(_, outcome)| outcome).collect())
 }
 
 pub(crate) fn fixed_generation_pairs(
@@ -3450,15 +3569,26 @@ pub(crate) fn model_prior_generation_pairs(
     let data = generation_design(&meta, design)?;
     let free_specs = free_specs(&meta, &data)?;
     let sites = meta.resolved_stochastic_sites();
+    let site_indices = (0..sites.len()).collect::<Vec<_>>();
+    let execution_order = stable_site_order(
+        &sites,
+        &site_indices,
+        meta.data
+            .iter()
+            .map(|(name, _)| ValueRef::data(name.clone())),
+        "generate model-prior",
+    )?;
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
     for draw_index in 0..count {
         let mut env = ForwardEnv {
             values: HashMap::new(),
+            full_values: HashMap::new(),
             data: &data,
         };
         let mut parameter_map = HashMap::new();
         let mut outcomes = Vec::new();
-        for site in &sites {
+        for &site_index in &execution_order {
+            let site = &sites[site_index];
             match &site.value {
                 Expr::Param(name) => {
                     let free = free_specs.get(name).ok_or_else(|| {
@@ -3497,12 +3627,15 @@ pub(crate) fn model_prior_generation_pairs(
                     let value = sample_distribution(&mut rng, &env, &site.distribution, None)?;
                     env.values.insert(name.clone(), value.clone());
                     outcomes.push((
-                        name.clone(),
-                        DataValue {
-                            shape: value.shape().to_vec(),
-                            values: value.data().to_vec(),
-                            integer: value_is_integer(&value),
-                        },
+                        site_index,
+                        (
+                            name.clone(),
+                            DataValue {
+                                shape: value.shape().to_vec(),
+                                values: value.data().to_vec(),
+                                integer: value_is_integer(&value),
+                            },
+                        ),
                     ));
                 }
                 _ => unreachable!("generation model validation rejects non-assignable sites"),
@@ -3527,9 +3660,10 @@ pub(crate) fn model_prior_generation_pairs(
                 "model-prior generation produced undeclared parameter values",
             ));
         }
+        outcomes.sort_by_key(|(site_index, _)| *site_index);
         emit(GenerationPair {
             parameters,
-            outcomes,
+            outcomes: outcomes.into_iter().map(|(_, outcome)| outcome).collect(),
             lineage: GenerationLineage::ModelPrior {
                 source_draw_index: draw_index,
             },
