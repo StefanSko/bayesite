@@ -98,10 +98,12 @@ The release artifact snapshot is native 1,747,792 bytes, raw wasm 1,269,504
 bytes, and deterministic gzip wasm 386,810 bytes. The new stdlib-only
 `scripts/check_wasm_json_boundary.mjs` invokes the actual release ABI and
 requires typed, non-trapping results for depth 256, depth 257, 100,000-level
-hostile input, and invalid UTF-8. Its CSV retains all nine raw samples plus
-MAD and range. The native `protocol` integration test runs the same UTF-8
-depth/hostile matrix, so both shells assert the same typed outcomes at their
-shared pure request boundary.
+hostile input, and invalid UTF-8. Separately, `tools/bench/json-parse` emits
+CSV rows with all nine raw samples plus MAD and range. The native `protocol`
+integration test covers the three UTF-8 string cases (depth 256, depth 257,
+and hostile depth); the wasm ABI harness covers those cases plus invalid UTF-8,
+which only exists at the byte boundary. Both shells assert the same typed
+outcomes for their shared UTF-8 request matrix.
 
 ## Validation and residual risk
 
