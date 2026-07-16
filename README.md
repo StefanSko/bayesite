@@ -1,6 +1,6 @@
 # Bayesite
 
-Bayesite is a zero-dependency Rust runtime for serialized Bayesian model IR.
+Bayesite is an audited Rust runtime for serialized Bayesian model IR.
 The goal is a SQLite-like Bayesian workflow binary: one executable an agent can
 run without Python, `uvx`, NumPy, or a runtime dependency graph.
 
@@ -122,7 +122,7 @@ python3 scripts/check_validation_ladder.py
 
 This default development gate checks:
 
-- zero-dependency core via `cargo tree`;
+- exact audited native and wasm dependency allowlists via `cargo tree`;
 - vendored bayeswire spec/corpus byte hashes;
 - `cargo fmt --check`;
 - `cargo clippy -D warnings`;
@@ -131,6 +131,11 @@ This default development gate checks:
 - Rust tests;
 - wasm build;
 - NUTS cross-engine agreement against a pinned `nuts-rs` checkout (ladder rung G6).
+
+Hosted dependency-change, weekly, and release workflows additionally run
+exact-pinned `cargo-audit` against the current RustSec advisory database. This
+network-current supply-chain gate is intentionally separate from the
+local/offline-capable ladder.
 
 By default, the NUTS cross-engine oracle (ladder rung G6) expects `/tmp/nuts-rs`
 at the pinned revision documented in

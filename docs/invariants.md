@@ -13,8 +13,10 @@ Core invariants that should remain true as Bayesite evolves.
   scope.
 - The core remains SQLite-like: small, auditable, deterministic, embeddable,
   offline-capable, and suitable for sandboxed use.
-- The Rust core remains zero-dependency unless a written design decision waives
-  that invariant. `cargo tree` showing only `bayesite-core` is intentional.
+- The Rust core permits only the audited, exact-pinned RustCrypto `sha2`
+  exception documented in `sha2-fingerprint-spike.md`; no other dependency is
+  implicitly approved. The validation ladder checks exact native and wasm
+  normal-dependency allowlists.
 - WebAssembly is first-class. A wasm build failure is a project failure.
 
 ## Workflow surface

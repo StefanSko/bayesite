@@ -1,0 +1,49 @@
+name: RustSec audit
+
+on:
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - 'crates/**/Cargo.toml'
+      - .github/workflows/rustsec.yml
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - 'crates/**/Cargo.toml'
+      - .github/workflows/rustsec.yml
+  schedule:
+    - cron: '19 5 * * 1'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit locked Rust dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install pinned cargo-audit
+        run: >-
+          cargo install cargo-audit
+          --version '=0.22.2'
+          --locked
+          --no-default-features
+
+      - name: Audit Cargo.lock against current RustSec advisories
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo audit --version
+          cargo audit --file Cargo.lock --deny warnings
+          git -C "${CARGO_HOME:-$HOME/.cargo}/advisory-db" \
+            log -1 --format='RustSec advisory database: %H (%cI)'

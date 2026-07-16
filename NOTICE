@@ -1,8 +1,50 @@
 Provenance of ported numerical routines in crates/core
 =====================================================
 
-This crate is intentionally zero-dependency; the routines below are ports,
-not vendored code. Each site carries a comment pointing back here.
+This crate uses one audited dependency exception for SHA-256: RustCrypto
+`sha2` 0.11.0 with default features disabled. It and its locked normal
+transitive closure are sourced from crates.io under MIT OR Apache-2.0:
+`sha2` 0.11.0 (RustCrypto/hashes), `digest` 0.11.3 and `crypto-common` 0.2.2
+(RustCrypto/traits), `block-buffer` 0.12.1 and `cpufeatures` 0.3.0
+(RustCrypto/utils), `hybrid-array` 0.4.13 (RustCrypto/hybrid-array), `typenum`
+1.20.1 (paholg/typenum), `cfg-if` 1.0.4 (rust-lang/cfg-if), and target-only
+`libc` 0.2.186 (rust-lang/libc). Exact checksums are locked in `Cargo.lock`;
+the audit decision and update policy are in `docs/sha2-fingerprint-spike.md`.
+
+Third-party copyright notices (the MIT license below is the selected license
+option for the dual-licensed packages):
+
+- sha2: Copyright (c) 2016-2026 The RustCrypto Project Developers; 2016 Artyom
+  Pavlov; 2009-2013 Mozilla Foundation; 2006-2009 Graydon Hoare.
+- digest: Copyright (c) 2017-2025 RustCrypto Developers; 2017 Artyom Pavlov.
+- crypto-common: Copyright (c) 2021-2026 RustCrypto Developers.
+- block-buffer: Copyright (c) 2018-2025 The RustCrypto Project Developers.
+- cpufeatures: Copyright (c) 2020-2025 The RustCrypto Project Developers.
+- hybrid-array: Copyright (c) 2022-2026 The RustCrypto Project Developers.
+- typenum: Copyright (c) 2014 Paho Lurie-Gregg.
+- cfg-if: Copyright (c) 2014 Alex Crichton.
+- libc: Copyright (c) The Rust Project Developers.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The routines below are ports, not vendored code. Each site carries a comment
+pointing back here.
 
 1. erf, erfc, ndtr, ndtri (src/special.rs)
    Ported from the Cephes Mathematical Library by Stephen L. Moshier

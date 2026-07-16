@@ -10,6 +10,11 @@ versioned on their own.
 
 ### Changed
 
+- Replace the in-tree SHA-256 compression implementation with audited,
+  exact-pinned RustCrypto `sha2`, preserving all received-byte fingerprints and
+  model/data framing; native and wasm dependency closures are now exact
+  validation-ladder allowlists, with current RustSec audits gating dependency
+  changes and releases.
 - Derive stable ancestral execution plans for forward simulation instead of
   treating stochastic-factor metadata order as draw order, while preserving
   metadata-order artifacts and existing seeded behavior for already-ancestral

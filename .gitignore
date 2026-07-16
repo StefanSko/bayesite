@@ -1,4 +1,5 @@
 /target/
 /tools/bench/logp-grad/target/
+/tools/bench/fingerprint/target/
 /demo/bayesite_core.wasm
 __pycache__/

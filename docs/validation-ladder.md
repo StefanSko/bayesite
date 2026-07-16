@@ -8,19 +8,30 @@ conformance path**.
   oracle and may also use `bayesjax`, JAX/BlackJAX, CmdStan, and report
   generators as explicit additional oracles.
 
-The core crate must stay zero-dependency. The mandatory `nuts-rs` oracle is a
-validation-time dependency only and is never linked into Bayesite.
+The core permits one audited dependency exception: exact-pinned RustCrypto
+`sha2` with default features disabled, as documented in
+[`sha2-fingerprint-spike.md`](sha2-fingerprint-spike.md). The mandatory
+`nuts-rs` oracle is a validation-time dependency only and is never linked into
+Bayesite.
 
 Workflow artifact field details live in [`artifacts-v0.md`](artifacts-v0.md),
 not in this ladder. The ladder states what must be tested and in what order.
 
 ## Gates
 
-### G0 — Spec snapshot and zero-dependency core
+### G0 — Spec snapshot and audited dependency closure
 
 - IR docs and `tests/golden_ir/` are committed snapshots.
-- `cargo tree --manifest-path crates/core/Cargo.toml` must show only
-  `bayesite-core`.
+- `cargo tree --locked --prefix none -e normal --manifest-path crates/core/Cargo.toml`
+  must match the exact reviewed native dependency allowlist; the equivalent
+  `--target wasm32-unknown-unknown` tree must match its separate allowlist.
+  `scripts/check_validation_ladder.py` enforces both, including the
+  target-conditioned `libc` edge.
+- Hosted dependency-change, weekly, and release gates run exact-pinned
+  `cargo-audit` against the current RustSec database with vulnerabilities and
+  warning-class advisories denied. The release log records the database commit
+  and date; this network-current check remains separate from the offline-capable
+  local ladder.
 - The release `bayesite` CLI binary must build as the default agent artifact.
 - The wasm target must build.
 
