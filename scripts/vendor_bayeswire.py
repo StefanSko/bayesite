@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Vendor the bayeswire spec and conformance corpus into this repository.
 
-Bayesite stays zero-dependency and offline-capable: it consumes the wire
-format through byte-identical vendored files, never through package
+Bayesite remains offline-capable: it consumes the wire format through
+byte-identical vendored files, never through package
 management. bayeswire lives inside the bayescycle monorepo
 (https://github.com/StefanSko/bayescycle) as the ``packages/bayeswire``
 package, with the normative spec hoisted to the monorepo root (``spec/``).

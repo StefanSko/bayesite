@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import platform
 import shutil
 import subprocess
 import sys
@@ -69,31 +70,65 @@ def _run(label: str, command: Sequence[str]) -> None:
         sys.exit(f"{label} failed with exit code {result.returncode}")
 
 
-def _check_zero_dependency_core() -> None:
-    command = ["cargo", "tree", "--manifest-path", str(CORE_MANIFEST)]
-    print(f"\n== G0 zero-dependency core\n$ {_command_text(command)}", flush=True)
+# Audited normal dependency closures for the only approved exception: RustCrypto
+# sha2 0.11.0 with default features disabled. Update only with the documented
+# review in docs/sha2-fingerprint-spike.md.
+_NATIVE_NORMAL_PACKAGES = {
+    "block-buffer v0.12.1",
+    "cfg-if v1.0.4",
+    "crypto-common v0.2.2",
+    "digest v0.11.3",
+    "hybrid-array v0.4.13",
+    "sha2 v0.11.0",
+    "typenum v1.20.1",
+}
+_WASM_NORMAL_PACKAGES = set(_NATIVE_NORMAL_PACKAGES)
+
+
+def _native_normal_packages() -> set[str]:
+    """Return sha2/cpufeatures' reviewed target-conditioned native closure."""
+    packages = set(_NATIVE_NORMAL_PACKAGES)
+    machine = platform.machine().lower()
+    if machine in {"aarch64", "arm64", "x86", "i386", "i686", "x86_64", "amd64"}:
+        packages.add("cpufeatures v0.3.0")
+    if machine in {"aarch64", "arm64"} and sys.platform in {"darwin", "linux"}:
+        packages.add("libc v0.2.186")
+    return packages
+
+
+def _check_dependency_allowlist(target: str | None, expected: set[str]) -> None:
+    command = [
+        "cargo", "tree", "--locked", "--prefix", "none", "-e", "normal",
+        "--manifest-path", str(CORE_MANIFEST),
+    ]
+    if target is not None:
+        command.extend(["--target", target])
+    label = f"G0 audited {target or 'native'} normal dependencies"
+    print(f"\n== {label}\n$ {_command_text(command)}", flush=True)
     try:
-        result = subprocess.run(
-            command,
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        result = subprocess.run(command, cwd=REPO_ROOT, check=False, capture_output=True, text=True)
     except FileNotFoundError as error:
-        sys.exit(f"missing executable for G0 zero-dependency core: {error.filename}")
+        sys.exit(f"missing executable for {label}: {error.filename}")
     if result.returncode != 0:
         if result.stderr:
             print(result.stderr, file=sys.stderr)
-        sys.exit(f"G0 zero-dependency core failed with exit code {result.returncode}")
-    if result.stdout:
-        print(result.stdout, end="")
-    lines = [line for line in result.stdout.splitlines() if line.strip()]
-    if len(lines) != 1 or not lines[0].startswith("bayesite-core "):
+        sys.exit(f"{label} failed with exit code {result.returncode}")
+    print(result.stdout, end="")
+    actual = {
+        line.strip().removesuffix(" (*)")
+        for line in result.stdout.splitlines()
+        if line.strip() and not line.startswith("bayesite-core ")
+    }
+    if actual != expected:
         sys.exit(
-            "G0 zero-dependency core failed: cargo tree must contain only "
-            "the bayesite-core root package"
+            f"{label} failed: locked normal dependency closure differs from the "
+            f"reviewed allowlist; expected {sorted(expected)}, got {sorted(actual)}"
         )
+
+
+def _check_dependency_allowlists() -> None:
+    _check_dependency_allowlist(None, _native_normal_packages())
+    _check_dependency_allowlist("wasm32-unknown-unknown", _WASM_NORMAL_PACKAGES)
 
 
 def _check_release_cli_binary() -> None:
@@ -266,7 +301,7 @@ def main() -> None:
     parser.add_argument("--posterior-chains", type=int, default=4)
     args = parser.parse_args()
 
-    _check_zero_dependency_core()
+    _check_dependency_allowlists()
     _check_vendored_bayeswire()
     _run(
         "format",

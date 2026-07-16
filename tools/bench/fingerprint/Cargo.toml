@@ -1,0 +1,10 @@
+[workspace]
+
+[package]
+name = "bayesite-fingerprint-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+bayesite-core = { path = "../../../crates/core" }

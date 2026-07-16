@@ -21,6 +21,9 @@ sha256 sidecars. A `vX.Y.Z` tag triggers `.github/workflows/release.yml`.
    since the previous tag.
 3. The crate version and `Cargo.lock` agree with the intended tag.
 4. Main CI is green.
+5. The release workflow's RustSec gate passes against the current advisory
+   database with no vulnerability or warning-class advisory; retain its logged
+   database commit and date with the release run.
 
 ## Cut a release
 

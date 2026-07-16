@@ -18,8 +18,13 @@ env:
   RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
 
 jobs:
+  rustsec:
+    name: RustSec audit
+    uses: ./.github/workflows/rustsec.yml
+
   validate:
     name: validate
+    needs: rustsec
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

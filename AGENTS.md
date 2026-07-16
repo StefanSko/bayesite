@@ -38,8 +38,9 @@ versioned format decision owned by bayeswire.
 - Run NUTS only unless there is an explicit design decision to expand scope.
 - Keep the Rust core embeddable and SQLite-like: small, auditable, deterministic,
   offline-capable, and suitable for sandboxed use.
-- Keep the core zero-dependency unless a dependency is justified by a written
-  design decision. `cargo tree` showing only the crate itself is intentional.
+- Keep the core dependency-free except for the audited, exact-pinned RustCrypto
+  `sha2` exception documented in `docs/sha2-fingerprint-spike.md`. New
+  dependencies require a written design decision and exact validation allowlist.
 - Treat WebAssembly as first-class. A wasm build failure is a project failure.
 - Keep browser/demo concerns out of core semantics. CLI and wasm are thin shells
   around the same pure runtime.

@@ -3,10 +3,11 @@ name = "bayesite-core"
 version = "0.3.0"
 edition = "2021"
 license = "MIT"
-description = "Zero-dependency core for Bayesite IR workflow"
+description = "Audited Rust core for Bayesite IR workflow"
 
-# SETTLED: zero crates. `cargo tree` must show this crate and nothing else.
+# SHA-256 is the sole reviewed dependency exception; see docs/sha2-fingerprint-spike.md.
 [dependencies]
+sha2 = { version = "=0.11.0", default-features = false }
 
 [dev-dependencies]
 
