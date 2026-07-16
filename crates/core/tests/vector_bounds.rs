@@ -552,6 +552,77 @@ fn vector_scatter_propagates_the_missing_free_value_to_later_sites() {
 }
 
 #[test]
+fn partial_owner_value_dependencies_are_scheduled_ancestrally() {
+    let mut model = partially_observed_model(normal(), 1);
+    let Expr::VectorScatter { length, .. } = &mut model.stochastic_sites[0].value else {
+        panic!("partial owner must be a scatter")
+    };
+    *length = Box::new(Expr::Data("n".to_string()));
+    let n_distribution = Distribution::Bernoulli {
+        probs: Expr::Const(1.0),
+    };
+    model.observed_nodes.push(ResolvedObserved {
+        name: "n".to_string(),
+        distribution: n_distribution.clone(),
+    });
+    model.stochastic_sites.push(ResolvedStochasticSite {
+        name: "n_site".to_string(),
+        distribution: n_distribution,
+        value: Expr::Data("n".to_string()),
+    });
+    let run = simulate_prior_predictive(
+        model,
+        partially_observed_data(0.0),
+        &PriorPredictiveSettings { num_draws: 1 },
+        217,
+    )
+    .expect("generated partial length is scheduled before its owner");
+
+    assert_eq!(
+        run.sites
+            .iter()
+            .map(|site| site.name.as_str())
+            .collect::<Vec<_>>(),
+        ["y", "n"]
+    );
+    assert_eq!(run.draws[0].values[0].1.shape(), &[1]);
+}
+
+#[test]
+fn partial_owner_value_dependency_cycles_fail_before_drawing() {
+    let mut model = partially_observed_model(normal(), 1);
+    let Expr::VectorScatter { length, .. } = &mut model.stochastic_sites[0].value else {
+        panic!("partial owner must be a scatter")
+    };
+    *length = Box::new(Expr::Data("n".to_string()));
+    let n_distribution = Distribution::Bernoulli {
+        probs: Expr::Param("y".to_string()),
+    };
+    model.observed_nodes.push(ResolvedObserved {
+        name: "n".to_string(),
+        distribution: n_distribution.clone(),
+    });
+    model.stochastic_sites.push(ResolvedStochasticSite {
+        name: "n_site".to_string(),
+        distribution: n_distribution,
+        value: Expr::Data("n".to_string()),
+    });
+
+    let err = simulate_prior_predictive(
+        model,
+        partially_observed_data(0.0),
+        &PriorPredictiveSettings { num_draws: 1 },
+        218,
+    )
+    .unwrap_err();
+
+    assert_eq!(err.kind, ErrorKind::InvalidSettings);
+    assert!(err.message.contains("cyclic or unavailable"));
+    assert!(err.message.contains("n"));
+    assert!(err.message.contains("y"));
+}
+
+#[test]
 fn generated_partial_ancestor_propagates_its_full_vector() {
     let declared_data = partially_observed_ancestor_data();
     let run = simulate_prior_predictive(
@@ -585,6 +656,45 @@ fn generated_partial_ancestor_propagates_its_full_vector() {
             .values,
         [-1_000.0, 1_000.0]
     );
+}
+
+#[test]
+fn distinct_scatter_with_same_missing_slot_keeps_its_own_observed_values() {
+    let mut model = partially_observed_ancestor_model(false);
+    model.data.push((
+        "alternate_observed_values".to_string(),
+        ResolvedData {
+            schema: DataSchema::Rank(1),
+        },
+    ));
+    let alternate_scatter = Expr::VectorScatter {
+        length: Box::new(Expr::Const(3.0)),
+        observed_idx: Box::new(Expr::Data("observed_idx".to_string())),
+        observed_values: Box::new(Expr::Data("alternate_observed_values".to_string())),
+        missing_idx: Box::new(Expr::Data("missing_idx".to_string())),
+        missing_values: Box::new(Expr::Param("y".to_string())),
+    };
+    let child_distribution = Distribution::Normal {
+        loc: alternate_scatter,
+        scale: Expr::Const(1e-9),
+    };
+    model.observed_nodes[0].distribution = child_distribution.clone();
+    model.stochastic_sites[1].distribution = child_distribution;
+    let mut declared_data = partially_observed_ancestor_data();
+    declared_data.push(data("alternate_observed_values", vec![-100.0, 100.0]));
+    let run = simulate_prior_predictive(
+        model,
+        declared_data,
+        &PriorPredictiveSettings { num_draws: 1 },
+        224,
+    )
+    .expect("distinct descendant scatter simulates");
+
+    let ancestor = &run.draws[0].values[0].1;
+    let child = &run.draws[0].values[1].1;
+    assert!((child.data()[0] + 100.0).abs() < 1e-7, "{:?}", child.data());
+    assert!((child.data()[2] - 100.0).abs() < 1e-7, "{:?}", child.data());
+    assert!((child.data()[1] - ancestor.data()[1]).abs() < 1e-7);
 }
 
 #[test]

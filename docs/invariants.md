@@ -45,8 +45,10 @@ Core invariants that should remain true as Bayesite evolves.
   dependencies. Original stochastic-site index breaks ready-site ties and
   remains the factor/artifact order; planning never rewrites decoded metadata.
 - A generated `PartiallyObserved` value retains separate missing-coordinate and
-  complete-vector representations. Descendants consume the complete generated
-  vector without mutating declared conditioning data.
+  complete-vector representations. Descendants evaluating that owner's
+  structurally identical scatter consume the complete generated vector without
+  mutating declared conditioning data; distinct scatter expressions retain
+  their own fields.
 
 ## IR boundary
 

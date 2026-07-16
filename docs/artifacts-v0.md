@@ -221,9 +221,10 @@ seed, counts/orders, and generated values keyed by site name.
 Current scope: declaration-backed directly assignable parameter/data sites and
 canonical `PartiallyObserved` `VectorScatter` owners. Additional density factors
 are rejected before drawing. Generated partial ancestors retain their complete
-simulated vectors for descendants while artifacts continue to expose metadata
-site order. Other non-assignable stochastic-site expressions fail with a typed
-repair error.
+simulated vectors when descendants evaluate the structurally identical owner
+scatter; distinct scatters retain their own fields. Artifacts continue to expose
+metadata site order. Other non-assignable stochastic-site expressions fail with
+a typed repair error.
 
 ## `bayesite posterior-predictive`
 

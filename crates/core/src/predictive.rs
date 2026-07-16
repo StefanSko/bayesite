@@ -342,9 +342,14 @@ fn validate_prior_predictive_site_inventory(
     Ok(())
 }
 
+struct GeneratedFullValue {
+    owner_expression: Expr,
+    value: Tensor,
+}
+
 struct ForwardEnv<'a> {
     values: HashMap<String, Tensor>,
-    full_values: HashMap<String, Tensor>,
+    full_values: HashMap<String, GeneratedFullValue>,
     data: &'a HashMap<String, DataValue>,
 }
 
@@ -407,7 +412,9 @@ impl<'a> ForwardEnv<'a> {
             } => {
                 if let Expr::Param(name) = missing_values.as_ref() {
                     if let Some(full_value) = self.full_values.get(name) {
-                        return Ok(full_value.clone());
+                        if &full_value.owner_expression == expr {
+                            return Ok(full_value.value.clone());
+                        }
                     }
                 }
                 let obs_pos = self.index_vector(observed_idx)?;
@@ -1799,7 +1806,13 @@ pub fn simulate_prior_predictive(
                         Tensor::from_vec(vec![missing_idx.len()], entries)
                     };
                     env.values.insert(free_name.clone(), missing);
-                    env.full_values.insert(free_name.clone(), value.clone());
+                    env.full_values.insert(
+                        free_name.clone(),
+                        GeneratedFullValue {
+                            owner_expression: site.value.clone(),
+                            value: value.clone(),
+                        },
+                    );
                     current_sites.push(PriorPredictiveSite {
                         name: site.name.clone(),
                         stochastic_site: site.name.clone(),

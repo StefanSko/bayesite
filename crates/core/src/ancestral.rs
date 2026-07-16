@@ -136,6 +136,23 @@ fn collect_distribution_refs(distribution: &Distribution, refs: &mut Vec<ValueRe
     }
 }
 
+fn collect_generation_value_refs(value: &Expr, refs: &mut Vec<ValueRef>) {
+    if let Expr::VectorScatter {
+        length,
+        missing_idx,
+        ..
+    } = value
+    {
+        // Prior-predictive generation evaluates these fields to determine the
+        // draw shape and extract the generated missing coordinates. The
+        // direct missing ParamRef is the site's output, not a dependency;
+        // observed indexes/values are intentionally not conditioned into the
+        // complete prior draw.
+        collect_expr_refs(length, refs);
+        collect_expr_refs(missing_idx, refs);
+    }
+}
+
 fn generated_value(site: &ResolvedStochasticSite) -> Option<ValueRef> {
     match &site.value {
         Expr::Param(name) => Some(ValueRef::Param(name.clone())),
@@ -175,6 +192,7 @@ pub(crate) fn stable_site_order(
             })?;
             let mut dependencies = Vec::new();
             collect_distribution_refs(&site.distribution, &mut dependencies);
+            collect_generation_value_refs(&site.value, &mut dependencies);
             dependencies.dedup();
             Ok((site_index, output, dependencies))
         })
