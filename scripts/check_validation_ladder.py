@@ -349,10 +349,20 @@ def main() -> None:
             [
                 "cargo",
                 "build",
+                "--release",
                 "--target",
                 "wasm32-unknown-unknown",
+                "--lib",
                 "--manifest-path",
                 str(CORE_MANIFEST),
+            ],
+        )
+        _run(
+            "G0 wasm JSON boundary",
+            [
+                "node",
+                "scripts/check_wasm_json_boundary.mjs",
+                "target/wasm32-unknown-unknown/release/bayesite_core.wasm",
             ],
         )
 

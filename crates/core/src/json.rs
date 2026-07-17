@@ -524,6 +524,30 @@ mod tests {
     }
 
     #[test]
+    fn numeric_boundaries_preserve_variant_and_bits() {
+        for (text, expected) in [
+            ("0", Value::Int(0)),
+            ("-0", Value::Int(0)),
+            ("-0.0", Value::Float(-0.0)),
+            ("9223372036854775807", Value::Int(i64::MAX)),
+            ("-9223372036854775808", Value::Int(i64::MIN)),
+            ("9223372036854775808", Value::Float(9223372036854775808.0)),
+            ("18446744073709551615", Value::Float(18446744073709551616.0)),
+            ("5e-324", Value::Float(f64::from_bits(1))),
+            ("1e-400", Value::Float(0.0)),
+        ] {
+            let got = parse(text).unwrap();
+            match (got, expected) {
+                (Value::Float(got), Value::Float(expected)) => {
+                    assert_eq!(got.to_bits(), expected.to_bits(), "{text}");
+                }
+                (got, expected) => assert_eq!(got, expected, "{text}"),
+            }
+        }
+        assert!(parse("1e309").is_err());
+    }
+
+    #[test]
     fn parses_strings_with_escapes() {
         assert_eq!(parse(r#""hello""#).unwrap(), Value::Str("hello".into()));
         assert_eq!(
@@ -557,6 +581,24 @@ mod tests {
     }
 
     #[test]
+    fn preserves_duplicate_keys_at_every_level() {
+        assert_eq!(
+            parse(r#"{"a":1,"a":{"b":2,"b":3},"a":4}"#).unwrap(),
+            Value::Object(vec![
+                ("a".into(), Value::Int(1)),
+                (
+                    "a".into(),
+                    Value::Object(vec![
+                        ("b".into(), Value::Int(2)),
+                        ("b".into(), Value::Int(3))
+                    ]),
+                ),
+                ("a".into(), Value::Int(4)),
+            ])
+        );
+    }
+
+    #[test]
     fn rejects_non_finite_tokens() {
         assert!(parse("NaN").is_err());
         assert!(parse("Infinity").is_err());
@@ -572,16 +614,25 @@ mod tests {
             "[1,",
             "{\"a\":}",
             "01",
+            "-01",
             "1.",
             "1.e3",
+            "1e",
+            "1e+",
             "+1",
             "'x'",
             "{\"a\" 1}",
+            "{\"a\":1,}",
+            "[1,]",
             "[1] []",
             "\"\\q\"",
+            "\"\\u0x00\"",
             "\"\u{0001}\"",
+            "\u{feff}null",
+            "// comment\nnull",
             "tru",
             "\"\\ud834\"",
+            "\"\\udd1e\\ud834\"",
         ] {
             assert!(parse(text).is_err(), "expected parse error for {text:?}");
         }
