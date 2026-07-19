@@ -8,6 +8,13 @@ versioned on their own.
 
 ## [Unreleased]
 
+### Added
+
+- Decode and execute Bayeswire's additive `MatVecOp` with exact
+  `[m, n] @ [n] -> [m]` semantics across posterior log-density gradients,
+  forward simulation, native, and Wasm runtimes; refresh the conformance corpus
+  with the explicit non-centered correlated MVN fixture.
+
 ## [0.3.1] - 2026-07-17
 
 ### Changed

@@ -279,6 +279,7 @@ fn site_owns_non_param_free_value(site: &ResolvedStochasticSite, name: &str) -> 
         | Expr::Const(_)
         | Expr::Bin { .. }
         | Expr::Unary { .. }
+        | Expr::MatVec { .. }
         | Expr::Index { .. } => false,
     }
 }
@@ -393,6 +394,11 @@ impl<'a> ForwardEnv<'a> {
                     UnaryFn::Neg => -v,
                     UnaryFn::Sigmoid => 1.0 / (1.0 + (-v).exp()),
                 }))
+            }
+            Expr::MatVec { matrix, vector } => {
+                let matrix = self.evaluate(matrix)?;
+                let vector = self.evaluate(vector)?;
+                matrix.matvec(&vector)
             }
             Expr::Index { base, index } => {
                 let base = self.evaluate(base)?;
@@ -1826,6 +1832,7 @@ pub fn simulate_prior_predictive(
                 Expr::Const(_)
                 | Expr::Bin { .. }
                 | Expr::Unary { .. }
+                | Expr::MatVec { .. }
                 | Expr::Index { .. } => {
                     return Err(invalid(format!(
                         "prior-predictive site \"{}\" has a non-assignable value expression; only ParamRef, DataRef, and PartiallyObserved VectorScatter sites are supported in v0-provisional output",
@@ -1895,6 +1902,10 @@ fn collect_expr_data_refs(expr: &Expr, refs: &mut Vec<String>) {
             collect_expr_data_refs(right, refs);
         }
         Expr::Unary { operand, .. } => collect_expr_data_refs(operand, refs),
+        Expr::MatVec { matrix, vector } => {
+            collect_expr_data_refs(matrix, refs);
+            collect_expr_data_refs(vector, refs);
+        }
         Expr::Index { base, index } => {
             collect_expr_data_refs(base, refs);
             collect_index_spec_data_refs(index, refs);
@@ -2103,7 +2114,11 @@ pub fn simulate_data_from_truth(
                     )));
                 }
             }
-            Expr::Const(_) | Expr::Bin { .. } | Expr::Unary { .. } | Expr::Index { .. } => {
+            Expr::Const(_)
+            | Expr::Bin { .. }
+            | Expr::Unary { .. }
+            | Expr::MatVec { .. }
+            | Expr::Index { .. } => {
                 let mut refs = Vec::new();
                 collect_expr_data_refs(&site.value, &mut refs);
                 refs.sort();

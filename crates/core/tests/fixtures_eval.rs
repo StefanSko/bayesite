@@ -5,7 +5,7 @@ use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, Posterior};
 
-const ALL_FIXTURES: [&str; 11] = [
+const ALL_FIXTURES: [&str; 12] = [
     "alternative_prior_regression",
     "bounded_rates",
     "censored_exponential",
@@ -13,6 +13,7 @@ const ALL_FIXTURES: [&str; 11] = [
     "eight_schools_non_centered",
     "interval_censored_normal",
     "linear_regression",
+    "mvn_non_centered",
     "ordinal_regression",
     "partially_observed_mvn",
     "varying_intercepts_poisson",

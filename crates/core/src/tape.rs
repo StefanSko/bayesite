@@ -81,6 +81,8 @@ enum Op {
         mean: Var,
         scale_tril: Var,
     },
+    /// Exact rank-2 by rank-1 matrix-vector product.
+    MatVec(Var, Var),
     /// Solve L x = b for lower-triangular L (rank-2) and rank-1 b.
     SolveLower(Var, Var),
     /// Concatenate along the last axis (equal leading dims).
@@ -250,6 +252,9 @@ fn eval_op(nodes: &[Node], op: &Op) -> Tensor {
             let logp = term - 0.5 * (n as f64) * (2.0 * std::f64::consts::PI).ln();
             Tensor::scalar(logp)
         }
+        Op::MatVec(matrix, vector) => value(matrix)
+            .matvec(value(vector))
+            .expect("MatVecOp shapes were validated before tape construction"),
         Op::SolveLower(l, b) => {
             let l_t = value(l);
             let b_t = value(b);
@@ -362,6 +367,7 @@ impl Tape {
             | Op::Mul(a, b)
             | Op::Div(a, b)
             | Op::Xlogy(a, b)
+            | Op::MatVec(a, b)
             | Op::SolveLower(a, b)
             | Op::Cmp(_, a, b)
             | Op::And(a, b) => dynamic(a) || dynamic(b),
@@ -651,6 +657,21 @@ impl Tape {
             },
             grad,
         )
+    }
+
+    /// Exact rank-2 `[m, n]` by rank-1 `[n]` matrix-vector product.
+    pub fn matvec(&mut self, matrix: Var, vector: Var) -> Var {
+        let matrix_value = self.value(matrix);
+        let vector_value = self.value(vector);
+        assert_eq!(matrix_value.rank(), 2, "MatVecOp matrix must be rank 2");
+        assert_eq!(vector_value.rank(), 1, "MatVecOp vector must be rank 1");
+        assert_eq!(
+            matrix_value.shape()[1],
+            vector_value.shape()[0],
+            "MatVecOp contraction dimensions must match"
+        );
+        let grad = self.binary_grad(matrix, vector);
+        self.push_op(Op::MatVec(matrix, vector), grad)
     }
 
     /// Solve `L x = b`, L rank-2 lower-triangular, b rank-1.
@@ -1022,6 +1043,39 @@ impl Tape {
                     self.accumulate(adjoints, *scale_tril, Tensor::from_vec(vec![n, n], dl));
                 }
             }
+            Op::MatVec(matrix, vector) => {
+                let matrix_value = self.value(*matrix);
+                let vector_value = self.value(*vector);
+                let rows = matrix_value.shape()[0];
+                let cols = matrix_value.shape()[1];
+                if self.requires_grad(*matrix) {
+                    let mut matrix_gradient = vec![0.0; rows * cols];
+                    for row in 0..rows {
+                        for col in 0..cols {
+                            matrix_gradient[row * cols + col] =
+                                adj.data()[row] * vector_value.data()[col];
+                        }
+                    }
+                    self.accumulate(
+                        adjoints,
+                        *matrix,
+                        Tensor::from_vec(vec![rows, cols], matrix_gradient),
+                    );
+                }
+                if self.requires_grad(*vector) {
+                    let mut vector_gradient = vec![0.0; cols];
+                    for row in 0..rows {
+                        for (col, gradient) in vector_gradient.iter_mut().enumerate() {
+                            *gradient += matrix_value.data()[row * cols + col] * adj.data()[row];
+                        }
+                    }
+                    self.accumulate(
+                        adjoints,
+                        *vector,
+                        Tensor::from_vec(vec![cols], vector_gradient),
+                    );
+                }
+            }
             Op::SolveLower(l, b) => {
                 // x = L^{-1} b. db = L^{-T} adj; dL = -db x^T (lower part).
                 let l_t = self.value(*l);
@@ -1337,6 +1391,40 @@ mod tests {
             ],
             1e-5,
         );
+    }
+
+    #[test]
+    fn matrix_vector_product_values_and_gradients() {
+        let mut tape = Tape::new();
+        let matrix = tape.input(Tensor::from_vec(
+            vec![2, 3],
+            vec![1.0, 2.0, 3.0, -1.0, 0.5, 4.0],
+        ));
+        let vector = tape.input(Tensor::from_vec(vec![3], vec![0.25, -0.5, 2.0]));
+        let product = tape.matvec(matrix, vector);
+        assert_eq!(tape.value(product).shape(), &[2]);
+        assert_eq!(tape.value(product).data(), &[5.25, 7.5]);
+
+        let root = tape.sum(product);
+        let gradients = tape.backward(root, &[matrix, vector]);
+        assert_eq!(gradients[0].data(), &[0.25, -0.5, 2.0, 0.25, -0.5, 2.0]);
+        assert_eq!(gradients[1].data(), &[0.0, 2.5, 7.0]);
+    }
+
+    #[test]
+    fn matrix_vector_product_supports_zero_dimensions() {
+        for (matrix_shape, vector_shape, result_shape, result_values) in [
+            (vec![3, 0], vec![0], vec![3], vec![0.0; 3]),
+            (vec![0, 3], vec![3], vec![0], vec![]),
+            (vec![0, 0], vec![0], vec![0], vec![]),
+        ] {
+            let mut tape = Tape::new();
+            let matrix = tape.input(Tensor::zeros(&matrix_shape));
+            let vector = tape.input(Tensor::zeros(&vector_shape));
+            let product = tape.matvec(matrix, vector);
+            assert_eq!(tape.value(product).shape(), result_shape);
+            assert_eq!(tape.value(product).data(), result_values);
+        }
     }
 
     #[test]

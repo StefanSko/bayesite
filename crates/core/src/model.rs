@@ -397,6 +397,10 @@ fn check_expr_depth(root: &Expr) -> Result<(), Error> {
                         stack.push(Frame::Expr(right, depth + 1));
                     }
                     Expr::Unary { operand, .. } => stack.push(Frame::Expr(operand, depth + 1)),
+                    Expr::MatVec { matrix, vector } => {
+                        stack.push(Frame::Expr(matrix, depth + 1));
+                        stack.push(Frame::Expr(vector, depth + 1));
+                    }
                     Expr::Index { base, index } => {
                         stack.push(Frame::Expr(base, depth + 1));
                         stack.push(Frame::Index(index, depth + 1));
@@ -618,6 +622,8 @@ impl Posterior {
                 size,
             });
         }
+
+        validate_bound_matvec_shapes(&meta, &sites, &data_map, &free)?;
 
         Ok(Posterior {
             free,
@@ -1110,6 +1116,15 @@ fn evaluate_optional_data_expr(
                 UnaryFn::Sigmoid => operand.map(crate::special::sigmoid),
             }))
         }
+        Expr::MatVec { matrix, vector } => {
+            let Some(matrix) = evaluate_optional_data_expr(matrix, data)? else {
+                return Ok(None);
+            };
+            let Some(vector) = evaluate_optional_data_expr(vector, data)? else {
+                return Ok(None);
+            };
+            Ok(Some(matrix.matvec(&vector)?))
+        }
         Expr::Index { base, index } => {
             let Some(base) = evaluate_optional_data_expr(base, data)? else {
                 return Ok(None);
@@ -1365,6 +1380,12 @@ impl<'a> Env<'a> {
                     UnaryFn::Sigmoid => self.tape.sigmoid(v),
                 })
             }
+            Expr::MatVec { matrix, vector } => {
+                let matrix = self.evaluate(matrix)?;
+                let vector = self.evaluate(vector)?;
+                self.tape.value(matrix).matvec(self.tape.value(vector))?;
+                Ok(self.tape.matvec(matrix, vector))
+            }
             Expr::Index { base, index } => {
                 let base_var = self.evaluate(base)?;
                 let atoms = self.evaluate_index_spec(index)?;
@@ -1542,6 +1563,101 @@ impl<'a> Env<'a> {
             },
         })
     }
+}
+
+fn validate_bound_matvec_index(env: &mut Env<'_>, index: &IndexSpec) -> Result<(), Error> {
+    match index {
+        IndexSpec::Scalar(expr) => validate_bound_matvec_expr(env, expr),
+        IndexSpec::Full => Ok(()),
+        IndexSpec::Tuple(items) => {
+            for item in items {
+                validate_bound_matvec_index(env, item)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_bound_matvec_expr(env: &mut Env<'_>, expr: &Expr) -> Result<(), Error> {
+    match expr {
+        Expr::Param(_) | Expr::Data(_) | Expr::Const(_) => Ok(()),
+        Expr::Bin { left, right, .. } => {
+            validate_bound_matvec_expr(env, left)?;
+            validate_bound_matvec_expr(env, right)
+        }
+        Expr::Unary { operand, .. } => validate_bound_matvec_expr(env, operand),
+        Expr::MatVec { matrix, vector } => {
+            validate_bound_matvec_expr(env, matrix)?;
+            validate_bound_matvec_expr(env, vector)?;
+            let matrix = env.evaluate(matrix)?;
+            let vector = env.evaluate(vector)?;
+            env.tape.value(matrix).matvec(env.tape.value(vector))?;
+            Ok(())
+        }
+        Expr::Index { base, index } => {
+            validate_bound_matvec_expr(env, base)?;
+            validate_bound_matvec_index(env, index)
+        }
+        Expr::VectorScatter {
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        } => {
+            for child in [
+                length,
+                observed_idx,
+                observed_values,
+                missing_idx,
+                missing_values,
+            ] {
+                validate_bound_matvec_expr(env, child)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_bound_matvec_shapes(
+    meta: &ModelMeta,
+    sites: &[ResolvedStochasticSite],
+    data: &HashMap<String, DataValue>,
+    free: &[FreeSlot],
+) -> Result<(), Error> {
+    let mut tape = Tape::new();
+    let mut values = HashMap::new();
+    for slot in free {
+        let value = tape.constant(Tensor::zeros(&slot.shape));
+        values.insert(slot.name.clone(), value);
+    }
+    let mut env = Env {
+        tape,
+        values,
+        data,
+        data_vars: HashMap::new(),
+    };
+
+    for (_, param) in &meta.params {
+        for expr in distribution_exprs(&param.distribution) {
+            validate_bound_matvec_expr(&mut env, expr)?;
+        }
+    }
+    for observed in &meta.observed_nodes {
+        for expr in distribution_exprs(&observed.distribution) {
+            validate_bound_matvec_expr(&mut env, expr)?;
+        }
+    }
+    for (_, expr) in &meta.expressions {
+        validate_bound_matvec_expr(&mut env, expr)?;
+    }
+    for site in sites {
+        for expr in distribution_exprs(&site.distribution) {
+            validate_bound_matvec_expr(&mut env, expr)?;
+        }
+        validate_bound_matvec_expr(&mut env, &site.value)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,0 +1,194 @@
+use bayesite_core::error::{Error, ErrorKind};
+use bayesite_core::ir::{
+    decode_model, DataSchema, Distribution, Expr, ModelMeta, ResolvedData, ResolvedObserved,
+    ResolvedParam, Size,
+};
+use bayesite_core::json;
+use bayesite_core::model::{data_from_json, DataValue, Posterior};
+use bayesite_core::predictive::{simulate_prior_predictive, PriorPredictiveSettings};
+
+fn normal(loc: Expr) -> Distribution {
+    Distribution::Normal {
+        loc,
+        scale: Expr::Const(1.0),
+    }
+}
+
+fn matvec_model(matrix_rank: i64, vector_rank: i64) -> ModelMeta {
+    let mean = Expr::MatVec {
+        matrix: Box::new(Expr::Data("matrix".to_string())),
+        vector: Box::new(Expr::Data("vector".to_string())),
+    };
+    ModelMeta {
+        params: vec![(
+            "anchor".to_string(),
+            ResolvedParam {
+                distribution: normal(Expr::Const(0.0)),
+                constraint: None,
+                size: Size::Scalar,
+            },
+        )],
+        data: vec![
+            (
+                "matrix".to_string(),
+                ResolvedData {
+                    schema: DataSchema::Rank(matrix_rank),
+                },
+            ),
+            (
+                "vector".to_string(),
+                ResolvedData {
+                    schema: DataSchema::Rank(vector_rank),
+                },
+            ),
+        ],
+        observed_nodes: vec![ResolvedObserved {
+            name: "y".to_string(),
+            distribution: normal(mean),
+        }],
+        expressions: vec![],
+        free_values: vec![],
+        stochastic_sites: vec![],
+    }
+}
+
+fn value(shape: &[usize], values: &[f64]) -> DataValue {
+    DataValue {
+        shape: shape.to_vec(),
+        values: values.to_vec(),
+        integer: false,
+    }
+}
+
+fn posterior(
+    matrix_shape: &[usize],
+    matrix_values: &[f64],
+    vector_shape: &[usize],
+    vector_values: &[f64],
+    result_size: usize,
+) -> Result<Posterior, Error> {
+    Posterior::new(
+        matvec_model(matrix_shape.len() as i64, vector_shape.len() as i64),
+        vec![
+            ("matrix".to_string(), value(matrix_shape, matrix_values)),
+            ("vector".to_string(), value(vector_shape, vector_values)),
+            (
+                "y".to_string(),
+                value(&[result_size], &vec![0.0; result_size]),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn posterior_evaluates_matrix_vector_expression() {
+    let posterior = posterior(
+        &[2, 3],
+        &[1.0, 2.0, 3.0, -1.0, 0.5, 4.0],
+        &[3],
+        &[0.25, -0.5, 2.0],
+        2,
+    )
+    .unwrap();
+
+    let (logp, gradient) = posterior.logp_grad(&[0.2]).unwrap();
+
+    assert!(logp.is_finite());
+    assert_eq!(gradient.len(), 1);
+    assert!(gradient[0].is_finite());
+}
+
+#[test]
+fn posterior_rejects_matrix_rank_other_than_two() {
+    let error = posterior(&[3], &[1.0, 2.0, 3.0], &[3], &[1.0, 2.0, 3.0], 3).unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::DataShapeMismatch);
+    assert!(error.message.contains("matrix must be rank 2"));
+}
+
+#[test]
+fn posterior_rejects_vector_rank_other_than_one() {
+    let error = posterior(&[2, 2], &[1.0, 0.0, 0.0, 1.0], &[1, 2], &[1.0, 2.0], 2).unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::DataShapeMismatch);
+    assert!(error.message.contains("vector must be rank 1"));
+}
+
+#[test]
+fn posterior_rejects_contraction_dimension_mismatch() {
+    let error = posterior(&[2, 3], &[1.0; 6], &[4], &[1.0; 4], 2).unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::DataShapeMismatch);
+    assert!(error.message.contains("matrix shape [2, 3]"));
+    assert!(error.message.contains("vector shape [4]"));
+}
+
+#[test]
+fn prior_predictive_evaluates_matrix_vector_distribution_parameter() {
+    let fixture = json::parse(include_str!(
+        "../../../tests/golden_ir/fixtures/mvn_non_centered.json"
+    ))
+    .unwrap();
+    let meta = decode_model(fixture.get("ir").unwrap()).unwrap();
+    let mut data = data_from_json(fixture.get("data").unwrap()).unwrap();
+    data.retain(|(name, _)| name != "y");
+
+    let run = simulate_prior_predictive(meta, data, &PriorPredictiveSettings { num_draws: 3 }, 71)
+        .unwrap();
+
+    assert_eq!(run.draws.len(), 3);
+    assert_eq!(run.sites.len(), 2);
+    for draw in run.draws {
+        assert_eq!(draw.values[0].0, "z");
+        assert_eq!(draw.values[0].1.shape(), &[3]);
+        assert_eq!(draw.values[1].0, "y");
+        assert_eq!(draw.values[1].1.shape(), &[3]);
+        assert!(draw.values[1]
+            .1
+            .data()
+            .iter()
+            .all(|value| value.is_finite()));
+    }
+}
+
+#[test]
+fn prior_predictive_rejects_invalid_matrix_vector_shapes_before_drawing() {
+    let error = simulate_prior_predictive(
+        matvec_model(2, 1),
+        vec![
+            ("matrix".to_string(), value(&[2, 3], &[1.0; 6])),
+            ("vector".to_string(), value(&[4], &[1.0; 4])),
+        ],
+        &PriorPredictiveSettings { num_draws: 1 },
+        73,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::DataShapeMismatch);
+    assert!(error.message.contains("matrix shape [2, 3]"));
+    assert!(error.message.contains("vector shape [4]"));
+}
+
+#[test]
+fn posterior_accepts_zero_sized_matrix_vector_shapes() {
+    for (matrix_shape, vector_shape, result_size) in [
+        (vec![3, 0], vec![0], 3),
+        (vec![0, 3], vec![3], 0),
+        (vec![0, 0], vec![0], 0),
+    ] {
+        let matrix_values = vec![0.0; matrix_shape.iter().product()];
+        let vector_values = vec![0.0; vector_shape.iter().product()];
+        let posterior = posterior(
+            &matrix_shape,
+            &matrix_values,
+            &vector_shape,
+            &vector_values,
+            result_size,
+        )
+        .unwrap();
+
+        let (logp, gradient) = posterior.logp_grad(&[0.0]).unwrap();
+        assert!(logp.is_finite());
+        assert_eq!(gradient, vec![0.0]);
+    }
+}

@@ -17,6 +17,7 @@ Field kinds: `value` is a scalar, node, or null; `map` is an ordered
 | `BinOp` | `op` (value), `left` (value), `right` (value) |
 | `UnaryOp` | `function` (value), `operand` (value) |
 | `IndexOp` | `base` (value), `index` (value) |
+| `MatVecOp` | `matrix` (value), `vector` (value) |
 | `VectorScatterOp` | `length` (value), `observed_idx` (value), `observed_values` (value), `missing_idx` (value), `missing_values` (value) |
 | `ScalarIndex` | `expr` (value) |
 | `FullSlice` | — |

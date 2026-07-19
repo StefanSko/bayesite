@@ -4,7 +4,7 @@ This document specifies the serialized form of resolved model metadata
 (`ModelMeta`), the `bayeswire_ir` version 1 wire format. It is the normative
 cross-language contract between every producer and consumer in the bayes\*
 toolchain: the authoring frontend in this repository, sampling backends such
-as jaxstanv5 (Python/JAX) and bayesite (Rust), and any tooling or caches in
+as Bayesjax (Python/JAX) and Bayesite (Rust), and any tooling or caches in
 between. The reference implementation lives in `bayeswire.ir`; the built-in
 tag and field inventory is generated into [`ir-v1-tags.md`](ir-v1-tags.md)
 and enforced by tests. Downstream repositories vendor these documents from a
@@ -110,6 +110,28 @@ names, not hierarchical IR nodes.
 - `expressions` records named derived expressions for metadata, inspection,
   and validation; stochastic-site expressions are self-contained.
 
+## Expression operation semantics
+
+`BinOp` remains elementwise and supports only `+`, `-`, `*`, and `/` with
+backend array broadcasting. `MatVecOp` is deliberately narrower than a general
+matrix multiplication operation:
+
+- `matrix` must evaluate to an exact rank-2 value with logical shape `[m, n]`;
+- `vector` must evaluate to an exact rank-1 value with logical shape `[n]`;
+- the result has logical shape `[m]` and element `i` is
+  `sum(matrix[i, j] * vector[j] for j in 0..n)`;
+- no operand broadcasting, batch dimensions, implicit transposition,
+  vector-matrix product, or matrix-matrix product is defined;
+- zero-sized dimensions are valid under the same rules, including an empty
+  contraction `[m, 0] @ [0]` whose result is the length-`m` additive identity.
+
+Consumers validate these ranks and the shared contraction dimension during
+binding, before numerical evaluation. An incompatible shape is a bind error,
+not permission to inherit broader semantics from a backend array library.
+Logical indexing determines the operation; storage layout is not part of the
+wire contract. The conformance tolerance policy covers ordinary cross-language
+floating-point reduction differences.
+
 ## Canonical bytes and hashing
 
 The canonical serialization is:
@@ -155,8 +177,8 @@ The corpus (`src/bayeswire/corpus/`, shipped as package data) holds the golden d
 hashes (`hashes.json`), and cross-backend evaluation fixtures
 (`fixtures/<model>.json`) bundling each IR document with concrete bind data
 and log-density plus gradient values at deterministic unconstrained points.
-The recorded values are **JAX-oracle outputs**: produced by the jaxstanv5
-backend in float64. Fixture file layout is a corpus convention, not part of
+The recorded values are **JAX-oracle outputs** produced by Bayesjax in float64.
+Fixture file layout is a corpus convention, not part of
 this wire format.
 
 Producers conform by reproducing the corpus documents byte-for-byte from the
@@ -166,7 +188,7 @@ and reproducing the recorded evaluations within this tolerance policy:
 - **float64 evaluation** (e.g. bayesite): log density within relative
   tolerance `1e-12`, gradient components within relative tolerance `1e-10`,
   each with an absolute magnitude floor of `1e-8` on the reference value.
-- **float32 evaluation** (e.g. jaxstanv5's default test precision): log
+- **float32 evaluation** (e.g. Bayesjax at float32 precision): log
   density and gradient components within relative and absolute tolerance
   `1e-3`.
 
@@ -199,6 +221,17 @@ fit to its exact model and data bytes is specified in
 [`model-data-fingerprint-v1.md`](model-data-fingerprint-v1.md).
 
 ## Changelog
+
+### 1 — narrow matrix-vector expression operation
+
+`bayeswire_ir` stays at 1: this is an additive built-in `MatVecOp` tag with the
+fields `matrix` and `vector`. Existing tags, field lists, and encoding rules are
+unchanged, and all previously committed corpus documents remain byte-identical.
+The operation is exactly rank-2 `[m, n]` by rank-1 `[n]` to rank-1 `[m]`; it does
+not introduce general matrix multiplication or broadcasting. Python producers
+may author it with `matrix @ vector`. Consumers predating the additive tag
+continue to reject documents that use it through `UnknownNodeTag` and must be
+upgraded before those documents are executed.
 
 ### 1 — authoring-time complete prior replacement
 

@@ -1,7 +1,7 @@
 //! IR v1 decoder conformance against the golden corpus and error taxonomy.
 
 use bayesite_core::error::ErrorKind;
-use bayesite_core::ir::{decode_model, Constraint, Size};
+use bayesite_core::ir::{decode_model, Constraint, Distribution, Expr, Size};
 use bayesite_core::json;
 
 fn fixture(name: &str) -> json::Value {
@@ -24,10 +24,11 @@ fn golden_document(name: &str) -> json::Value {
     json::parse(&text).expect("golden document JSON parses")
 }
 
-const DECODABLE_FIXTURES: [&str; 6] = [
+const DECODABLE_FIXTURES: [&str; 7] = [
     "bounded_rates",
     "eight_schools_non_centered",
     "linear_regression",
+    "mvn_non_centered",
     "ordinal_regression",
     "partially_observed_mvn",
     "varying_intercepts_poisson",
@@ -205,6 +206,41 @@ fn vector_bounds_rejects_non_data_ref_bound() {
     assert_eq!(err.kind, ErrorKind::MalformedDocument);
     assert!(err.message.contains("lower"), "message: {}", err.message);
     assert!(err.message.contains("DataRef"), "message: {}", err.message);
+}
+
+#[test]
+fn decodes_matrix_vector_expression_with_exact_fields() {
+    let product = r#"{"node": "MatVecOp",
+        "matrix": {"node": "DataRef", "name": "matrix"},
+        "vector": {"node": "ParamRef", "name": "vector"}}"#;
+    let entry = NORMAL_PARAM.replace(r#"{"node": "ConstNode", "value": 0.0}"#, product);
+    let doc = json::parse(&minimal_model(&entry)).unwrap();
+    let meta = decode_model(&doc).unwrap();
+
+    let Distribution::Normal { loc, .. } = &meta.params[0].1.distribution else {
+        panic!("parameter must retain its Normal distribution")
+    };
+    let Expr::MatVec { matrix, vector } = loc else {
+        panic!("Normal loc must decode as MatVec")
+    };
+    assert_eq!(matrix.as_ref(), &Expr::Data("matrix".to_string()));
+    assert_eq!(vector.as_ref(), &Expr::Param("vector".to_string()));
+}
+
+#[test]
+fn matrix_vector_expression_rejects_missing_vector_field() {
+    let product = r#"{"node": "MatVecOp",
+        "matrix": {"node": "DataRef", "name": "matrix"}}"#;
+    let entry = NORMAL_PARAM.replace(r#"{"node": "ConstNode", "value": 0.0}"#, product);
+    let doc = json::parse(&minimal_model(&entry)).unwrap();
+    let error = decode_model(&doc).unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::MalformedDocument);
+    assert!(
+        error.message.contains("vector"),
+        "message: {}",
+        error.message
+    );
 }
 
 #[test]
