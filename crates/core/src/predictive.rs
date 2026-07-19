@@ -18,7 +18,9 @@ use crate::ir::{
     Size, UnaryFn,
 };
 use crate::json::{self, Value};
-use crate::model::{resolve_constraint, DataValue, Posterior, ResolvedConstraint};
+use crate::model::{
+    resolve_constraint, validate_bound_matvec_shapes, DataValue, Posterior, ResolvedConstraint,
+};
 use crate::rng::Xoshiro256PlusPlus;
 use crate::special;
 use crate::tensor::{gather_map, IndexAtom, Tensor};
@@ -1632,6 +1634,11 @@ pub fn simulate_prior_predictive(
     }
     let data = bind_declared_data(&meta, data)?;
     let free_specs = free_specs(&meta, &data)?;
+    let value_shapes = free_specs
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.shape.clone()))
+        .collect::<HashMap<_, _>>();
+    validate_bound_matvec_shapes(&meta, &data, &value_shapes)?;
     let sites = meta.resolved_stochastic_sites();
     validate_prior_predictive_site_inventory(&meta, &sites)?;
     let site_indices = (0..sites.len()).collect::<Vec<_>>();
@@ -2017,6 +2024,11 @@ pub fn simulate_data_from_truth(
     let output_declared_data = declared_data.clone();
     let data = bind_declared_data(&meta, declared_data)?;
     let free_specs = free_specs(&meta, &data)?;
+    let value_shapes = free_specs
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.shape.clone()))
+        .collect::<HashMap<_, _>>();
+    validate_bound_matvec_shapes(&meta, &data, &value_shapes)?;
     let free_order = meta
         .resolved_free_values()
         .into_iter()

@@ -623,7 +623,11 @@ impl Posterior {
             });
         }
 
-        validate_bound_matvec_shapes(&meta, &sites, &data_map, &free)?;
+        let value_shapes = free
+            .iter()
+            .map(|slot| (slot.name.clone(), slot.shape.clone()))
+            .collect::<HashMap<_, _>>();
+        validate_bound_matvec_shapes(&meta, &data_map, &value_shapes)?;
 
         Ok(Posterior {
             free,
@@ -1565,6 +1569,50 @@ impl<'a> Env<'a> {
     }
 }
 
+fn index_values_are_available(env: &Env<'_>, index: &IndexSpec) -> bool {
+    match index {
+        IndexSpec::Scalar(expr) => expr_values_are_available(env, expr),
+        IndexSpec::Full => true,
+        IndexSpec::Tuple(items) => items
+            .iter()
+            .all(|item| index_values_are_available(env, item)),
+    }
+}
+
+fn expr_values_are_available(env: &Env<'_>, expr: &Expr) -> bool {
+    match expr {
+        Expr::Param(name) | Expr::Data(name) => {
+            env.data.contains_key(name) || env.values.contains_key(name)
+        }
+        Expr::Const(_) => true,
+        Expr::Bin { left, right, .. } => {
+            expr_values_are_available(env, left) && expr_values_are_available(env, right)
+        }
+        Expr::Unary { operand, .. } => expr_values_are_available(env, operand),
+        Expr::MatVec { matrix, vector } => {
+            expr_values_are_available(env, matrix) && expr_values_are_available(env, vector)
+        }
+        Expr::Index { base, index } => {
+            expr_values_are_available(env, base) && index_values_are_available(env, index)
+        }
+        Expr::VectorScatter {
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        } => [
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        ]
+        .into_iter()
+        .all(|child| expr_values_are_available(env, child)),
+    }
+}
+
 fn validate_bound_matvec_index(env: &mut Env<'_>, index: &IndexSpec) -> Result<(), Error> {
     match index {
         IndexSpec::Scalar(expr) => validate_bound_matvec_expr(env, expr),
@@ -1589,9 +1637,11 @@ fn validate_bound_matvec_expr(env: &mut Env<'_>, expr: &Expr) -> Result<(), Erro
         Expr::MatVec { matrix, vector } => {
             validate_bound_matvec_expr(env, matrix)?;
             validate_bound_matvec_expr(env, vector)?;
-            let matrix = env.evaluate(matrix)?;
-            let vector = env.evaluate(vector)?;
-            env.tape.value(matrix).matvec(env.tape.value(vector))?;
+            if expr_values_are_available(env, matrix) && expr_values_are_available(env, vector) {
+                let matrix = env.evaluate(matrix)?;
+                let vector = env.evaluate(vector)?;
+                env.tape.value(matrix).matvec(env.tape.value(vector))?;
+            }
             Ok(())
         }
         Expr::Index { base, index } => {
@@ -1619,17 +1669,16 @@ fn validate_bound_matvec_expr(env: &mut Env<'_>, expr: &Expr) -> Result<(), Erro
     }
 }
 
-fn validate_bound_matvec_shapes(
+pub(crate) fn validate_bound_matvec_shapes(
     meta: &ModelMeta,
-    sites: &[ResolvedStochasticSite],
     data: &HashMap<String, DataValue>,
-    free: &[FreeSlot],
+    value_shapes: &HashMap<String, Vec<usize>>,
 ) -> Result<(), Error> {
     let mut tape = Tape::new();
     let mut values = HashMap::new();
-    for slot in free {
-        let value = tape.constant(Tensor::zeros(&slot.shape));
-        values.insert(slot.name.clone(), value);
+    for (name, shape) in value_shapes {
+        let value = tape.constant(Tensor::zeros(shape));
+        values.insert(name.clone(), value);
     }
     let mut env = Env {
         tape,
@@ -1651,7 +1700,7 @@ fn validate_bound_matvec_shapes(
     for (_, expr) in &meta.expressions {
         validate_bound_matvec_expr(&mut env, expr)?;
     }
-    for site in sites {
+    for site in meta.resolved_stochastic_sites() {
         for expr in distribution_exprs(&site.distribution) {
             validate_bound_matvec_expr(&mut env, expr)?;
         }

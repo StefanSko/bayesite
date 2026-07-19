@@ -5,7 +5,9 @@ use bayesite_core::ir::{
 };
 use bayesite_core::json;
 use bayesite_core::model::{data_from_json, DataValue, Posterior};
-use bayesite_core::predictive::{simulate_prior_predictive, PriorPredictiveSettings};
+use bayesite_core::predictive::{
+    simulate_data_from_truth, simulate_prior_predictive, PriorPredictiveSettings,
+};
 
 fn normal(loc: Expr) -> Distribution {
     Distribution::Normal {
@@ -50,6 +52,17 @@ fn matvec_model(matrix_rank: i64, vector_rank: i64) -> ModelMeta {
         free_values: vec![],
         stochastic_sites: vec![],
     }
+}
+
+fn invalid_unused_matvec_model() -> ModelMeta {
+    let mut meta = matvec_model(2, 1);
+    let invalid = match &meta.observed_nodes[0].distribution {
+        Distribution::Normal { loc, .. } => loc.clone(),
+        _ => unreachable!("test model uses Normal"),
+    };
+    meta.expressions.push(("invalid".to_string(), invalid));
+    meta.observed_nodes[0].distribution = normal(Expr::Param("anchor".to_string()));
+    meta
 }
 
 fn value(shape: &[usize], values: &[f64]) -> DataValue {
@@ -167,6 +180,34 @@ fn prior_predictive_rejects_invalid_matrix_vector_shapes_before_drawing() {
     assert_eq!(error.kind, ErrorKind::DataShapeMismatch);
     assert!(error.message.contains("matrix shape [2, 3]"));
     assert!(error.message.contains("vector shape [4]"));
+}
+
+#[test]
+fn forward_bind_paths_reject_invalid_unused_matrix_vector_expression() {
+    let data = vec![
+        ("matrix".to_string(), value(&[2, 3], &[1.0; 6])),
+        ("vector".to_string(), value(&[4], &[1.0; 4])),
+    ];
+
+    let prior_error = simulate_prior_predictive(
+        invalid_unused_matvec_model(),
+        data.clone(),
+        &PriorPredictiveSettings { num_draws: 1 },
+        79,
+    )
+    .unwrap_err();
+    assert_eq!(prior_error.kind, ErrorKind::DataShapeMismatch);
+    assert!(prior_error.message.contains("matrix shape [2, 3]"));
+
+    let simulate_error = simulate_data_from_truth(
+        invalid_unused_matvec_model(),
+        data,
+        vec![("anchor".to_string(), value(&[], &[0.0]))],
+        83,
+    )
+    .unwrap_err();
+    assert_eq!(simulate_error.kind, ErrorKind::DataShapeMismatch);
+    assert!(simulate_error.message.contains("vector shape [4]"));
 }
 
 #[test]
