@@ -224,7 +224,35 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
                     .unwrap_err();
             assert_eq!(forged_error.kind, ErrorKind::MalformedDocument);
             assert!(forged_error.message.contains("parameter_count"));
+
+            let mut duplicate_lines = lines.clone();
+            duplicate_lines[forged_index] = duplicate_lines[forged_index].replacen(
+                "\"parameter_count\":1",
+                "\"parameter_count\":1,\"parameter_count\":0",
+                1,
+            );
+            let duplicate_fit = duplicate_lines.join("\n") + "\n";
+            let duplicate_error =
+                simulate_posterior_predictive(meta.clone(), full_data.clone(), &duplicate_fit, 99)
+                    .unwrap_err();
+            assert_eq!(duplicate_error.kind, ErrorKind::MalformedDocument);
+            assert!(duplicate_error
+                .message
+                .contains("duplicate parameter_count"));
         }
+        let mut duplicate_trailer_params = lines.clone();
+        let trailer_index = duplicate_trailer_params.len() - 1;
+        duplicate_trailer_params[trailer_index] = duplicate_trailer_params[trailer_index].replacen(
+            "\"params\":1",
+            "\"params\":1,\"params\":0",
+            1,
+        );
+        let duplicate_trailer_fit = duplicate_trailer_params.join("\n") + "\n";
+        let duplicate_trailer_error =
+            simulate_posterior_predictive(meta.clone(), full_data, &duplicate_trailer_fit, 99)
+                .unwrap_err();
+        assert_eq!(duplicate_trailer_error.kind, ErrorKind::MalformedDocument);
+        assert!(duplicate_trailer_error.message.contains("duplicate params"));
 
         let prior = simulate_prior_predictive(
             meta,
@@ -327,13 +355,20 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
         Some(&[][..])
     );
     let replicated = simulate_posterior_predictive(
-        parameterless_meta,
-        parameterless_data,
+        parameterless_meta.clone(),
+        parameterless_data.clone(),
         &parameterless_fit,
         113,
     )
     .unwrap();
     assert_eq!(replicated.draws.len(), 4);
+
+    let malformed_fit = parameterless_fit.replacen("\"values\":{}", "\"values\":null", 1);
+    let malformed_error =
+        simulate_posterior_predictive(parameterless_meta, parameterless_data, &malformed_fit, 127)
+            .unwrap_err();
+    assert_eq!(malformed_error.kind, ErrorKind::MalformedDocument);
+    assert!(malformed_error.message.contains("values object"));
 }
 
 #[test]

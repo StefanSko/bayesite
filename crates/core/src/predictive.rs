@@ -2354,13 +2354,34 @@ fn fit_shape_size(shape: &[usize], name: &str) -> Result<usize, Error> {
     Ok(size)
 }
 
+fn unique_fit_field<'a>(
+    document: &'a Value,
+    field: &str,
+    context: &str,
+) -> Result<Option<&'a Value>, Error> {
+    let Value::Object(fields) = document else {
+        return Err(malformed_fit(format!("fit {context} must be an object")));
+    };
+    let mut matches = fields
+        .iter()
+        .filter(|(name, _)| name == field)
+        .map(|(_, value)| value);
+    let first = matches.next();
+    if matches.next().is_some() {
+        return Err(malformed_fit(format!(
+            "fit {context} has duplicate {field} fields"
+        )));
+    }
+    Ok(first)
+}
+
 fn validate_optional_fit_parameter_count(
     document: &Value,
     field: &str,
     expected: usize,
     context: &str,
 ) -> Result<(), Error> {
-    let Some(value) = document.get(field) else {
+    let Some(value) = unique_fit_field(document, field, context)? else {
         return Ok(());
     };
     let count = value.as_i64().ok_or_else(|| {
@@ -2387,8 +2408,7 @@ fn parse_fit_params(header: &Value) -> Result<Vec<FitParamSpec>, Error> {
             "fit header artifact_kind must be \"posterior_draws\"; pass output from `bayesite sample`",
         ));
     }
-    let params = header
-        .get("params")
+    let params = unique_fit_field(header, "params", "header")?
         .and_then(Value::as_array)
         .ok_or_else(|| malformed_fit("fit header needs a params array from `bayesite sample`"))?;
     let mut out = Vec::with_capacity(params.len());
@@ -2483,17 +2503,22 @@ fn parse_fit_draw_line(
     if draw < 0 {
         return Err(malformed_fit("fit draw line draw must be non-negative"));
     }
-    let values = line
-        .get("values")
+    let values = unique_fit_field(line, "values", "draw line")?
         .ok_or_else(|| malformed_fit("fit draw line needs a values object"))?;
+    let Value::Object(entries) = values else {
+        return Err(malformed_fit("fit draw line needs a values object"));
+    };
+    if entries.len() != specs.len() {
+        return Err(malformed_fit(
+            "fit draw values must exactly match the params array",
+        ));
+    }
     let mut parsed = Vec::with_capacity(specs.len());
     for spec in specs {
-        parsed.push(parse_fit_param_value(
-            values.get(&spec.name).ok_or_else(|| {
-                malformed_fit(format!("fit draw line is missing value for {}", spec.name))
-            })?,
-            spec,
-        )?);
+        let value = unique_fit_field(values, &spec.name, "draw values")?.ok_or_else(|| {
+            malformed_fit(format!("fit draw line is missing value for {}", spec.name))
+        })?;
+        parsed.push(parse_fit_param_value(value, spec)?);
     }
     Ok(FitDraw {
         draw_index,
