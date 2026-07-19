@@ -1,14 +1,14 @@
 use bayesite_core::error::{Error, ErrorKind};
 use bayesite_core::ir::{
-    decode_model, DataSchema, Distribution, Expr, ModelMeta, ResolvedData, ResolvedObserved,
-    ResolvedParam, Size,
+    decode_model, Constraint, DataSchema, Distribution, Expr, ModelMeta, ResolvedData,
+    ResolvedObserved, ResolvedParam, Size,
 };
 use bayesite_core::json;
 use bayesite_core::model::{data_from_json, DataValue, Posterior};
 use bayesite_core::predictive::{
     simulate_data_from_truth, simulate_prior_predictive, PriorPredictiveSettings,
 };
-use bayesite_core::protocol::ndjson_lines;
+use bayesite_core::protocol::{diagnose_ndjson, ndjson_lines};
 use bayesite_core::sampler::{sample, Settings};
 
 fn normal(loc: Expr) -> Distribution {
@@ -191,6 +191,13 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
                 .expect("draw contains vector parameter z");
             assert!(z.is_empty());
         }
+        let fit = lines.join("\n") + "\n";
+        let report = diagnose_ndjson(&fit).unwrap();
+        let report = json::parse(&report).unwrap();
+        assert!(matches!(
+            report.get("rhat").and_then(|rhat| rhat.get("z")),
+            Some(json::Value::Null)
+        ));
 
         let prior = simulate_prior_predictive(
             meta,
@@ -203,6 +210,30 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
         assert!(prior.draws[0].values[0].1.data().is_empty());
         assert_eq!(prior.draws[0].values[1].1.shape(), &[1]);
     }
+
+    let mut ordered_meta = zero_free_vector_matvec_model(Size::Fixed(0), false);
+    ordered_meta.params[0].1.constraint = Some(Constraint::Ordered);
+    let ordered = Posterior::new(
+        ordered_meta,
+        vec![
+            ("matrix".to_string(), value(&[1, 0], &[])),
+            ("y".to_string(), value(&[1], &[0.0])),
+        ],
+    )
+    .unwrap();
+    let ordered_chain = sample(
+        &ordered,
+        &Settings {
+            num_warmup: 4,
+            num_draws: 4,
+            max_treedepth: 4,
+            ..Settings::default()
+        },
+        107,
+        0,
+    )
+    .unwrap();
+    assert!(ordered_chain.draws.iter().all(Vec::is_empty));
 }
 
 #[test]

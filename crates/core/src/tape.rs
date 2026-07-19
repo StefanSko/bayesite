@@ -189,11 +189,13 @@ fn eval_op(nodes: &[Node], op: &Op) -> Tensor {
         Op::OrderedInverse(a) => {
             let y = value(a);
             let mut data = Vec::with_capacity(y.len());
-            let mut acc = y.data()[0];
-            data.push(acc);
-            for &yi in &y.data()[1..] {
-                acc += yi.exp();
+            if let Some((&first, tail)) = y.data().split_first() {
+                let mut acc = first;
                 data.push(acc);
+                for &yi in tail {
+                    acc += yi.exp();
+                    data.push(acc);
+                }
             }
             Tensor::from_vec(vec![y.len()], data)
         }
@@ -937,7 +939,9 @@ impl Tape {
                     suffix[i] = acc;
                 }
                 let mut grad = vec![0.0; n];
-                grad[0] = suffix[0];
+                if n > 0 {
+                    grad[0] = suffix[0];
+                }
                 for k in 1..n {
                     grad[k] = y.data()[k].exp() * suffix[k];
                 }

@@ -1253,8 +1253,12 @@ fn apply_constraint(
             }
             let constrained = tape.ordered_inverse(leaf);
             let n = tape.value(leaf).len();
-            let tail = tape.gather(leaf, slice_last_map(&[n], 1, n));
-            Ok((constrained, Some(tail)))
+            let log_jacobian = if n == 0 {
+                None
+            } else {
+                Some(tape.gather(leaf, slice_last_map(&[n], 1, n)))
+            };
+            Ok((constrained, log_jacobian))
         }
         Some(ResolvedConstraint::VectorBounds { lower, upper }) => {
             vector_bounds_constraint(tape, leaf, lower.as_deref(), upper.as_deref())

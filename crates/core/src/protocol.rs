@@ -1996,11 +1996,13 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         .iter()
         .map(|spec| vec![vec![Vec::new(); chain_ids.len()]; spec.size])
         .collect();
+    let mut draw_counts_by_chain = vec![0usize; chain_ids.len()];
     for draw in &draws {
         let chain = chain_ids
             .iter()
             .position(|&id| id == draw.chain)
             .expect("chain id was registered");
+        draw_counts_by_chain[chain] += 1;
         for (param_idx, values) in draw.values.iter().enumerate() {
             for (coord, &value) in values.iter().enumerate() {
                 series_by_param[param_idx][coord][chain].push(value);
@@ -2008,7 +2010,7 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
         }
     }
 
-    let draws_per_chain = series_by_param[0][0][0].len();
+    let draws_per_chain = draw_counts_by_chain[0];
     if draws_per_chain < 4 {
         return Err(invalid_fit(
             "diagnostics need at least 4 draws per chain; rerun `bayesite sample --draws 4` or more",
@@ -2019,13 +2021,13 @@ pub fn diagnose_ndjson(text: &str) -> Result<String, Error> {
             "fit header settings.num_draws must match draw count per chain; rerun `bayesite sample` to completion",
         ));
     }
-    for chain_series in &series_by_param[0][0] {
-        let len = chain_series.len();
-        if len != draws_per_chain {
-            return Err(invalid_fit(
-                "all chains must have the same number of draws for diagnostics",
-            ));
-        }
+    if draw_counts_by_chain
+        .iter()
+        .any(|&count| count != draws_per_chain)
+    {
+        return Err(invalid_fit(
+            "all chains must have the same number of draws for diagnostics",
+        ));
     }
 
     let mut rhat_entries = Vec::with_capacity(specs.len());
