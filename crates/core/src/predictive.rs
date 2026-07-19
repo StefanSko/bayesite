@@ -244,6 +244,30 @@ fn free_specs(
     Ok(specs)
 }
 
+fn validate_free_spec_matvec_shapes(
+    meta: &ModelMeta,
+    data: &HashMap<String, DataValue>,
+    free_specs: &HashMap<String, FreeSpec>,
+) -> Result<(), Error> {
+    let value_shapes = free_specs
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.shape.clone()))
+        .collect::<HashMap<_, _>>();
+    validate_bound_matvec_shapes(meta, data, &value_shapes)
+}
+
+fn validate_forward_matvec_shapes(
+    meta: &ModelMeta,
+    data: &HashMap<String, DataValue>,
+    values: &HashMap<String, Tensor>,
+) -> Result<(), Error> {
+    let value_shapes = values
+        .iter()
+        .map(|(name, value)| (name.clone(), value.shape().to_vec()))
+        .collect::<HashMap<_, _>>();
+    validate_bound_matvec_shapes(meta, data, &value_shapes)
+}
+
 fn claim_unique_generative_site(
     sites: &[ResolvedStochasticSite],
     claimed: &mut [bool],
@@ -1634,11 +1658,7 @@ pub fn simulate_prior_predictive(
     }
     let data = bind_declared_data(&meta, data)?;
     let free_specs = free_specs(&meta, &data)?;
-    let value_shapes = free_specs
-        .iter()
-        .map(|(name, spec)| (name.clone(), spec.shape.clone()))
-        .collect::<HashMap<_, _>>();
-    validate_bound_matvec_shapes(&meta, &data, &value_shapes)?;
+    validate_free_spec_matvec_shapes(&meta, &data, &free_specs)?;
     let sites = meta.resolved_stochastic_sites();
     validate_prior_predictive_site_inventory(&meta, &sites)?;
     let site_indices = (0..sites.len()).collect::<Vec<_>>();
@@ -1848,6 +1868,7 @@ pub fn simulate_prior_predictive(
                 }
             }
         }
+        validate_forward_matvec_shapes(&meta, &data, &env.values)?;
         let mut generated = execution_order
             .iter()
             .copied()
@@ -2024,11 +2045,7 @@ pub fn simulate_data_from_truth(
     let output_declared_data = declared_data.clone();
     let data = bind_declared_data(&meta, declared_data)?;
     let free_specs = free_specs(&meta, &data)?;
-    let value_shapes = free_specs
-        .iter()
-        .map(|(name, spec)| (name.clone(), spec.shape.clone()))
-        .collect::<HashMap<_, _>>();
-    validate_bound_matvec_shapes(&meta, &data, &value_shapes)?;
+    validate_free_spec_matvec_shapes(&meta, &data, &free_specs)?;
     let free_order = meta
         .resolved_free_values()
         .into_iter()
@@ -2085,6 +2102,8 @@ pub fn simulate_data_from_truth(
             ),
         ));
     }
+
+    validate_forward_matvec_shapes(&meta, &data, &env.values)?;
 
     // Preserve validation of ignored, non-assignable factor expressions after
     // every directly generated data value is available.
@@ -3528,6 +3547,7 @@ fn simulate_generation_outcomes(
             ),
         ));
     }
+    validate_forward_matvec_shapes(meta, data, &env.values)?;
     if outcomes.is_empty() {
         return Err(invalid(
             "generate needs at least one directly assignable observed outcome",
@@ -3558,6 +3578,7 @@ pub(crate) fn fixed_generation_pairs(
     }
     let data = generation_design(&meta, design)?;
     let free_specs = free_specs(&meta, &data)?;
+    validate_free_spec_matvec_shapes(&meta, &data, &free_specs)?;
     let free_order = meta
         .resolved_free_values()
         .into_iter()
@@ -3595,6 +3616,7 @@ pub(crate) fn model_prior_generation_pairs(
     validate_generation_model(&meta)?;
     let data = generation_design(&meta, design)?;
     let free_specs = free_specs(&meta, &data)?;
+    validate_free_spec_matvec_shapes(&meta, &data, &free_specs)?;
     let sites = meta.resolved_stochastic_sites();
     let site_indices = (0..sites.len()).collect::<Vec<_>>();
     let execution_order = stable_site_order(
@@ -3668,6 +3690,7 @@ pub(crate) fn model_prior_generation_pairs(
                 _ => unreachable!("generation model validation rejects non-assignable sites"),
             }
         }
+        validate_forward_matvec_shapes(&meta, &data, &env.values)?;
         let parameters = meta
             .params
             .iter()
@@ -3731,6 +3754,7 @@ pub(crate) fn posterior_generation_pairs(
     )?;
     let data = generation_design(&meta, design)?;
     let free_specs = free_specs(&meta, &data)?;
+    validate_free_spec_matvec_shapes(&meta, &data, &free_specs)?;
     for (spec, (name, free)) in fit.params.iter().zip(meta.resolved_free_values()) {
         let shape = match free.size {
             Size::Scalar => Vec::new(),

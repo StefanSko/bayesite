@@ -54,6 +54,18 @@ fn matvec_model(matrix_rank: i64, vector_rank: i64) -> ModelMeta {
     }
 }
 
+fn invalid_generated_matvec_model() -> ModelMeta {
+    let mut meta = invalid_unused_matvec_model();
+    meta.expressions = vec![(
+        "invalid_generated".to_string(),
+        Expr::MatVec {
+            matrix: Box::new(Expr::Data("y".to_string())),
+            vector: Box::new(Expr::Data("vector".to_string())),
+        },
+    )];
+    meta
+}
+
 fn invalid_unused_matvec_model() -> ModelMeta {
     let mut meta = matvec_model(2, 1);
     let invalid = match &meta.observed_nodes[0].distribution {
@@ -208,6 +220,34 @@ fn forward_bind_paths_reject_invalid_unused_matrix_vector_expression() {
     .unwrap_err();
     assert_eq!(simulate_error.kind, ErrorKind::DataShapeMismatch);
     assert!(simulate_error.message.contains("vector shape [4]"));
+}
+
+#[test]
+fn forward_paths_complete_deferred_generated_value_validation() {
+    let data = vec![
+        ("matrix".to_string(), value(&[2, 3], &[1.0; 6])),
+        ("vector".to_string(), value(&[3], &[1.0; 3])),
+    ];
+
+    let prior_error = simulate_prior_predictive(
+        invalid_generated_matvec_model(),
+        data.clone(),
+        &PriorPredictiveSettings { num_draws: 1 },
+        89,
+    )
+    .unwrap_err();
+    assert_eq!(prior_error.kind, ErrorKind::DataShapeMismatch);
+    assert!(prior_error.message.contains("matrix must be rank 2"));
+
+    let simulate_error = simulate_data_from_truth(
+        invalid_generated_matvec_model(),
+        data,
+        vec![("anchor".to_string(), value(&[], &[0.0]))],
+        97,
+    )
+    .unwrap_err();
+    assert_eq!(simulate_error.kind, ErrorKind::DataShapeMismatch);
+    assert!(simulate_error.message.contains("matrix must be rank 2"));
 }
 
 #[test]
