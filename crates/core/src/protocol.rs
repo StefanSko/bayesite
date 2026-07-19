@@ -303,7 +303,7 @@ pub fn ndjson_lines_with_model_data_fingerprint(
     let mut rhat_entries = Vec::new();
     let mut ess_entries = Vec::new();
     for (param_idx, (name, shape)) in packing.iter().enumerate() {
-        let size: usize = shape.iter().product::<usize>().max(1);
+        let size: usize = shape.iter().product::<usize>();
         let mut worst_rhat = f64::NEG_INFINITY;
         let mut worst_ess = f64::INFINITY;
         for coord in 0..size {
@@ -773,7 +773,6 @@ fn parse_param_specs(header: &Value) -> Result<Vec<ParamSpec>, Error> {
                 )));
             }
         }
-        size = size.max(1);
         specs.push(ParamSpec { name, shape, size });
     }
     if specs.is_empty() {

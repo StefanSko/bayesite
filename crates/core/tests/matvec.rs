@@ -8,6 +8,8 @@ use bayesite_core::model::{data_from_json, DataValue, Posterior};
 use bayesite_core::predictive::{
     simulate_data_from_truth, simulate_prior_predictive, PriorPredictiveSettings,
 };
+use bayesite_core::protocol::ndjson_lines;
+use bayesite_core::sampler::{sample, Settings};
 
 fn normal(loc: Expr) -> Distribution {
     Distribution::Normal {
@@ -44,6 +46,48 @@ fn matvec_model(matrix_rank: i64, vector_rank: i64) -> ModelMeta {
                 },
             ),
         ],
+        observed_nodes: vec![ResolvedObserved {
+            name: "y".to_string(),
+            distribution: normal(mean),
+        }],
+        expressions: vec![],
+        free_values: vec![],
+        stochastic_sites: vec![],
+    }
+}
+
+fn zero_free_vector_matvec_model(size: Size, data_dependent: bool) -> ModelMeta {
+    let mean = Expr::MatVec {
+        matrix: Box::new(Expr::Data("matrix".to_string())),
+        vector: Box::new(Expr::Param("z".to_string())),
+    };
+    let mut data = vec![(
+        "matrix".to_string(),
+        ResolvedData {
+            schema: DataSchema::Rank(2),
+        },
+    )];
+    if data_dependent {
+        data.insert(
+            0,
+            (
+                "n".to_string(),
+                ResolvedData {
+                    schema: DataSchema::Rank(0),
+                },
+            ),
+        );
+    }
+    ModelMeta {
+        params: vec![(
+            "z".to_string(),
+            ResolvedParam {
+                distribution: normal(Expr::Const(0.0)),
+                constraint: None,
+                size,
+            },
+        )],
+        data,
         observed_nodes: vec![ResolvedObserved {
             name: "y".to_string(),
             distribution: normal(mean),
@@ -103,6 +147,62 @@ fn posterior(
             ),
         ],
     )
+}
+
+#[test]
+fn zero_length_free_vector_supports_empty_matvec_contraction() {
+    for (size, data_dependent) in [(Size::Fixed(0), false), (Size::Data("n".to_string()), true)] {
+        let meta = zero_free_vector_matvec_model(size, data_dependent);
+        let mut full_data = vec![
+            ("matrix".to_string(), value(&[1, 0], &[])),
+            ("y".to_string(), value(&[1], &[0.0])),
+        ];
+        let mut declared_data = vec![("matrix".to_string(), value(&[1, 0], &[]))];
+        if data_dependent {
+            let n = DataValue {
+                shape: Vec::new(),
+                values: vec![0.0],
+                integer: true,
+            };
+            full_data.insert(0, ("n".to_string(), n.clone()));
+            declared_data.insert(0, ("n".to_string(), n));
+        }
+
+        let posterior = Posterior::new(meta.clone(), full_data).unwrap();
+        let (logp, gradient) = posterior.logp_grad(&[]).unwrap();
+        assert!(logp.is_finite());
+        assert!(gradient.is_empty());
+
+        let settings = Settings {
+            num_warmup: 4,
+            num_draws: 4,
+            max_treedepth: 4,
+            ..Settings::default()
+        };
+        let chain = sample(&posterior, &settings, 103, 0).unwrap();
+        assert!(chain.draws.iter().all(Vec::is_empty));
+        let lines = ndjson_lines(&posterior, &settings, 103, &[(0, chain)]).unwrap();
+        for line in &lines[1..=settings.num_draws] {
+            let document = json::parse(line).unwrap();
+            let z = document
+                .get("values")
+                .and_then(|values| values.get("z"))
+                .and_then(|z| z.as_array())
+                .expect("draw contains vector parameter z");
+            assert!(z.is_empty());
+        }
+
+        let prior = simulate_prior_predictive(
+            meta,
+            declared_data,
+            &PriorPredictiveSettings { num_draws: 1 },
+            101,
+        )
+        .unwrap();
+        assert_eq!(prior.draws[0].values[0].1.shape(), &[0]);
+        assert!(prior.draws[0].values[0].1.data().is_empty());
+        assert_eq!(prior.draws[0].values[1].1.shape(), &[1]);
+    }
 }
 
 #[test]

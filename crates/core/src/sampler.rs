@@ -137,6 +137,30 @@ pub fn sample(
 ) -> Result<ChainDraws, Error> {
     settings.validate()?;
     let dim = posterior.n_params();
+    if dim == 0 {
+        let logp = posterior.logp(&[])?;
+        if !logp.is_finite() {
+            return Err(Error::new(
+                ErrorKind::NonFiniteDensity,
+                "zero-dimensional posterior has non-finite log density; check the model and data",
+            ));
+        }
+        let mut treedepth_histogram = vec![0usize; settings.max_treedepth + 1];
+        treedepth_histogram[0] = settings.num_draws;
+        return Ok(ChainDraws {
+            draws: vec![Vec::new(); settings.num_draws],
+            logp: vec![logp; settings.num_draws],
+            divergences: 0,
+            treedepth_histogram,
+            step_size: settings.initial_step_size,
+            inv_mass: Vec::new(),
+            mean_accept: 1.0,
+            diverging: vec![false; settings.num_draws],
+            tree_depth: vec![0; settings.num_draws],
+            tree_accept: vec![1.0; settings.num_draws],
+            energy: vec![-logp; settings.num_draws],
+        });
+    }
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, chain_id);
 
     // Stan-style init: uniform(-2, 2) on the unconstrained scale, retrying

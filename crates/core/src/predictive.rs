@@ -216,18 +216,18 @@ fn free_specs(
         let shape = match &free_value.size {
             Size::Scalar => vec![],
             Size::Fixed(k) => {
-                if *k < 1 {
+                if *k < 0 {
                     return Err(mismatch(format!(
-                        "parameter size for \"{name}\" must be a positive integer, got {k}"
+                        "parameter size for \"{name}\" must be a non-negative integer, got {k}"
                     )));
                 }
                 vec![*k as usize]
             }
             Size::Data(ref_name) => {
                 let k = scalar_int_data(data, ref_name)?;
-                if k < 1 {
+                if k < 0 {
                     return Err(mismatch(format!(
-                        "data-dependent parameter size \"{ref_name}\" must be a positive integer, got {k}"
+                        "data-dependent parameter size \"{ref_name}\" must be a non-negative integer, got {k}"
                     )));
                 }
                 vec![k as usize]
@@ -2346,7 +2346,7 @@ fn fit_shape_size(shape: &[usize], name: &str) -> Result<usize, Error> {
             ))
         })?;
     }
-    Ok(size.max(1))
+    Ok(size)
 }
 
 fn parse_fit_params(header: &Value) -> Result<Vec<FitParamSpec>, Error> {
@@ -3761,9 +3761,9 @@ pub(crate) fn posterior_generation_pairs(
             Size::Fixed(size) => vec![size as usize],
             Size::Data(ref data_name) => {
                 let size = scalar_int_data(&data, data_name)?;
-                if size < 1 {
+                if size < 0 {
                     return Err(mismatch(format!(
-                        "generation design parameter size \"{data_name}\" must be positive"
+                        "generation design parameter size \"{data_name}\" must be non-negative"
                     )));
                 }
                 vec![size as usize]

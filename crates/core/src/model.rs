@@ -588,25 +588,25 @@ impl Posterior {
             let shape: Vec<usize> = match &free_value.size {
                 Size::Scalar => vec![],
                 Size::Fixed(k) => {
-                    if *k < 1 {
+                    if *k < 0 {
                         return Err(mismatch(format!(
-                            "parameter size for \"{name}\" must be a positive integer, got {k}"
+                            "parameter size for \"{name}\" must be a non-negative integer, got {k}"
                         )));
                     }
                     vec![*k as usize]
                 }
                 Size::Data(ref_name) => {
                     let k = scalar_int_data(&data_map, ref_name)?;
-                    if k < 1 {
+                    if k < 0 {
                         return Err(mismatch(format!(
-                            "data-dependent parameter size \"{ref_name}\" must be a positive \
+                            "data-dependent parameter size \"{ref_name}\" must be a non-negative \
                              integer, got {k}"
                         )));
                     }
                     vec![k as usize]
                 }
             };
-            let size: usize = shape.iter().product::<usize>().max(1);
+            let size: usize = shape.iter().product();
             unresolved_free.push((name, free_value.constraint, shape, offset, size));
             offset += size;
         }

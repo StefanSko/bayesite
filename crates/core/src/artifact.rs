@@ -60,7 +60,7 @@ pub(crate) fn coordinate_order_value(shape: &[usize]) -> Value {
     if shape.contains(&0) {
         return Value::Array(Vec::new());
     }
-    let size = shape.iter().product::<usize>().max(1);
+    let size = shape.iter().product::<usize>();
     Value::Array(
         (0..size)
             .map(|flat| {

@@ -429,7 +429,7 @@ fn diagnostic_value(value: f64) -> Value {
 }
 
 fn integer_flags_value(shape: &[usize], flags: &[bool], context: &str) -> Result<Value, Error> {
-    let expected = shape.iter().product::<usize>().max(1);
+    let expected = shape.iter().product::<usize>();
     if flags.len() != expected {
         return Err(invalid(format!(
             "{context} integer_by_coordinate length must match generated value shape"
@@ -482,7 +482,7 @@ fn summarize_param(
     chain_values: &[Vec<Vec<f64>>],
     context: RecoverParamContext,
 ) -> Value {
-    let size = shape.iter().product::<usize>().max(1);
+    let size = shape.iter().product::<usize>();
     let lower_p = (1.0 - context.interval) / 2.0;
     let upper_p = 1.0 - lower_p;
     let mut means = vec![0.0; size];
@@ -1147,7 +1147,7 @@ fn rank_and_diagnostics(
     chain_values: &[Vec<Vec<f64>>],
     thin: usize,
 ) -> (Vec<i64>, Vec<i64>, Vec<f64>, Vec<f64>) {
-    let size = truth.shape().iter().product::<usize>().max(1);
+    let size = truth.shape().iter().product::<usize>();
     let mut ranks = Vec::with_capacity(size);
     let mut tie_counts = Vec::with_capacity(size);
     let mut rhats = Vec::with_capacity(size);
@@ -1612,7 +1612,7 @@ pub fn sbc_report(
                 param_order.push(name.clone());
             }
             let entry = param_histograms.entry(name.clone()).or_insert_with(|| {
-                let size = shape.iter().product::<usize>().max(1);
+                let size = shape.iter().product::<usize>();
                 (shape.clone(), vec![vec![0; rank_draws + 1]; size])
             });
             for (coord, &rank) in ranks.iter().enumerate() {
