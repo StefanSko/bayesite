@@ -8,7 +8,7 @@ use bayesite_core::model::{data_from_json, DataValue, Posterior};
 use bayesite_core::predictive::{
     simulate_data_from_truth, simulate_prior_predictive, PriorPredictiveSettings,
 };
-use bayesite_core::protocol::{diagnose_ndjson, ndjson_lines};
+use bayesite_core::protocol::{diagnose_ndjson, ndjson_lines, recover_check_report};
 use bayesite_core::sampler::{sample, Settings};
 
 fn normal(loc: Expr) -> Distribution {
@@ -198,6 +198,17 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
             report.get("rhat").and_then(|rhat| rhat.get("z")),
             Some(json::Value::Null)
         ));
+        let truth = json::parse(
+            r#"{"format":"bayescycle.data.json.v1","variables":{"z":{"dtype":"float64","shape":[0],"values":[]}}}"#,
+        )
+        .unwrap();
+        let recovery = recover_check_report(&fit, &truth, None, 0.8).unwrap();
+        let recovery = json::parse(&recovery).unwrap();
+        let z = recovery
+            .get("targets")
+            .and_then(|targets| targets.get("z"))
+            .expect("recovery report contains z");
+        assert_eq!(z.get("mean").and_then(json::Value::as_array), Some(&[][..]));
 
         let prior = simulate_prior_predictive(
             meta,
@@ -234,6 +245,45 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
     )
     .unwrap();
     assert!(ordered_chain.draws.iter().all(Vec::is_empty));
+
+    let parameterless = Posterior::new(
+        ModelMeta {
+            params: vec![],
+            data: vec![],
+            observed_nodes: vec![ResolvedObserved {
+                name: "y".to_string(),
+                distribution: normal(Expr::Const(0.0)),
+            }],
+            expressions: vec![],
+            free_values: vec![],
+            stochastic_sites: vec![],
+        },
+        vec![("y".to_string(), value(&[], &[0.0]))],
+    )
+    .unwrap();
+    let parameterless_settings = Settings {
+        num_warmup: 4,
+        num_draws: 4,
+        max_treedepth: 4,
+        ..Settings::default()
+    };
+    let parameterless_chain = sample(&parameterless, &parameterless_settings, 109, 0).unwrap();
+    let parameterless_lines = ndjson_lines(
+        &parameterless,
+        &parameterless_settings,
+        109,
+        &[(0, parameterless_chain)],
+    )
+    .unwrap();
+    let parameterless_fit = parameterless_lines.join("\n") + "\n";
+    let parameterless_report = diagnose_ndjson(&parameterless_fit).unwrap();
+    let parameterless_report = json::parse(&parameterless_report).unwrap();
+    assert_eq!(
+        parameterless_report
+            .get("source_parameter_order")
+            .and_then(json::Value::as_array),
+        Some(&[][..])
+    );
 }
 
 #[test]

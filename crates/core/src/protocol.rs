@@ -775,11 +775,6 @@ fn parse_param_specs(header: &Value) -> Result<Vec<ParamSpec>, Error> {
         }
         specs.push(ParamSpec { name, shape, size });
     }
-    if specs.is_empty() {
-        return Err(invalid_fit(
-            "fit header has no parameters; rerun sampling with a model that has free values",
-        ));
-    }
     for index in 0..specs.len() {
         if specs[..index]
             .iter()
@@ -864,9 +859,9 @@ fn validate_optional_draw_parameter_metadata(
                 .ok_or_else(|| {
                     invalid_fit("draw line parameter_count must be an integer when present")
                 })?;
-            if count < 1 {
+            if count < 0 {
                 return Err(invalid_fit(
-                    "draw line parameter_count must be at least 1 when present",
+                    "draw line parameter_count must be non-negative when present",
                 ));
             }
             let count = usize::try_from(count).map_err(|_| {
@@ -1055,6 +1050,19 @@ fn parse_positive_usize_field(value: &Value, field: &str) -> Result<usize, Error
         .map_err(|_| invalid_fit(format!("fit header {field} must fit this build's usize")))
 }
 
+fn parse_nonnegative_usize_field(value: &Value, field: &str) -> Result<usize, Error> {
+    let parsed = value
+        .as_i64()
+        .ok_or_else(|| invalid_fit(format!("fit header {field} must be an integer")))?;
+    if parsed < 0 {
+        return Err(invalid_fit(format!(
+            "fit header {field} must be non-negative"
+        )));
+    }
+    usize::try_from(parsed)
+        .map_err(|_| invalid_fit(format!("fit header {field} must fit this build's usize")))
+}
+
 fn parse_header_chain_count(header: &Value) -> Result<usize, Error> {
     let value = header
         .get("chains")
@@ -1080,7 +1088,7 @@ fn validate_optional_header_parameter_count(header: &Value, expected: usize) -> 
     let Some(value) = header.get("parameter_count") else {
         return Ok(());
     };
-    let parsed = parse_positive_usize_field(value, "parameter_count")?;
+    let parsed = parse_nonnegative_usize_field(value, "parameter_count")?;
     if parsed == expected {
         Ok(())
     } else {
@@ -2230,7 +2238,9 @@ fn recover_check_workflow_phases_value() -> Value {
     )
 }
 
-fn recovery_fit_series(text: &str) -> Result<(Vec<ParamSpec>, Vec<i64>, RecoverySeries), Error> {
+fn recovery_fit_series(
+    text: &str,
+) -> Result<(Vec<ParamSpec>, Vec<i64>, RecoverySeries, usize), Error> {
     diagnose_ndjson(text)?;
     let mut lines = text.lines();
     let header_line = lines
@@ -2265,7 +2275,8 @@ fn recovery_fit_series(text: &str) -> Result<(Vec<ParamSpec>, Vec<i64>, Recovery
             }
         }
     }
-    Ok((specs, chain_ids, series_by_param))
+    let total_draws = draws.len();
+    Ok((specs, chain_ids, series_by_param, total_draws))
 }
 
 fn reject_duplicate_recovery_truth(truth: &[(String, DataValue)]) -> Result<(), Error> {
@@ -2663,9 +2674,8 @@ pub fn recover_check_report(
     }
     let truth = data_from_json(truth_doc)?;
     reject_duplicate_recovery_truth(&truth)?;
-    let (specs, chain_ids, series_by_param) = recovery_fit_series(fit)?;
+    let (specs, chain_ids, series_by_param, total_draws) = recovery_fit_series(fit)?;
     let targets = parse_recovery_targets(targets_doc, &truth, &specs)?;
-    let total_draws = series_by_param[0][0].iter().map(Vec::len).sum::<usize>();
     let mut target_entries = Vec::with_capacity(targets.len());
     let mut interval_contains_truth_by_target = Vec::with_capacity(targets.len());
     for target in &targets {
