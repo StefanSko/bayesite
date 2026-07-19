@@ -6,7 +6,8 @@ use bayesite_core::ir::{
 use bayesite_core::json;
 use bayesite_core::model::{data_from_json, DataValue, Posterior};
 use bayesite_core::predictive::{
-    simulate_data_from_truth, simulate_prior_predictive, PriorPredictiveSettings,
+    simulate_data_from_truth, simulate_posterior_predictive, simulate_prior_predictive,
+    PriorPredictiveSettings,
 };
 use bayesite_core::protocol::{diagnose_ndjson, ndjson_lines, recover_check_report};
 use bayesite_core::sampler::{sample, Settings};
@@ -168,7 +169,7 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
             declared_data.insert(0, ("n".to_string(), n));
         }
 
-        let posterior = Posterior::new(meta.clone(), full_data).unwrap();
+        let posterior = Posterior::new(meta.clone(), full_data.clone()).unwrap();
         let (logp, gradient) = posterior.logp_grad(&[]).unwrap();
         assert!(logp.is_finite());
         assert!(gradient.is_empty());
@@ -210,6 +211,15 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
             .expect("recovery report contains z");
         assert_eq!(z.get("mean").and_then(json::Value::as_array), Some(&[][..]));
 
+        let mut forged_lines = lines.clone();
+        forged_lines[0] =
+            forged_lines[0].replacen("\"parameter_count\":1", "\"parameter_count\":0", 1);
+        let forged_fit = forged_lines.join("\n") + "\n";
+        let forged_error =
+            simulate_posterior_predictive(meta.clone(), full_data, &forged_fit, 99).unwrap_err();
+        assert_eq!(forged_error.kind, ErrorKind::MalformedDocument);
+        assert!(forged_error.message.contains("parameter_count"));
+
         let prior = simulate_prior_predictive(
             meta,
             declared_data,
@@ -219,6 +229,8 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
         .unwrap();
         assert_eq!(prior.draws[0].values[0].1.shape(), &[0]);
         assert!(prior.draws[0].values[0].1.data().is_empty());
+        assert!(!prior.sites[0].integer);
+        assert!(prior.sites[0].integer_by_coordinate.is_empty());
         assert_eq!(prior.draws[0].values[1].1.shape(), &[1]);
     }
 
@@ -246,21 +258,20 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
     .unwrap();
     assert!(ordered_chain.draws.iter().all(Vec::is_empty));
 
-    let parameterless = Posterior::new(
-        ModelMeta {
-            params: vec![],
-            data: vec![],
-            observed_nodes: vec![ResolvedObserved {
-                name: "y".to_string(),
-                distribution: normal(Expr::Const(0.0)),
-            }],
-            expressions: vec![],
-            free_values: vec![],
-            stochastic_sites: vec![],
-        },
-        vec![("y".to_string(), value(&[], &[0.0]))],
-    )
-    .unwrap();
+    let parameterless_meta = ModelMeta {
+        params: vec![],
+        data: vec![],
+        observed_nodes: vec![ResolvedObserved {
+            name: "y".to_string(),
+            distribution: normal(Expr::Const(0.0)),
+        }],
+        expressions: vec![],
+        free_values: vec![],
+        stochastic_sites: vec![],
+    };
+    let parameterless_data = vec![("y".to_string(), value(&[], &[0.0]))];
+    let parameterless =
+        Posterior::new(parameterless_meta.clone(), parameterless_data.clone()).unwrap();
     let parameterless_settings = Settings {
         num_warmup: 4,
         num_draws: 4,
@@ -284,6 +295,14 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
             .and_then(json::Value::as_array),
         Some(&[][..])
     );
+    let replicated = simulate_posterior_predictive(
+        parameterless_meta,
+        parameterless_data,
+        &parameterless_fit,
+        113,
+    )
+    .unwrap();
+    assert_eq!(replicated.draws.len(), 4);
 }
 
 #[test]

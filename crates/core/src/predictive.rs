@@ -1429,18 +1429,6 @@ fn tensor_to_value(tensor: &Tensor, integer_flags: &[bool], context: &str) -> Re
     }
 }
 
-fn value_is_integer(tensor: &Tensor) -> bool {
-    tensor.data().iter().all(|&value| value.fract() == 0.0)
-}
-
-fn integer_flags(tensor: &Tensor) -> Vec<bool> {
-    tensor
-        .data()
-        .iter()
-        .map(|&value| value.fract() == 0.0)
-        .collect()
-}
-
 fn integer_flags_to_value(shape: &[usize], flags: &[bool]) -> Value {
     if shape.is_empty() {
         Value::Bool(flags.first().copied().unwrap_or(false))
@@ -1714,8 +1702,11 @@ pub fn simulate_prior_predictive(
                         stochastic_site: site.name.clone(),
                         role: PriorPredictiveRole::Parameter,
                         shape: value.shape().to_vec(),
-                        integer: value_is_integer(&value),
-                        integer_by_coordinate: integer_flags(&value),
+                        integer: distribution_has_integer_support(&site.distribution),
+                        integer_by_coordinate: distribution_integer_flags(
+                            &site.distribution,
+                            &value,
+                        ),
                     });
                     values.push((name.clone(), value));
                 }
@@ -1734,8 +1725,11 @@ pub fn simulate_prior_predictive(
                         stochastic_site: site.name.clone(),
                         role: PriorPredictiveRole::Observed,
                         shape: value.shape().to_vec(),
-                        integer: value_is_integer(&value),
-                        integer_by_coordinate: integer_flags(&value),
+                        integer: distribution_has_integer_support(&site.distribution),
+                        integer_by_coordinate: distribution_integer_flags(
+                            &site.distribution,
+                            &value,
+                        ),
                     });
                     values.push((name.clone(), value));
                 }
@@ -1851,8 +1845,11 @@ pub fn simulate_prior_predictive(
                         stochastic_site: site.name.clone(),
                         role: PriorPredictiveRole::Observed,
                         shape: value.shape().to_vec(),
-                        integer: value_is_integer(&value),
-                        integer_by_coordinate: integer_flags(&value),
+                        integer: distribution_has_integer_support(&site.distribution),
+                        integer_by_coordinate: distribution_integer_flags(
+                            &site.distribution,
+                            &value,
+                        ),
                     });
                     values.push((site.name.clone(), value));
                 }
@@ -2380,10 +2377,15 @@ fn parse_fit_params(header: &Value) -> Result<Vec<FitParamSpec>, Error> {
         let size = fit_shape_size(&shape, &name)?;
         out.push(FitParamSpec { name, shape, size });
     }
-    if out.is_empty() {
-        return Err(malformed_fit(
-            "fit header has no parameters; posterior-predictive needs a posterior draw stream",
-        ));
+    if let Some(value) = header.get("parameter_count") {
+        let count = value.as_i64().ok_or_else(|| {
+            malformed_fit("fit header parameter_count must be an integer when present")
+        })?;
+        if count < 0 || usize::try_from(count).ok() != Some(out.len()) {
+            return Err(malformed_fit(
+                "fit header parameter_count must match the params array length",
+            ));
+        }
     }
     Ok(out)
 }
@@ -3668,7 +3670,7 @@ pub(crate) fn model_prior_generation_pairs(
                         DataValue {
                             shape: value.shape().to_vec(),
                             values: value.data().to_vec(),
-                            integer: value_is_integer(&value),
+                            integer: distribution_has_integer_support(&site.distribution),
                         },
                     );
                 }
@@ -3682,7 +3684,7 @@ pub(crate) fn model_prior_generation_pairs(
                             DataValue {
                                 shape: value.shape().to_vec(),
                                 values: value.data().to_vec(),
-                                integer: value_is_integer(&value),
+                                integer: distribution_has_integer_support(&site.distribution),
                             },
                         ),
                     ));
