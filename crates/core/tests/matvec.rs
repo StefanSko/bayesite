@@ -211,14 +211,20 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
             .expect("recovery report contains z");
         assert_eq!(z.get("mean").and_then(json::Value::as_array), Some(&[][..]));
 
-        let mut forged_lines = lines.clone();
-        forged_lines[0] =
-            forged_lines[0].replacen("\"parameter_count\":1", "\"parameter_count\":0", 1);
-        let forged_fit = forged_lines.join("\n") + "\n";
-        let forged_error =
-            simulate_posterior_predictive(meta.clone(), full_data, &forged_fit, 99).unwrap_err();
-        assert_eq!(forged_error.kind, ErrorKind::MalformedDocument);
-        assert!(forged_error.message.contains("parameter_count"));
+        for forged_index in [0, 1, lines.len() - 1] {
+            let mut forged_lines = lines.clone();
+            forged_lines[forged_index] = forged_lines[forged_index].replacen(
+                "\"parameter_count\":1",
+                "\"parameter_count\":0",
+                1,
+            );
+            let forged_fit = forged_lines.join("\n") + "\n";
+            let forged_error =
+                simulate_posterior_predictive(meta.clone(), full_data.clone(), &forged_fit, 99)
+                    .unwrap_err();
+            assert_eq!(forged_error.kind, ErrorKind::MalformedDocument);
+            assert!(forged_error.message.contains("parameter_count"));
+        }
 
         let prior = simulate_prior_predictive(
             meta,
@@ -233,6 +239,31 @@ fn zero_length_free_vector_supports_empty_matvec_contraction() {
         assert!(prior.sites[0].integer_by_coordinate.is_empty());
         assert_eq!(prior.draws[0].values[1].1.shape(), &[1]);
     }
+
+    let mut unknown_meta = zero_free_vector_matvec_model(Size::Fixed(0), false);
+    unknown_meta.expressions.push((
+        "unknown".to_string(),
+        Expr::MatVec {
+            matrix: Box::new(Expr::Data("missing_matrix".to_string())),
+            vector: Box::new(Expr::Param("z".to_string())),
+        },
+    ));
+    let unknown_full_data = vec![
+        ("matrix".to_string(), value(&[1, 0], &[])),
+        ("y".to_string(), value(&[1], &[0.0])),
+    ];
+    let unknown_error = Posterior::new(unknown_meta.clone(), unknown_full_data).unwrap_err();
+    assert_eq!(unknown_error.kind, ErrorKind::MalformedDocument);
+    assert!(unknown_error.message.contains("missing_matrix"));
+    let unknown_prior_error = simulate_prior_predictive(
+        unknown_meta,
+        vec![("matrix".to_string(), value(&[1, 0], &[]))],
+        &PriorPredictiveSettings { num_draws: 1 },
+        105,
+    )
+    .unwrap_err();
+    assert_eq!(unknown_prior_error.kind, ErrorKind::MalformedDocument);
+    assert!(unknown_prior_error.message.contains("missing_matrix"));
 
     let mut ordered_meta = zero_free_vector_matvec_model(Size::Fixed(0), false);
     ordered_meta.params[0].1.constraint = Some(Constraint::Ordered);

@@ -233,7 +233,7 @@ fn assert_non_ancestral_outcome_draw(draw: &Value) {
 #[test]
 fn fixed_and_model_prior_generation_reject_invalid_bound_or_generated_matvec() {
     let (base_model, design, parameters, _) = linear_parts();
-    for matrix_name in ["x", "y"] {
+    for matrix_name in ["x", "y", "missing_matrix"] {
         let model = with_invalid_matvec(base_model.clone(), matrix_name);
         let parameters_document = json::write(&parameters).unwrap();
         let fixed = GenerationSource::Fixed {
@@ -248,8 +248,13 @@ fn fixed_and_model_prior_generation_reject_invalid_bound_or_generated_matvec() {
             11,
         ))
         .unwrap_err();
-        assert_eq!(fixed_error.kind, ErrorKind::DataShapeMismatch);
-        assert!(fixed_error.message.contains("matrix must be rank 2"));
+        if matrix_name == "missing_matrix" {
+            assert_eq!(fixed_error.kind, ErrorKind::MalformedDocument);
+            assert!(fixed_error.message.contains("missing_matrix"));
+        } else {
+            assert_eq!(fixed_error.kind, ErrorKind::DataShapeMismatch);
+            assert!(fixed_error.message.contains("matrix must be rank 2"));
+        }
 
         let model_prior = GenerationSource::ModelPrior {
             model_hash: document_hash(&model),
@@ -258,8 +263,39 @@ fn fixed_and_model_prior_generation_reject_invalid_bound_or_generated_matvec() {
         let prior_error =
             generated_datasets_ndjson_lines(request_for(model, design.clone(), model_prior, 1, 13))
                 .unwrap_err();
-        assert_eq!(prior_error.kind, ErrorKind::DataShapeMismatch);
-        assert!(prior_error.message.contains("matrix must be rank 2"));
+        if matrix_name == "missing_matrix" {
+            assert_eq!(prior_error.kind, ErrorKind::MalformedDocument);
+            assert!(prior_error.message.contains("missing_matrix"));
+        } else {
+            assert_eq!(prior_error.kind, ErrorKind::DataShapeMismatch);
+            assert!(prior_error.message.contains("matrix must be rank 2"));
+        }
+    }
+}
+
+#[test]
+fn fixed_generation_normalizes_continuous_parameter_dtype() {
+    let (model, design, _, _) = linear_parts();
+    let parameters = json::parse(
+        r#"{"format":"bayescycle.data.json.v1","variables":{"alpha":{"dtype":"int64","shape":[],"values":[1]},"beta":{"dtype":"int64","shape":[],"values":[2]},"sigma":{"dtype":"int64","shape":[],"values":[1]}}}"#,
+    )
+    .unwrap();
+    let parameters_document = json::write(&parameters).unwrap();
+    let source = GenerationSource::Fixed {
+        parameters_hash: sha256_bytes(parameters_document.as_bytes()),
+        parameters_document,
+    };
+    let documents =
+        docs(&generated_datasets_ndjson_lines(request_for(model, design, source, 1, 17)).unwrap());
+    let generated = draw_parameters(&documents[1]);
+    for name in ["alpha", "beta", "sigma"] {
+        assert_eq!(
+            generated
+                .get(name)
+                .and_then(|value| value.get("dtype"))
+                .and_then(Value::as_str),
+            Some("float64")
+        );
     }
 }
 

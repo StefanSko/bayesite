@@ -4,7 +4,7 @@
 //! data, draw count, and seed; the module returns v0-provisional NDJSON lines.
 //! No filesystem, clocks, global entropy, Python, or producer code are used.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ancestral::{stable_site_order, ValueRef};
 use crate::artifact::{
@@ -253,7 +253,15 @@ fn validate_free_spec_matvec_shapes(
         .iter()
         .map(|(name, spec)| (name.clone(), spec.shape.clone()))
         .collect::<HashMap<_, _>>();
-    validate_bound_matvec_shapes(meta, data, &value_shapes)
+    let deferred_values = meta
+        .resolved_stochastic_sites()
+        .into_iter()
+        .filter_map(|site| match site.value {
+            Expr::Data(name) if !data.contains_key(&name) => Some(name),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    validate_bound_matvec_shapes(meta, data, &value_shapes, &deferred_values)
 }
 
 fn validate_forward_matvec_shapes(
@@ -265,7 +273,7 @@ fn validate_forward_matvec_shapes(
         .iter()
         .map(|(name, value)| (name.clone(), value.shape().to_vec()))
         .collect::<HashMap<_, _>>();
-    validate_bound_matvec_shapes(meta, data, &value_shapes)
+    validate_bound_matvec_shapes(meta, data, &value_shapes, &HashSet::new())
 }
 
 fn claim_unique_generative_site(
@@ -2346,6 +2354,28 @@ fn fit_shape_size(shape: &[usize], name: &str) -> Result<usize, Error> {
     Ok(size)
 }
 
+fn validate_optional_fit_parameter_count(
+    document: &Value,
+    field: &str,
+    expected: usize,
+    context: &str,
+) -> Result<(), Error> {
+    let Some(value) = document.get(field) else {
+        return Ok(());
+    };
+    let count = value.as_i64().ok_or_else(|| {
+        malformed_fit(format!(
+            "fit {context} {field} must be an integer when present"
+        ))
+    })?;
+    if count < 0 || usize::try_from(count).ok() != Some(expected) {
+        return Err(malformed_fit(format!(
+            "fit {context} {field} must match the params array length"
+        )));
+    }
+    Ok(())
+}
+
 fn parse_fit_params(header: &Value) -> Result<Vec<FitParamSpec>, Error> {
     if header.get("draws_format").and_then(Value::as_str) != Some(V0_PROVISIONAL) {
         return Err(malformed_fit(
@@ -2377,16 +2407,7 @@ fn parse_fit_params(header: &Value) -> Result<Vec<FitParamSpec>, Error> {
         let size = fit_shape_size(&shape, &name)?;
         out.push(FitParamSpec { name, shape, size });
     }
-    if let Some(value) = header.get("parameter_count") {
-        let count = value.as_i64().ok_or_else(|| {
-            malformed_fit("fit header parameter_count must be an integer when present")
-        })?;
-        if count < 0 || usize::try_from(count).ok() != Some(out.len()) {
-            return Err(malformed_fit(
-                "fit header parameter_count must match the params array length",
-            ));
-        }
-    }
+    validate_optional_fit_parameter_count(header, "parameter_count", out.len(), "header")?;
     Ok(out)
 }
 
@@ -2431,9 +2452,9 @@ fn parse_fit_draw_line(
     specs: &[FitParamSpec],
     expected_draw_index: usize,
 ) -> Result<FitDraw, Error> {
-    // `diagnose_ndjson` has already validated every optional metadata group.
     // Legacy streams may omit draw-index/artifact metadata consistently; in
     // that case stream order is the stable source-draw index.
+    validate_optional_fit_parameter_count(line, "parameter_count", specs.len(), "draw line")?;
     let draw_index = match line.get("draw_index") {
         Some(value) => {
             let draw_index = value
@@ -2622,6 +2643,8 @@ fn parse_fit_stream(
             "fit trailer artifact_scope must match posterior_draws sample output",
         ));
     }
+    validate_optional_fit_parameter_count(&trailer, "parameter_count", params.len(), "trailer")?;
+    validate_optional_fit_parameter_count(&trailer, "params", params.len(), "trailer")?;
     validate_fit_source_identity(
         &trailer,
         "trailer",
@@ -3592,10 +3615,18 @@ pub(crate) fn fixed_generation_pairs(
         parameters.clone(),
         "generate fixed",
     )?;
+    let output_parameters = parameters
+        .into_iter()
+        .zip(&meta.params)
+        .map(|((name, mut value), (_, param))| {
+            value.integer = distribution_has_integer_support(&param.distribution);
+            (name, value)
+        })
+        .collect::<Vec<_>>();
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
     for _ in 0..count {
         emit(GenerationPair {
-            parameters: parameters.clone(),
+            parameters: output_parameters.clone(),
             outcomes: simulate_generation_outcomes(
                 &meta,
                 &data,

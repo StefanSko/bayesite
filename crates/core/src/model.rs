@@ -5,7 +5,7 @@
 //! is split per the packing-order guarantee, constraints contribute their
 //! log-Jacobians, and stochastic sites accumulate in document order.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::density::{self, DistVars};
@@ -627,7 +627,7 @@ impl Posterior {
             .iter()
             .map(|slot| (slot.name.clone(), slot.shape.clone()))
             .collect::<HashMap<_, _>>();
-        validate_bound_matvec_shapes(&meta, &data_map, &value_shapes)?;
+        validate_bound_matvec_shapes(&meta, &data_map, &value_shapes, &HashSet::new())?;
 
         Ok(Posterior {
             free,
@@ -1617,30 +1617,95 @@ fn expr_values_are_available(env: &Env<'_>, expr: &Expr) -> bool {
     }
 }
 
-fn validate_bound_matvec_index(env: &mut Env<'_>, index: &IndexSpec) -> Result<(), Error> {
+fn first_unavailable_index_name(
+    env: &Env<'_>,
+    index: &IndexSpec,
+    deferred_values: &HashSet<String>,
+) -> Option<String> {
     match index {
-        IndexSpec::Scalar(expr) => validate_bound_matvec_expr(env, expr),
+        IndexSpec::Scalar(expr) => first_unavailable_expr_name(env, expr, deferred_values),
+        IndexSpec::Full => None,
+        IndexSpec::Tuple(items) => items
+            .iter()
+            .find_map(|item| first_unavailable_index_name(env, item, deferred_values)),
+    }
+}
+
+fn first_unavailable_expr_name(
+    env: &Env<'_>,
+    expr: &Expr,
+    deferred_values: &HashSet<String>,
+) -> Option<String> {
+    match expr {
+        Expr::Param(name) | Expr::Data(name) => (!env.data.contains_key(name)
+            && !env.values.contains_key(name)
+            && !deferred_values.contains(name))
+        .then(|| name.clone()),
+        Expr::Const(_) => None,
+        Expr::Bin { left, right, .. } => first_unavailable_expr_name(env, left, deferred_values)
+            .or_else(|| first_unavailable_expr_name(env, right, deferred_values)),
+        Expr::Unary { operand, .. } => first_unavailable_expr_name(env, operand, deferred_values),
+        Expr::MatVec { matrix, vector } => {
+            first_unavailable_expr_name(env, matrix, deferred_values)
+                .or_else(|| first_unavailable_expr_name(env, vector, deferred_values))
+        }
+        Expr::Index { base, index } => first_unavailable_expr_name(env, base, deferred_values)
+            .or_else(|| first_unavailable_index_name(env, index, deferred_values)),
+        Expr::VectorScatter {
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        } => [
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        ]
+        .into_iter()
+        .find_map(|child| first_unavailable_expr_name(env, child, deferred_values)),
+    }
+}
+
+fn validate_bound_matvec_index(
+    env: &mut Env<'_>,
+    index: &IndexSpec,
+    deferred_values: &HashSet<String>,
+) -> Result<(), Error> {
+    match index {
+        IndexSpec::Scalar(expr) => validate_bound_matvec_expr(env, expr, deferred_values),
         IndexSpec::Full => Ok(()),
         IndexSpec::Tuple(items) => {
             for item in items {
-                validate_bound_matvec_index(env, item)?;
+                validate_bound_matvec_index(env, item, deferred_values)?;
             }
             Ok(())
         }
     }
 }
 
-fn validate_bound_matvec_expr(env: &mut Env<'_>, expr: &Expr) -> Result<(), Error> {
+fn validate_bound_matvec_expr(
+    env: &mut Env<'_>,
+    expr: &Expr,
+    deferred_values: &HashSet<String>,
+) -> Result<(), Error> {
     match expr {
         Expr::Param(_) | Expr::Data(_) | Expr::Const(_) => Ok(()),
         Expr::Bin { left, right, .. } => {
-            validate_bound_matvec_expr(env, left)?;
-            validate_bound_matvec_expr(env, right)
+            validate_bound_matvec_expr(env, left, deferred_values)?;
+            validate_bound_matvec_expr(env, right, deferred_values)
         }
-        Expr::Unary { operand, .. } => validate_bound_matvec_expr(env, operand),
+        Expr::Unary { operand, .. } => validate_bound_matvec_expr(env, operand, deferred_values),
         Expr::MatVec { matrix, vector } => {
-            validate_bound_matvec_expr(env, matrix)?;
-            validate_bound_matvec_expr(env, vector)?;
+            validate_bound_matvec_expr(env, matrix, deferred_values)?;
+            validate_bound_matvec_expr(env, vector, deferred_values)?;
+            if let Some(name) = first_unavailable_expr_name(env, expr, deferred_values) {
+                return Err(malformed(format!(
+                    "MatVecOp references unknown value \"{name}\" during binding"
+                )));
+            }
             if expr_values_are_available(env, matrix) && expr_values_are_available(env, vector) {
                 let matrix = env.evaluate(matrix)?;
                 let vector = env.evaluate(vector)?;
@@ -1649,8 +1714,8 @@ fn validate_bound_matvec_expr(env: &mut Env<'_>, expr: &Expr) -> Result<(), Erro
             Ok(())
         }
         Expr::Index { base, index } => {
-            validate_bound_matvec_expr(env, base)?;
-            validate_bound_matvec_index(env, index)
+            validate_bound_matvec_expr(env, base, deferred_values)?;
+            validate_bound_matvec_index(env, index, deferred_values)
         }
         Expr::VectorScatter {
             length,
@@ -1666,7 +1731,7 @@ fn validate_bound_matvec_expr(env: &mut Env<'_>, expr: &Expr) -> Result<(), Erro
                 missing_idx,
                 missing_values,
             ] {
-                validate_bound_matvec_expr(env, child)?;
+                validate_bound_matvec_expr(env, child, deferred_values)?;
             }
             Ok(())
         }
@@ -1677,6 +1742,7 @@ pub(crate) fn validate_bound_matvec_shapes(
     meta: &ModelMeta,
     data: &HashMap<String, DataValue>,
     value_shapes: &HashMap<String, Vec<usize>>,
+    deferred_values: &HashSet<String>,
 ) -> Result<(), Error> {
     let mut tape = Tape::new();
     let mut values = HashMap::new();
@@ -1693,22 +1759,22 @@ pub(crate) fn validate_bound_matvec_shapes(
 
     for (_, param) in &meta.params {
         for expr in distribution_exprs(&param.distribution) {
-            validate_bound_matvec_expr(&mut env, expr)?;
+            validate_bound_matvec_expr(&mut env, expr, deferred_values)?;
         }
     }
     for observed in &meta.observed_nodes {
         for expr in distribution_exprs(&observed.distribution) {
-            validate_bound_matvec_expr(&mut env, expr)?;
+            validate_bound_matvec_expr(&mut env, expr, deferred_values)?;
         }
     }
     for (_, expr) in &meta.expressions {
-        validate_bound_matvec_expr(&mut env, expr)?;
+        validate_bound_matvec_expr(&mut env, expr, deferred_values)?;
     }
     for site in meta.resolved_stochastic_sites() {
         for expr in distribution_exprs(&site.distribution) {
-            validate_bound_matvec_expr(&mut env, expr)?;
+            validate_bound_matvec_expr(&mut env, expr, deferred_values)?;
         }
-        validate_bound_matvec_expr(&mut env, &site.value)?;
+        validate_bound_matvec_expr(&mut env, &site.value, deferred_values)?;
     }
     Ok(())
 }
