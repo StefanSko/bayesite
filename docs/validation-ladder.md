@@ -168,7 +168,7 @@ Compare posterior summaries over the golden corpus, not bit-identical draws:
 uv run scripts/check_rust_backend_posterior.py
 ```
 
-The script pins `bayesjax==0.5.0` exactly. Pass
+The script pins `bayesjax==0.7.0` exactly. Pass
 `--bayescycle-path ../bayescycle` only to test an unpublished monorepo checkout.
 This gate must not become part of the default agent path. The conformance CI
 workflow also runs it on a schedule, manual dispatch, and release tags, so
