@@ -7,7 +7,7 @@ discover what an engine binary supports.
 ```json
 {
   "capabilities_format": "v0-provisional",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "commands": ["sample", "diagnose", "prior-predictive", "generate", "posterior-predictive", "posterior-check", "simulate", "recover-check", "recover", "sbc", "capabilities"],
   "ir": {"bayeswire_ir": 1},
   "schemas": {
@@ -23,7 +23,7 @@ discover what an engine binary supports.
 
 - `capabilities_format`: version marker for this document itself.
 - `version`: the engine crate version (`CARGO_PKG_VERSION` of
-  `bayesite-core`), e.g. `"0.3.1"`. An additive field; it does not bump
+  `bayesite-core`), e.g. `"0.4.0"`. An additive field; it does not bump
   `capabilities_format`.
 - `commands`: every CLI subcommand this binary dispatches, in dispatch-table
   order. The list is derived from the dispatch table in the binary, never

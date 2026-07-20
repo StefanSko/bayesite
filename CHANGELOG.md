@@ -8,6 +8,8 @@ versioned on their own.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-20
+
 ### Added
 
 - Decode and execute Bayeswire's additive `MatVecOp` with exact
@@ -138,7 +140,8 @@ versioned on their own.
 [#36]: https://github.com/StefanSko/bayesite/issues/36
 [#43]: https://github.com/StefanSko/bayesite/issues/43
 [#45]: https://github.com/StefanSko/bayesite/issues/45
-[Unreleased]: https://github.com/StefanSko/bayesite/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/StefanSko/bayesite/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/StefanSko/bayesite/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/StefanSko/bayesite/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/StefanSko/bayesite/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/StefanSko/bayesite/compare/v0.2.1...v0.2.2
