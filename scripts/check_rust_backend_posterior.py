@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#   "bayesjax==0.6.0",
+#   "bayesjax==0.7.0",
 # ]
 # ///
 """Differential posterior check: Rust backend vs JAX backend, golden corpus.
