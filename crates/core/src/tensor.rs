@@ -158,6 +158,39 @@ impl Tensor {
         Ok(Tensor { shape, data })
     }
 
+    /// Exact rank-2 `[m, n]` by rank-1 `[n]` matrix-vector product.
+    pub fn matvec(&self, vector: &Tensor) -> Result<Tensor, Error> {
+        if self.rank() != 2 {
+            return Err(mismatch(format!(
+                "MatVecOp matrix must be rank 2, got shape {:?}",
+                self.shape
+            )));
+        }
+        if vector.rank() != 1 {
+            return Err(mismatch(format!(
+                "MatVecOp vector must be rank 1, got shape {:?}",
+                vector.shape
+            )));
+        }
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+        if cols != vector.shape[0] {
+            return Err(mismatch(format!(
+                "MatVecOp contraction dimensions must match: matrix shape {:?}, vector shape {:?}",
+                self.shape, vector.shape
+            )));
+        }
+        let mut data = Vec::with_capacity(rows);
+        for row in 0..rows {
+            let mut sum = 0.0;
+            for col in 0..cols {
+                sum += self.data[row * cols + col] * vector.data[col];
+            }
+            data.push(sum);
+        }
+        Ok(Tensor::from_vec(vec![rows], data))
+    }
+
     /// Materialize this tensor broadcast to `shape`.
     pub fn broadcast_to(&self, shape: &[usize]) -> Result<Tensor, Error> {
         let target = Tensor::broadcast_shapes(&self.shape, shape)?;

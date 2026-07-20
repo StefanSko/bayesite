@@ -1,0 +1,70 @@
+{
+  "format": "bayescycle.data.json.v1",
+  "variables": {
+    "n": {
+      "dtype": "int64",
+      "shape": [],
+      "values": [
+        3
+      ]
+    },
+    "mean": {
+      "dtype": "float64",
+      "shape": [
+        3
+      ],
+      "values": [
+        0.25,
+        -0.5,
+        1.0
+      ]
+    },
+    "latent_chol": {
+      "dtype": "float64",
+      "shape": [
+        3,
+        3
+      ],
+      "values": [
+        1.0,
+        0.0,
+        0.0,
+        0.6,
+        0.8,
+        0.0,
+        0.25,
+        0.35,
+        0.9
+      ]
+    },
+    "observation_chol": {
+      "dtype": "float64",
+      "shape": [
+        3,
+        3
+      ],
+      "values": [
+        0.5,
+        0.0,
+        0.0,
+        0.1,
+        0.6,
+        0.0,
+        -0.05,
+        0.2,
+        0.7
+      ]
+    },
+    "y": {
+      "dtype": "float64",
+      "shape": [
+        3
+      ],
+      "values": [
+        0.4,
+        -0.1,
+        0.65
+      ]
+    }
+  }
+}

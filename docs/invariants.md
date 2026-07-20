@@ -104,6 +104,11 @@ Bayesite keeps these phases explicit:
   terms in IR order.
 - Symbolic distribution arguments are evaluated before distribution log-density
   evaluation.
+- `MatVecOp` accepts exactly a rank-2 `[m, n]` matrix and rank-1 `[n]` vector,
+  evaluates to rank-1 `[m]`, and propagates gradients to both operands. It does
+  not inherit broadcasting, batching, vector-matrix, or matrix-matrix semantics.
+  Zero dimensions remain valid throughout binding and artifacts, including a
+  zero-length free vector in the empty contraction `[m, 0] @ [0]`.
 - NUTS state is continuous. Discrete distributions are supported as fixed-data
   likelihood factors, not as latent NUTS coordinates.
 - Sampling outputs constrained parameter values.

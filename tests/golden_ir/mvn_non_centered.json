@@ -1,0 +1,219 @@
+{
+  "bayeswire_ir": 1,
+  "model": {
+    "node": "ModelMeta",
+    "params": [
+      {
+        "name": "z",
+        "value": {
+          "node": "ResolvedParam",
+          "distribution": {
+            "node": "Normal",
+            "loc": {
+              "node": "ConstNode",
+              "value": 0.0
+            },
+            "scale": {
+              "node": "ConstNode",
+              "value": 1.0
+            }
+          },
+          "constraint": null,
+          "size": {
+            "node": "DataRef",
+            "name": "n"
+          }
+        }
+      }
+    ],
+    "data": [
+      {
+        "name": "n",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": []
+          }
+        }
+      },
+      {
+        "name": "mean",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": [
+              {
+                "node": "DataDimRef",
+                "name": "n"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "latent_chol",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": [
+              {
+                "node": "DataDimRef",
+                "name": "n"
+              },
+              {
+                "node": "DataDimRef",
+                "name": "n"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "observation_chol",
+        "value": {
+          "node": "ResolvedData",
+          "schema": {
+            "node": "ResolvedDataShapeSchema",
+            "dims": [
+              {
+                "node": "DataDimRef",
+                "name": "n"
+              },
+              {
+                "node": "DataDimRef",
+                "name": "n"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "observed_nodes": [
+      {
+        "node": "ResolvedObserved",
+        "name": "y",
+        "distribution": {
+          "node": "MultivariateNormal",
+          "mean": {
+            "node": "BinOp",
+            "op": "+",
+            "left": {
+              "node": "DataRef",
+              "name": "mean"
+            },
+            "right": {
+              "node": "MatVecOp",
+              "matrix": {
+                "node": "DataRef",
+                "name": "latent_chol"
+              },
+              "vector": {
+                "node": "ParamRef",
+                "name": "z"
+              }
+            }
+          },
+          "scale_tril": {
+            "node": "DataRef",
+            "name": "observation_chol"
+          }
+        }
+      }
+    ],
+    "expressions": [
+      {
+        "name": "theta",
+        "value": {
+          "node": "BinOp",
+          "op": "+",
+          "left": {
+            "node": "DataRef",
+            "name": "mean"
+          },
+          "right": {
+            "node": "MatVecOp",
+            "matrix": {
+              "node": "DataRef",
+              "name": "latent_chol"
+            },
+            "vector": {
+              "node": "ParamRef",
+              "name": "z"
+            }
+          }
+        }
+      }
+    ],
+    "free_values": [
+      {
+        "name": "z",
+        "value": {
+          "node": "ResolvedFreeValue",
+          "constraint": null,
+          "size": {
+            "node": "DataRef",
+            "name": "n"
+          }
+        }
+      }
+    ],
+    "stochastic_sites": [
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "z",
+        "distribution": {
+          "node": "Normal",
+          "loc": {
+            "node": "ConstNode",
+            "value": 0.0
+          },
+          "scale": {
+            "node": "ConstNode",
+            "value": 1.0
+          }
+        },
+        "value": {
+          "node": "ParamRef",
+          "name": "z"
+        }
+      },
+      {
+        "node": "ResolvedStochasticSite",
+        "name": "y",
+        "distribution": {
+          "node": "MultivariateNormal",
+          "mean": {
+            "node": "BinOp",
+            "op": "+",
+            "left": {
+              "node": "DataRef",
+              "name": "mean"
+            },
+            "right": {
+              "node": "MatVecOp",
+              "matrix": {
+                "node": "DataRef",
+                "name": "latent_chol"
+              },
+              "vector": {
+                "node": "ParamRef",
+                "name": "z"
+              }
+            }
+          },
+          "scale_tril": {
+            "node": "DataRef",
+            "name": "observation_chol"
+          }
+        },
+        "value": {
+          "node": "DataRef",
+          "name": "y"
+        }
+      }
+    ]
+  }
+}

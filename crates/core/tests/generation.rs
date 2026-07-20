@@ -1,6 +1,7 @@
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use bayesite_core::error::ErrorKind;
 use bayesite_core::generation::{
     generated_datasets_ndjson_lines, sha256_bytes, GenerationRequest, GenerationSource,
 };
@@ -126,8 +127,13 @@ fn document_hash(value: &Value) -> String {
     sha256_bytes(json::write(value).unwrap().as_bytes())
 }
 
-fn request(source: GenerationSource, count: usize, seed: u64) -> GenerationRequest {
-    let (model, design, _, _) = linear_parts();
+fn request_for(
+    model: Value,
+    design: Value,
+    source: GenerationSource,
+    count: usize,
+    seed: u64,
+) -> GenerationRequest {
     GenerationRequest {
         model_document: json::write(&model).unwrap(),
         design_document: json::write(&design).unwrap(),
@@ -137,6 +143,42 @@ fn request(source: GenerationSource, count: usize, seed: u64) -> GenerationReque
         count,
         seed,
     }
+}
+
+fn request(source: GenerationSource, count: usize, seed: u64) -> GenerationRequest {
+    let (model, design, _, _) = linear_parts();
+    request_for(model, design, source, count, seed)
+}
+
+fn with_invalid_matvec(mut model: Value, matrix_name: &str) -> Value {
+    let expressions = object_entry_mut(object_entry_mut(&mut model, "model"), "expressions");
+    let Value::Array(expressions) = expressions else {
+        panic!("expected expressions")
+    };
+    expressions.push(Value::Object(vec![
+        ("name".to_string(), Value::Str("invalid".to_string())),
+        (
+            "value".to_string(),
+            Value::Object(vec![
+                ("node".to_string(), Value::Str("MatVecOp".to_string())),
+                (
+                    "matrix".to_string(),
+                    Value::Object(vec![
+                        ("node".to_string(), Value::Str("DataRef".to_string())),
+                        ("name".to_string(), Value::Str(matrix_name.to_string())),
+                    ]),
+                ),
+                (
+                    "vector".to_string(),
+                    Value::Object(vec![
+                        ("node".to_string(), Value::Str("DataRef".to_string())),
+                        ("name".to_string(), Value::Str("x".to_string())),
+                    ]),
+                ),
+            ]),
+        ),
+    ]));
+    model
 }
 
 fn docs(lines: &[String]) -> Vec<Value> {
@@ -185,6 +227,75 @@ fn assert_non_ancestral_outcome_draw(draw: &Value) {
     assert_eq!(child.len(), parent.len());
     for (child, parent) in child.iter().zip(parent) {
         assert!((child - parent).abs() < 1e-7);
+    }
+}
+
+#[test]
+fn fixed_and_model_prior_generation_reject_invalid_bound_or_generated_matvec() {
+    let (base_model, design, parameters, _) = linear_parts();
+    for matrix_name in ["x", "y", "missing_matrix"] {
+        let model = with_invalid_matvec(base_model.clone(), matrix_name);
+        let parameters_document = json::write(&parameters).unwrap();
+        let fixed = GenerationSource::Fixed {
+            parameters_hash: sha256_bytes(parameters_document.as_bytes()),
+            parameters_document,
+        };
+        let fixed_error = generated_datasets_ndjson_lines(request_for(
+            model.clone(),
+            design.clone(),
+            fixed,
+            1,
+            11,
+        ))
+        .unwrap_err();
+        if matrix_name == "missing_matrix" {
+            assert_eq!(fixed_error.kind, ErrorKind::MalformedDocument);
+            assert!(fixed_error.message.contains("missing_matrix"));
+        } else {
+            assert_eq!(fixed_error.kind, ErrorKind::DataShapeMismatch);
+            assert!(fixed_error.message.contains("matrix must be rank 2"));
+        }
+
+        let model_prior = GenerationSource::ModelPrior {
+            model_hash: document_hash(&model),
+            authored_provenance: None,
+        };
+        let prior_error =
+            generated_datasets_ndjson_lines(request_for(model, design.clone(), model_prior, 1, 13))
+                .unwrap_err();
+        if matrix_name == "missing_matrix" {
+            assert_eq!(prior_error.kind, ErrorKind::MalformedDocument);
+            assert!(prior_error.message.contains("missing_matrix"));
+        } else {
+            assert_eq!(prior_error.kind, ErrorKind::DataShapeMismatch);
+            assert!(prior_error.message.contains("matrix must be rank 2"));
+        }
+    }
+}
+
+#[test]
+fn fixed_generation_normalizes_continuous_parameter_dtype() {
+    let (model, design, _, _) = linear_parts();
+    let parameters = json::parse(
+        r#"{"format":"bayescycle.data.json.v1","variables":{"alpha":{"dtype":"int64","shape":[],"values":[1]},"beta":{"dtype":"int64","shape":[],"values":[2]},"sigma":{"dtype":"int64","shape":[],"values":[1]}}}"#,
+    )
+    .unwrap();
+    let parameters_document = json::write(&parameters).unwrap();
+    let source = GenerationSource::Fixed {
+        parameters_hash: sha256_bytes(parameters_document.as_bytes()),
+        parameters_document,
+    };
+    let documents =
+        docs(&generated_datasets_ndjson_lines(request_for(model, design, source, 1, 17)).unwrap());
+    let generated = draw_parameters(&documents[1]);
+    for name in ["alpha", "beta", "sigma"] {
+        assert_eq!(
+            generated
+                .get(name)
+                .and_then(|value| value.get("dtype"))
+                .and_then(Value::as_str),
+            Some("float64")
+        );
     }
 }
 

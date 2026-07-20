@@ -55,6 +55,10 @@ pub enum Expr {
         function: UnaryFn,
         operand: Box<Expr>,
     },
+    MatVec {
+        matrix: Box<Expr>,
+        vector: Box<Expr>,
+    },
     Index {
         base: Box<Expr>,
         index: IndexSpec,
@@ -413,6 +417,10 @@ fn decode_expr_at(value: &Value, depth: usize) -> Result<Expr, Error> {
                 operand: Box::new(operand),
             }
         }
+        "MatVecOp" => Expr::MatVec {
+            matrix: Box::new(decode_expr_at(node.field("matrix")?, depth + 1)?),
+            vector: Box::new(decode_expr_at(node.field("vector")?, depth + 1)?),
+        },
         "IndexOp" => {
             let base = decode_expr_at(node.field("base")?, depth + 1)?;
             let index = decode_index_spec_at(node.field("index")?, depth + 1)?;

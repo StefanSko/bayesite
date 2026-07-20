@@ -53,6 +53,10 @@ fn collect_expr_refs(expr: &Expr, refs: &mut Vec<ValueRef>) {
             collect_expr_refs(right, refs);
         }
         Expr::Unary { operand, .. } => collect_expr_refs(operand, refs),
+        Expr::MatVec { matrix, vector } => {
+            collect_expr_refs(matrix, refs);
+            collect_expr_refs(vector, refs);
+        }
         Expr::Index { base, index } => {
             collect_expr_refs(base, refs);
             collect_index_refs(index, refs);
@@ -161,7 +165,11 @@ fn generated_value(site: &ResolvedStochasticSite) -> Option<ValueRef> {
             Expr::Param(name) => Some(ValueRef::Param(name.clone())),
             _ => None,
         },
-        Expr::Const(_) | Expr::Bin { .. } | Expr::Unary { .. } | Expr::Index { .. } => None,
+        Expr::Const(_)
+        | Expr::Bin { .. }
+        | Expr::Unary { .. }
+        | Expr::MatVec { .. }
+        | Expr::Index { .. } => None,
     }
 }
 
@@ -250,9 +258,12 @@ mod tests {
                     IndexSpec::Full,
                 ]),
             }),
-            observed_values: Box::new(Expr::Unary {
-                function: UnaryFn::Neg,
-                operand: Box::new(Expr::Param("observed_value".to_string())),
+            observed_values: Box::new(Expr::MatVec {
+                matrix: Box::new(Expr::Data("matrix".to_string())),
+                vector: Box::new(Expr::Unary {
+                    function: UnaryFn::Neg,
+                    operand: Box::new(Expr::Param("observed_value".to_string())),
+                }),
             }),
             missing_idx: Box::new(Expr::Data("missing_idx".to_string())),
             missing_values: Box::new(Expr::Bin {
@@ -276,6 +287,7 @@ mod tests {
             ValueRef::data("length"),
             ValueRef::data("observed_idx"),
             ValueRef::data("index"),
+            ValueRef::data("matrix"),
             ValueRef::param("observed_value"),
             ValueRef::data("missing_idx"),
             ValueRef::param("missing_value"),

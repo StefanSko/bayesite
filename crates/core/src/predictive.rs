@@ -4,7 +4,7 @@
 //! data, draw count, and seed; the module returns v0-provisional NDJSON lines.
 //! No filesystem, clocks, global entropy, Python, or producer code are used.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ancestral::{stable_site_order, ValueRef};
 use crate::artifact::{
@@ -18,7 +18,9 @@ use crate::ir::{
     Size, UnaryFn,
 };
 use crate::json::{self, Value};
-use crate::model::{resolve_constraint, DataValue, Posterior, ResolvedConstraint};
+use crate::model::{
+    resolve_constraint, validate_bound_matvec_shapes, DataValue, Posterior, ResolvedConstraint,
+};
 use crate::rng::Xoshiro256PlusPlus;
 use crate::special;
 use crate::tensor::{gather_map, IndexAtom, Tensor};
@@ -214,18 +216,18 @@ fn free_specs(
         let shape = match &free_value.size {
             Size::Scalar => vec![],
             Size::Fixed(k) => {
-                if *k < 1 {
+                if *k < 0 {
                     return Err(mismatch(format!(
-                        "parameter size for \"{name}\" must be a positive integer, got {k}"
+                        "parameter size for \"{name}\" must be a non-negative integer, got {k}"
                     )));
                 }
                 vec![*k as usize]
             }
             Size::Data(ref_name) => {
                 let k = scalar_int_data(data, ref_name)?;
-                if k < 1 {
+                if k < 0 {
                     return Err(mismatch(format!(
-                        "data-dependent parameter size \"{ref_name}\" must be a positive integer, got {k}"
+                        "data-dependent parameter size \"{ref_name}\" must be a non-negative integer, got {k}"
                     )));
                 }
                 vec![k as usize]
@@ -240,6 +242,38 @@ fn free_specs(
         specs.insert(name, FreeSpec { shape, constraint });
     }
     Ok(specs)
+}
+
+fn validate_free_spec_matvec_shapes(
+    meta: &ModelMeta,
+    data: &HashMap<String, DataValue>,
+    free_specs: &HashMap<String, FreeSpec>,
+) -> Result<(), Error> {
+    let value_shapes = free_specs
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.shape.clone()))
+        .collect::<HashMap<_, _>>();
+    let deferred_values = meta
+        .resolved_stochastic_sites()
+        .into_iter()
+        .filter_map(|site| match site.value {
+            Expr::Data(name) if !data.contains_key(&name) => Some(name),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    validate_bound_matvec_shapes(meta, data, &value_shapes, &deferred_values)
+}
+
+fn validate_forward_matvec_shapes(
+    meta: &ModelMeta,
+    data: &HashMap<String, DataValue>,
+    values: &HashMap<String, Tensor>,
+) -> Result<(), Error> {
+    let value_shapes = values
+        .iter()
+        .map(|(name, value)| (name.clone(), value.shape().to_vec()))
+        .collect::<HashMap<_, _>>();
+    validate_bound_matvec_shapes(meta, data, &value_shapes, &HashSet::new())
 }
 
 fn claim_unique_generative_site(
@@ -279,6 +313,7 @@ fn site_owns_non_param_free_value(site: &ResolvedStochasticSite, name: &str) -> 
         | Expr::Const(_)
         | Expr::Bin { .. }
         | Expr::Unary { .. }
+        | Expr::MatVec { .. }
         | Expr::Index { .. } => false,
     }
 }
@@ -393,6 +428,11 @@ impl<'a> ForwardEnv<'a> {
                     UnaryFn::Neg => -v,
                     UnaryFn::Sigmoid => 1.0 / (1.0 + (-v).exp()),
                 }))
+            }
+            Expr::MatVec { matrix, vector } => {
+                let matrix = self.evaluate(matrix)?;
+                let vector = self.evaluate(vector)?;
+                matrix.matvec(&vector)
             }
             Expr::Index { base, index } => {
                 let base = self.evaluate(base)?;
@@ -1397,18 +1437,6 @@ fn tensor_to_value(tensor: &Tensor, integer_flags: &[bool], context: &str) -> Re
     }
 }
 
-fn value_is_integer(tensor: &Tensor) -> bool {
-    tensor.data().iter().all(|&value| value.fract() == 0.0)
-}
-
-fn integer_flags(tensor: &Tensor) -> Vec<bool> {
-    tensor
-        .data()
-        .iter()
-        .map(|&value| value.fract() == 0.0)
-        .collect()
-}
-
 fn integer_flags_to_value(shape: &[usize], flags: &[bool]) -> Value {
     if shape.is_empty() {
         Value::Bool(flags.first().copied().unwrap_or(false))
@@ -1626,6 +1654,7 @@ pub fn simulate_prior_predictive(
     }
     let data = bind_declared_data(&meta, data)?;
     let free_specs = free_specs(&meta, &data)?;
+    validate_free_spec_matvec_shapes(&meta, &data, &free_specs)?;
     let sites = meta.resolved_stochastic_sites();
     validate_prior_predictive_site_inventory(&meta, &sites)?;
     let site_indices = (0..sites.len()).collect::<Vec<_>>();
@@ -1681,8 +1710,11 @@ pub fn simulate_prior_predictive(
                         stochastic_site: site.name.clone(),
                         role: PriorPredictiveRole::Parameter,
                         shape: value.shape().to_vec(),
-                        integer: value_is_integer(&value),
-                        integer_by_coordinate: integer_flags(&value),
+                        integer: distribution_has_integer_support(&site.distribution),
+                        integer_by_coordinate: distribution_integer_flags(
+                            &site.distribution,
+                            &value,
+                        ),
                     });
                     values.push((name.clone(), value));
                 }
@@ -1701,8 +1733,11 @@ pub fn simulate_prior_predictive(
                         stochastic_site: site.name.clone(),
                         role: PriorPredictiveRole::Observed,
                         shape: value.shape().to_vec(),
-                        integer: value_is_integer(&value),
-                        integer_by_coordinate: integer_flags(&value),
+                        integer: distribution_has_integer_support(&site.distribution),
+                        integer_by_coordinate: distribution_integer_flags(
+                            &site.distribution,
+                            &value,
+                        ),
                     });
                     values.push((name.clone(), value));
                 }
@@ -1818,14 +1853,18 @@ pub fn simulate_prior_predictive(
                         stochastic_site: site.name.clone(),
                         role: PriorPredictiveRole::Observed,
                         shape: value.shape().to_vec(),
-                        integer: value_is_integer(&value),
-                        integer_by_coordinate: integer_flags(&value),
+                        integer: distribution_has_integer_support(&site.distribution),
+                        integer_by_coordinate: distribution_integer_flags(
+                            &site.distribution,
+                            &value,
+                        ),
                     });
                     values.push((site.name.clone(), value));
                 }
                 Expr::Const(_)
                 | Expr::Bin { .. }
                 | Expr::Unary { .. }
+                | Expr::MatVec { .. }
                 | Expr::Index { .. } => {
                     return Err(invalid(format!(
                         "prior-predictive site \"{}\" has a non-assignable value expression; only ParamRef, DataRef, and PartiallyObserved VectorScatter sites are supported in v0-provisional output",
@@ -1834,6 +1873,7 @@ pub fn simulate_prior_predictive(
                 }
             }
         }
+        validate_forward_matvec_shapes(&meta, &data, &env.values)?;
         let mut generated = execution_order
             .iter()
             .copied()
@@ -1895,6 +1935,10 @@ fn collect_expr_data_refs(expr: &Expr, refs: &mut Vec<String>) {
             collect_expr_data_refs(right, refs);
         }
         Expr::Unary { operand, .. } => collect_expr_data_refs(operand, refs),
+        Expr::MatVec { matrix, vector } => {
+            collect_expr_data_refs(matrix, refs);
+            collect_expr_data_refs(vector, refs);
+        }
         Expr::Index { base, index } => {
             collect_expr_data_refs(base, refs);
             collect_index_spec_data_refs(index, refs);
@@ -2006,6 +2050,7 @@ pub fn simulate_data_from_truth(
     let output_declared_data = declared_data.clone();
     let data = bind_declared_data(&meta, declared_data)?;
     let free_specs = free_specs(&meta, &data)?;
+    validate_free_spec_matvec_shapes(&meta, &data, &free_specs)?;
     let free_order = meta
         .resolved_free_values()
         .into_iter()
@@ -2063,6 +2108,8 @@ pub fn simulate_data_from_truth(
         ));
     }
 
+    validate_forward_matvec_shapes(&meta, &data, &env.values)?;
+
     // Preserve validation of ignored, non-assignable factor expressions after
     // every directly generated data value is available.
     for site in &sites {
@@ -2103,7 +2150,11 @@ pub fn simulate_data_from_truth(
                     )));
                 }
             }
-            Expr::Const(_) | Expr::Bin { .. } | Expr::Unary { .. } | Expr::Index { .. } => {
+            Expr::Const(_)
+            | Expr::Bin { .. }
+            | Expr::Unary { .. }
+            | Expr::MatVec { .. }
+            | Expr::Index { .. } => {
                 let mut refs = Vec::new();
                 collect_expr_data_refs(&site.value, &mut refs);
                 refs.sort();
@@ -2300,7 +2351,50 @@ fn fit_shape_size(shape: &[usize], name: &str) -> Result<usize, Error> {
             ))
         })?;
     }
-    Ok(size.max(1))
+    Ok(size)
+}
+
+fn unique_fit_field<'a>(
+    document: &'a Value,
+    field: &str,
+    context: &str,
+) -> Result<Option<&'a Value>, Error> {
+    let Value::Object(fields) = document else {
+        return Err(malformed_fit(format!("fit {context} must be an object")));
+    };
+    let mut matches = fields
+        .iter()
+        .filter(|(name, _)| name == field)
+        .map(|(_, value)| value);
+    let first = matches.next();
+    if matches.next().is_some() {
+        return Err(malformed_fit(format!(
+            "fit {context} has duplicate {field} fields"
+        )));
+    }
+    Ok(first)
+}
+
+fn validate_optional_fit_parameter_count(
+    document: &Value,
+    field: &str,
+    expected: usize,
+    context: &str,
+) -> Result<(), Error> {
+    let Some(value) = unique_fit_field(document, field, context)? else {
+        return Ok(());
+    };
+    let count = value.as_i64().ok_or_else(|| {
+        malformed_fit(format!(
+            "fit {context} {field} must be an integer when present"
+        ))
+    })?;
+    if count < 0 || usize::try_from(count).ok() != Some(expected) {
+        return Err(malformed_fit(format!(
+            "fit {context} {field} must match the params array length"
+        )));
+    }
+    Ok(())
 }
 
 fn parse_fit_params(header: &Value) -> Result<Vec<FitParamSpec>, Error> {
@@ -2314,8 +2408,7 @@ fn parse_fit_params(header: &Value) -> Result<Vec<FitParamSpec>, Error> {
             "fit header artifact_kind must be \"posterior_draws\"; pass output from `bayesite sample`",
         ));
     }
-    let params = header
-        .get("params")
+    let params = unique_fit_field(header, "params", "header")?
         .and_then(Value::as_array)
         .ok_or_else(|| malformed_fit("fit header needs a params array from `bayesite sample`"))?;
     let mut out = Vec::with_capacity(params.len());
@@ -2334,11 +2427,7 @@ fn parse_fit_params(header: &Value) -> Result<Vec<FitParamSpec>, Error> {
         let size = fit_shape_size(&shape, &name)?;
         out.push(FitParamSpec { name, shape, size });
     }
-    if out.is_empty() {
-        return Err(malformed_fit(
-            "fit header has no parameters; posterior-predictive needs a posterior draw stream",
-        ));
-    }
+    validate_optional_fit_parameter_count(header, "parameter_count", out.len(), "header")?;
     Ok(out)
 }
 
@@ -2383,9 +2472,9 @@ fn parse_fit_draw_line(
     specs: &[FitParamSpec],
     expected_draw_index: usize,
 ) -> Result<FitDraw, Error> {
-    // `diagnose_ndjson` has already validated every optional metadata group.
     // Legacy streams may omit draw-index/artifact metadata consistently; in
     // that case stream order is the stable source-draw index.
+    validate_optional_fit_parameter_count(line, "parameter_count", specs.len(), "draw line")?;
     let draw_index = match line.get("draw_index") {
         Some(value) => {
             let draw_index = value
@@ -2414,17 +2503,22 @@ fn parse_fit_draw_line(
     if draw < 0 {
         return Err(malformed_fit("fit draw line draw must be non-negative"));
     }
-    let values = line
-        .get("values")
+    let values = unique_fit_field(line, "values", "draw line")?
         .ok_or_else(|| malformed_fit("fit draw line needs a values object"))?;
+    let Value::Object(entries) = values else {
+        return Err(malformed_fit("fit draw line needs a values object"));
+    };
+    if entries.len() != specs.len() {
+        return Err(malformed_fit(
+            "fit draw values must exactly match the params array",
+        ));
+    }
     let mut parsed = Vec::with_capacity(specs.len());
     for spec in specs {
-        parsed.push(parse_fit_param_value(
-            values.get(&spec.name).ok_or_else(|| {
-                malformed_fit(format!("fit draw line is missing value for {}", spec.name))
-            })?,
-            spec,
-        )?);
+        let value = unique_fit_field(values, &spec.name, "draw values")?.ok_or_else(|| {
+            malformed_fit(format!("fit draw line is missing value for {}", spec.name))
+        })?;
+        parsed.push(parse_fit_param_value(value, spec)?);
     }
     Ok(FitDraw {
         draw_index,
@@ -2574,6 +2668,8 @@ fn parse_fit_stream(
             "fit trailer artifact_scope must match posterior_draws sample output",
         ));
     }
+    validate_optional_fit_parameter_count(&trailer, "parameter_count", params.len(), "trailer")?;
+    validate_optional_fit_parameter_count(&trailer, "params", params.len(), "trailer")?;
     validate_fit_source_identity(
         &trailer,
         "trailer",
@@ -3501,6 +3597,7 @@ fn simulate_generation_outcomes(
             ),
         ));
     }
+    validate_forward_matvec_shapes(meta, data, &env.values)?;
     if outcomes.is_empty() {
         return Err(invalid(
             "generate needs at least one directly assignable observed outcome",
@@ -3531,6 +3628,7 @@ pub(crate) fn fixed_generation_pairs(
     }
     let data = generation_design(&meta, design)?;
     let free_specs = free_specs(&meta, &data)?;
+    validate_free_spec_matvec_shapes(&meta, &data, &free_specs)?;
     let free_order = meta
         .resolved_free_values()
         .into_iter()
@@ -3542,10 +3640,18 @@ pub(crate) fn fixed_generation_pairs(
         parameters.clone(),
         "generate fixed",
     )?;
+    let output_parameters = parameters
+        .into_iter()
+        .zip(&meta.params)
+        .map(|((name, mut value), (_, param))| {
+            value.integer = distribution_has_integer_support(&param.distribution);
+            (name, value)
+        })
+        .collect::<Vec<_>>();
     let mut rng = Xoshiro256PlusPlus::for_chain(seed, 0);
     for _ in 0..count {
         emit(GenerationPair {
-            parameters: parameters.clone(),
+            parameters: output_parameters.clone(),
             outcomes: simulate_generation_outcomes(
                 &meta,
                 &data,
@@ -3568,6 +3674,7 @@ pub(crate) fn model_prior_generation_pairs(
     validate_generation_model(&meta)?;
     let data = generation_design(&meta, design)?;
     let free_specs = free_specs(&meta, &data)?;
+    validate_free_spec_matvec_shapes(&meta, &data, &free_specs)?;
     let sites = meta.resolved_stochastic_sites();
     let site_indices = (0..sites.len()).collect::<Vec<_>>();
     let execution_order = stable_site_order(
@@ -3619,7 +3726,7 @@ pub(crate) fn model_prior_generation_pairs(
                         DataValue {
                             shape: value.shape().to_vec(),
                             values: value.data().to_vec(),
-                            integer: value_is_integer(&value),
+                            integer: distribution_has_integer_support(&site.distribution),
                         },
                     );
                 }
@@ -3633,7 +3740,7 @@ pub(crate) fn model_prior_generation_pairs(
                             DataValue {
                                 shape: value.shape().to_vec(),
                                 values: value.data().to_vec(),
-                                integer: value_is_integer(&value),
+                                integer: distribution_has_integer_support(&site.distribution),
                             },
                         ),
                     ));
@@ -3641,6 +3748,7 @@ pub(crate) fn model_prior_generation_pairs(
                 _ => unreachable!("generation model validation rejects non-assignable sites"),
             }
         }
+        validate_forward_matvec_shapes(&meta, &data, &env.values)?;
         let parameters = meta
             .params
             .iter()
@@ -3704,15 +3812,16 @@ pub(crate) fn posterior_generation_pairs(
     )?;
     let data = generation_design(&meta, design)?;
     let free_specs = free_specs(&meta, &data)?;
+    validate_free_spec_matvec_shapes(&meta, &data, &free_specs)?;
     for (spec, (name, free)) in fit.params.iter().zip(meta.resolved_free_values()) {
         let shape = match free.size {
             Size::Scalar => Vec::new(),
             Size::Fixed(size) => vec![size as usize],
             Size::Data(ref data_name) => {
                 let size = scalar_int_data(&data, data_name)?;
-                if size < 1 {
+                if size < 0 {
                     return Err(mismatch(format!(
-                        "generation design parameter size \"{data_name}\" must be positive"
+                        "generation design parameter size \"{data_name}\" must be non-negative"
                     )));
                 }
                 vec![size as usize]

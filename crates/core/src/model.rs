@@ -5,7 +5,7 @@
 //! is split per the packing-order guarantee, constraints contribute their
 //! log-Jacobians, and stochastic sites accumulate in document order.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::density::{self, DistVars};
@@ -397,6 +397,10 @@ fn check_expr_depth(root: &Expr) -> Result<(), Error> {
                         stack.push(Frame::Expr(right, depth + 1));
                     }
                     Expr::Unary { operand, .. } => stack.push(Frame::Expr(operand, depth + 1)),
+                    Expr::MatVec { matrix, vector } => {
+                        stack.push(Frame::Expr(matrix, depth + 1));
+                        stack.push(Frame::Expr(vector, depth + 1));
+                    }
                     Expr::Index { base, index } => {
                         stack.push(Frame::Expr(base, depth + 1));
                         stack.push(Frame::Index(index, depth + 1));
@@ -584,25 +588,25 @@ impl Posterior {
             let shape: Vec<usize> = match &free_value.size {
                 Size::Scalar => vec![],
                 Size::Fixed(k) => {
-                    if *k < 1 {
+                    if *k < 0 {
                         return Err(mismatch(format!(
-                            "parameter size for \"{name}\" must be a positive integer, got {k}"
+                            "parameter size for \"{name}\" must be a non-negative integer, got {k}"
                         )));
                     }
                     vec![*k as usize]
                 }
                 Size::Data(ref_name) => {
                     let k = scalar_int_data(&data_map, ref_name)?;
-                    if k < 1 {
+                    if k < 0 {
                         return Err(mismatch(format!(
-                            "data-dependent parameter size \"{ref_name}\" must be a positive \
+                            "data-dependent parameter size \"{ref_name}\" must be a non-negative \
                              integer, got {k}"
                         )));
                     }
                     vec![k as usize]
                 }
             };
-            let size: usize = shape.iter().product::<usize>().max(1);
+            let size: usize = shape.iter().product();
             unresolved_free.push((name, free_value.constraint, shape, offset, size));
             offset += size;
         }
@@ -618,6 +622,12 @@ impl Posterior {
                 size,
             });
         }
+
+        let value_shapes = free
+            .iter()
+            .map(|slot| (slot.name.clone(), slot.shape.clone()))
+            .collect::<HashMap<_, _>>();
+        validate_bound_matvec_shapes(&meta, &data_map, &value_shapes, &HashSet::new())?;
 
         Ok(Posterior {
             free,
@@ -1110,6 +1120,15 @@ fn evaluate_optional_data_expr(
                 UnaryFn::Sigmoid => operand.map(crate::special::sigmoid),
             }))
         }
+        Expr::MatVec { matrix, vector } => {
+            let Some(matrix) = evaluate_optional_data_expr(matrix, data)? else {
+                return Ok(None);
+            };
+            let Some(vector) = evaluate_optional_data_expr(vector, data)? else {
+                return Ok(None);
+            };
+            Ok(Some(matrix.matvec(&vector)?))
+        }
         Expr::Index { base, index } => {
             let Some(base) = evaluate_optional_data_expr(base, data)? else {
                 return Ok(None);
@@ -1234,8 +1253,12 @@ fn apply_constraint(
             }
             let constrained = tape.ordered_inverse(leaf);
             let n = tape.value(leaf).len();
-            let tail = tape.gather(leaf, slice_last_map(&[n], 1, n));
-            Ok((constrained, Some(tail)))
+            let log_jacobian = if n == 0 {
+                None
+            } else {
+                Some(tape.gather(leaf, slice_last_map(&[n], 1, n)))
+            };
+            Ok((constrained, log_jacobian))
         }
         Some(ResolvedConstraint::VectorBounds { lower, upper }) => {
             vector_bounds_constraint(tape, leaf, lower.as_deref(), upper.as_deref())
@@ -1364,6 +1387,12 @@ impl<'a> Env<'a> {
                     UnaryFn::Neg => self.tape.neg(v),
                     UnaryFn::Sigmoid => self.tape.sigmoid(v),
                 })
+            }
+            Expr::MatVec { matrix, vector } => {
+                let matrix = self.evaluate(matrix)?;
+                let vector = self.evaluate(vector)?;
+                self.tape.value(matrix).matvec(self.tape.value(vector))?;
+                Ok(self.tape.matvec(matrix, vector))
             }
             Expr::Index { base, index } => {
                 let base_var = self.evaluate(base)?;
@@ -1542,6 +1571,212 @@ impl<'a> Env<'a> {
             },
         })
     }
+}
+
+fn index_values_are_available(env: &Env<'_>, index: &IndexSpec) -> bool {
+    match index {
+        IndexSpec::Scalar(expr) => expr_values_are_available(env, expr),
+        IndexSpec::Full => true,
+        IndexSpec::Tuple(items) => items
+            .iter()
+            .all(|item| index_values_are_available(env, item)),
+    }
+}
+
+fn expr_values_are_available(env: &Env<'_>, expr: &Expr) -> bool {
+    match expr {
+        Expr::Param(name) | Expr::Data(name) => {
+            env.data.contains_key(name) || env.values.contains_key(name)
+        }
+        Expr::Const(_) => true,
+        Expr::Bin { left, right, .. } => {
+            expr_values_are_available(env, left) && expr_values_are_available(env, right)
+        }
+        Expr::Unary { operand, .. } => expr_values_are_available(env, operand),
+        Expr::MatVec { matrix, vector } => {
+            expr_values_are_available(env, matrix) && expr_values_are_available(env, vector)
+        }
+        Expr::Index { base, index } => {
+            expr_values_are_available(env, base) && index_values_are_available(env, index)
+        }
+        Expr::VectorScatter {
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        } => [
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        ]
+        .into_iter()
+        .all(|child| expr_values_are_available(env, child)),
+    }
+}
+
+fn first_unavailable_index_name(
+    env: &Env<'_>,
+    index: &IndexSpec,
+    deferred_values: &HashSet<String>,
+) -> Option<String> {
+    match index {
+        IndexSpec::Scalar(expr) => first_unavailable_expr_name(env, expr, deferred_values),
+        IndexSpec::Full => None,
+        IndexSpec::Tuple(items) => items
+            .iter()
+            .find_map(|item| first_unavailable_index_name(env, item, deferred_values)),
+    }
+}
+
+fn first_unavailable_expr_name(
+    env: &Env<'_>,
+    expr: &Expr,
+    deferred_values: &HashSet<String>,
+) -> Option<String> {
+    match expr {
+        Expr::Param(name) | Expr::Data(name) => (!env.data.contains_key(name)
+            && !env.values.contains_key(name)
+            && !deferred_values.contains(name))
+        .then(|| name.clone()),
+        Expr::Const(_) => None,
+        Expr::Bin { left, right, .. } => first_unavailable_expr_name(env, left, deferred_values)
+            .or_else(|| first_unavailable_expr_name(env, right, deferred_values)),
+        Expr::Unary { operand, .. } => first_unavailable_expr_name(env, operand, deferred_values),
+        Expr::MatVec { matrix, vector } => {
+            first_unavailable_expr_name(env, matrix, deferred_values)
+                .or_else(|| first_unavailable_expr_name(env, vector, deferred_values))
+        }
+        Expr::Index { base, index } => first_unavailable_expr_name(env, base, deferred_values)
+            .or_else(|| first_unavailable_index_name(env, index, deferred_values)),
+        Expr::VectorScatter {
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        } => [
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        ]
+        .into_iter()
+        .find_map(|child| first_unavailable_expr_name(env, child, deferred_values)),
+    }
+}
+
+fn validate_bound_matvec_index(
+    env: &mut Env<'_>,
+    index: &IndexSpec,
+    deferred_values: &HashSet<String>,
+) -> Result<(), Error> {
+    match index {
+        IndexSpec::Scalar(expr) => validate_bound_matvec_expr(env, expr, deferred_values),
+        IndexSpec::Full => Ok(()),
+        IndexSpec::Tuple(items) => {
+            for item in items {
+                validate_bound_matvec_index(env, item, deferred_values)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_bound_matvec_expr(
+    env: &mut Env<'_>,
+    expr: &Expr,
+    deferred_values: &HashSet<String>,
+) -> Result<(), Error> {
+    match expr {
+        Expr::Param(_) | Expr::Data(_) | Expr::Const(_) => Ok(()),
+        Expr::Bin { left, right, .. } => {
+            validate_bound_matvec_expr(env, left, deferred_values)?;
+            validate_bound_matvec_expr(env, right, deferred_values)
+        }
+        Expr::Unary { operand, .. } => validate_bound_matvec_expr(env, operand, deferred_values),
+        Expr::MatVec { matrix, vector } => {
+            validate_bound_matvec_expr(env, matrix, deferred_values)?;
+            validate_bound_matvec_expr(env, vector, deferred_values)?;
+            if let Some(name) = first_unavailable_expr_name(env, expr, deferred_values) {
+                return Err(malformed(format!(
+                    "MatVecOp references unknown value \"{name}\" during binding"
+                )));
+            }
+            if expr_values_are_available(env, matrix) && expr_values_are_available(env, vector) {
+                let matrix = env.evaluate(matrix)?;
+                let vector = env.evaluate(vector)?;
+                env.tape.value(matrix).matvec(env.tape.value(vector))?;
+            }
+            Ok(())
+        }
+        Expr::Index { base, index } => {
+            validate_bound_matvec_expr(env, base, deferred_values)?;
+            validate_bound_matvec_index(env, index, deferred_values)
+        }
+        Expr::VectorScatter {
+            length,
+            observed_idx,
+            observed_values,
+            missing_idx,
+            missing_values,
+        } => {
+            for child in [
+                length,
+                observed_idx,
+                observed_values,
+                missing_idx,
+                missing_values,
+            ] {
+                validate_bound_matvec_expr(env, child, deferred_values)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn validate_bound_matvec_shapes(
+    meta: &ModelMeta,
+    data: &HashMap<String, DataValue>,
+    value_shapes: &HashMap<String, Vec<usize>>,
+    deferred_values: &HashSet<String>,
+) -> Result<(), Error> {
+    let mut tape = Tape::new();
+    let mut values = HashMap::new();
+    for (name, shape) in value_shapes {
+        let value = tape.constant(Tensor::zeros(shape));
+        values.insert(name.clone(), value);
+    }
+    let mut env = Env {
+        tape,
+        values,
+        data,
+        data_vars: HashMap::new(),
+    };
+
+    for (_, param) in &meta.params {
+        for expr in distribution_exprs(&param.distribution) {
+            validate_bound_matvec_expr(&mut env, expr, deferred_values)?;
+        }
+    }
+    for observed in &meta.observed_nodes {
+        for expr in distribution_exprs(&observed.distribution) {
+            validate_bound_matvec_expr(&mut env, expr, deferred_values)?;
+        }
+    }
+    for (_, expr) in &meta.expressions {
+        validate_bound_matvec_expr(&mut env, expr, deferred_values)?;
+    }
+    for site in meta.resolved_stochastic_sites() {
+        for expr in distribution_exprs(&site.distribution) {
+            validate_bound_matvec_expr(&mut env, expr, deferred_values)?;
+        }
+        validate_bound_matvec_expr(&mut env, &site.value, deferred_values)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

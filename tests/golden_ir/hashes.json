@@ -2,6 +2,7 @@
   "linear_regression": "46dee737e1254cac535a80d30c780bb0c926a8ad8f16467e35eea8b1f69aa61b",
   "alternative_prior_regression": "55acd7ebb3749c58101c13420faa4bd4a5ba62390f075cd9c4a900704e600706",
   "eight_schools_non_centered": "6cb101cf5159bddcbe10650a87a8763054a462da0f4374b8b61a2a1a861695dc",
+  "mvn_non_centered": "e7f77bcec5f3bdc273499262b2d09151bf9e52dcf293d74ffe6896cc0aa2a6a9",
   "varying_intercepts_poisson": "e9357934616ca8991f49bcfbb00c03ed6ff223cd6af055f998c477e115deff5a",
   "composed_measurements": "a07a94bbe77196a15b92ffebcb3ce2e461249e1ee5dce323c1bf964fb256bf3a",
   "ordinal_regression": "9c02a46423bbfeb14f6f62912fffc553d15d4f5e835cd239334265d1abaf0bf9",
