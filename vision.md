@@ -1,0 +1,292 @@
+# Bayesite: the Bayesian investigation as a first-class object
+
+> Do not just publish a Bayesian answer. Publish the investigation in a form
+> someone else can inspect, reproduce, challenge, and continue.
+
+This is the product direction we want to reach, recorded on 2026-09-14. It is
+not a description of completed functionality, a new wire-format specification,
+or approval to expand the numerical core. Implementation decisions must preserve
+[the project invariants](docs/invariants.md) and earn their complexity through
+small, concrete experiments.
+
+## The thing we want to exist
+
+You receive a link to a Bayesian investigation.
+
+Opening it shows the question, the estimand, the models considered, the data used,
+the checks performed, and the current conclusion. A suspicious result leads back
+to its computation. A model revision leads back to the observation or decision
+that motivated it. Failed models and unresolved problems have not disappeared
+from the story.
+
+You can inspect the saved evidence without executing anything. You can choose to
+reproduce supported computations locally. If you disagree with a prior, a
+likelihood, or the treatment of the observation process, you can branch from that
+point and explore an alternative. Your continuation receives its own link, with
+an explicit relationship to the original.
+
+The original investigation remains unchanged. You can send the author more than
+an objection: you can send an executable alternative.
+
+**The unit of sharing is an investigation, not a notebook environment, a chat
+session, or a final posterior.**
+
+## Why an investigation, not a reusable analysis recipe
+
+Bayesian workflow is deeply dependent on the question, the data, the measurement
+process, and what the investigator learns along the way. A procedure appropriate
+for one problem may be misleading for another. Good workflow includes changing
+the question, revisiting assumptions, constructing checks, and deciding not to
+trust a result.
+
+The primary vision is therefore not a library of one-size-fits-all pipelines
+that accept arbitrary datasets. It is a faithful, executable record of a
+particular investigation, together with the ability to continue it.
+
+Reusable techniques, model fragments, and teaching examples may emerge from
+investigations. Applying an investigation to new private data may become useful
+later. Neither is the organizing principle, and neither should turn scientific
+judgment into an invisible default.
+
+## Why Bayesite
+
+Bayesite's distinctive foundation is a small, prebuilt, agent-operable engine
+that consumes models as data. It can execute supported Bayesian models without
+running their producer's code or requiring a model-specific native toolchain.
+WebAssembly makes the same numerical core available to browser hosts.
+
+This changes what it costs to carry a computation with a claim. Instead of
+requiring the reader to reconstruct a scientific programming environment, a
+bounded investigation can carry explicit model and data artifacts, a pinned
+engine, and the settings needed to execute them.
+
+The ecological niche is the intersection of:
+
+- **Portable execution:** useful Bayesian computation in constrained environments.
+- **Model-as-data:** explicit assumptions that can be transported and inspected.
+- **Checkable iteration:** artifacts and decisions that preserve how an answer
+  was reached and where it remains uncertain.
+
+This is not a claim to support every probabilistic program, every dataset size,
+or every inference algorithm. Nor is it a claim that agents can replace
+scientific judgment. Bayesite is the instrument; the investigation gives the
+instrument's outputs context.
+
+The execution path should remain free of Python and package-manager setup.
+That is distinct from having no third-party source dependencies: the core has
+an explicit, audited SHA-256 dependency exception.
+
+## Two connected graphs
+
+Making workflow first-class requires preserving two kinds of relationship.
+
+### The computational graph: what produced this artifact?
+
+A fit depends on exact model and data bytes, a pinned engine and execution
+configuration, sampler settings, and seeds. A predictive check depends on its
+specified procedure and inputs. An estimand summary depends on its definition,
+transformation, and the relevant draws.
+
+```text
+Model + data + engine + settings + seeds
+                    |
+                    v
+                   Fit
+                 /     \
+                v       v
+       Diagnostics     Predictive checks
+                \       /
+                 v     v
+              Saved evidence
+```
+
+These dependencies support reproduction, verification, caching, and explicit
+invalidation. Supported derived computations need equally explicit recipes;
+recording a prose description of an unrecorded script is not enough to make
+that script reproducible.
+
+### The investigation graph: why did we do this next?
+
+A prior prediction reveals implausible values. A predictive check misses the
+long tail. A conversation clarifies that the original estimand was not the
+quantity of interest. Each may motivate a new branch of investigation.
+
+```text
+Initial model --> prior prediction --> revised prior
+                                           |
+                                           v
+                                      fit and check
+                                           |
+                                  "The tail is wrong"
+                                      /         \
+                                     v           v
+                               Alternative A  Alternative B
+                                      \         /
+                                       comparison
+                                           |
+                                   current conclusion
+```
+
+A check can motivate a new model without being a numerical input to that model.
+An explicit decision can change the direction of a study without pretending to
+be a statistical result. These relationships must not be collapsed into ordinary
+build dependencies.
+
+The goal is an inspectable account of actions, evidence, and stated reasons,
+not a claim to capture an investigator's private reasoning or prove that their
+explanation is correct. Human approvals, when present, must be distinguished
+from agent recommendations and ordinary notes; they must never be invented.
+
+## Immutable snapshots and unique links
+
+Borrow the content-addressing discipline of systems like Nix without assuming
+that Bayesite must use Nix or become a general build system.
+
+Distinguish three identities:
+
+1. **Recipe identity:** the exact operation and all execution-relevant inputs.
+2. **Result identity:** the actual artifact bytes produced by an execution.
+3. **Investigation snapshot identity:** a manifest connecting the question,
+   estimand, recipes, evidence, decisions, branch relationships, and current
+   interpretation.
+
+A content-addressed snapshot can be resolved through a link. Its identity should
+not depend on one website, account, or hosting location. Different viewers and
+the CLI should be able to inspect the same object. An identifier verifies what
+was retrieved; storage and retrieval infrastructure must separately keep it
+available.
+
+A working investigation remains open-ended. Publishing or checkpointing it
+creates an immutable snapshot. A convenient project name or "latest" link may
+move forward; a citation must continue to identify its original snapshot.
+
+A result cache may reuse an artifact only when the relevant recipe identity
+matches. Different execution targets or floating-point behavior can yield
+different output bytes. Exact artifact verification, byte-identical replay,
+and a defined numerical comparison are separate outcomes, not interchangeable
+meanings of "reproduced."
+
+The detailed manifest, identity rules, storage, and publication protocol require
+an explicit design and compatibility decision. This vision does not introduce a
+parallel artifact standard beside the existing Bayeswire and Bayescycle contracts.
+
+## Branching and forking are fundamental operations
+
+The initial vocabulary should be small:
+
+- **Snapshot:** preserve the current investigation without overwriting its past.
+- **Branch:** explore an alternative from any recorded point in the investigation.
+- **Fork:** continue a shared investigation in another workspace while retaining
+  its source relationship.
+- **Compare:** inspect changes in assumptions, evidence, estimands, and conclusions.
+- **Cite:** refer to an exact snapshot or artifact rather than a moving project.
+
+A branch records its parent, its changes, and their stated motivation. Unchanged
+artifacts can be shared rather than copied or recomputed. Changing an input must
+not leave an old downstream result presented as current, although that result
+remains valid evidence about the earlier branch.
+
+Forking must be possible before the final model. A reader should be able to
+revisit an earlier modeling decision and explore the road not taken.
+
+Do not make scientific merging look like automatic file merging. A branch that
+changes the likelihood and a branch that changes the estimand cannot have their
+conclusions mechanically combined. A later synthesis can reference both,
+record a new decision, and execute the necessary new computations.
+
+**Failure belongs in the object.** A retained failed check can explain the
+investigation better than the final fit alone. Cancellation, unsupported
+operations, and incomplete work must also have honest visible states.
+
+## One object, several ways to work with it
+
+A report is a view of the investigation, not its authoritative definition. So
+are a timeline, a branch comparison, and a command-line interface.
+
+- An agent operates explicit commands and receives bounded, machine-readable
+  facts and artifact references. Its chat context is not the durable study.
+- A human sees assumptions, evidence, alternatives, and unresolved questions,
+  and can intervene at meaningful decisions.
+- A browser reader opens saved evidence first and explicitly opts into bounded
+  local execution or a fork.
+- An optional MCP adapter connects compatible agent hosts to the same
+  operations. It does not define a second scientific workflow.
+
+CLI, MCP, and browser execution are complementary access paths. They are not
+competing definitions of the product. The protocol is replaceable; the
+investigation should outlive the interface that created it.
+
+## Keep the instrument small
+
+The vision needs a division of responsibility, not a larger numerical core:
+
+- **Bayesite core:** explicit numerical operations over supported model IR, with
+  typed failures and inspectable artifacts.
+- **A thin investigation layer:** identities, snapshots, artifact relationships,
+  branches, and recorded decisions.
+- **Adapters and viewers:** storage access, sharing, authentication, consent,
+  resource enforcement, presentation, and host integration.
+
+Where the investigation layer lives, and how much of it the CLI exposes, remain
+implementation questions. Reuse the existing run-directory and provenance work
+where it serves this object. Do not create another orchestration framework or
+broaden package responsibilities merely because this vision is ambitious.
+
+WebAssembly is useful because it provides an explicit execution boundary, not
+because it makes every surrounding component safe. Hosts must constrain
+capabilities and resources. Native process isolation is another deployment
+option. Optional arbitrary-code authoring remains separate from IR execution.
+
+## What the link must not promise
+
+- **Availability without preservation.** Content addressing does not keep an
+  object online or archive its engine and dependencies.
+- **Privacy through hashing.** Data and data-derived outputs require explicit
+  publication decisions and access controls. Even private data hashes can leak
+  information. Restricted investigations must make reproduction limits visible.
+- **Authenticity through byte identity.** Hashes alone do not authenticate an
+  author, a human approval, or the claim that an execution actually occurred.
+- **Safety through protocol choice.** MCP is not a sandbox; Wasm does not make
+  its host, parser, or all computation immune to exploitation or exhaustion.
+- **Scientific truth through reproducibility.** A reproducible mistake remains
+  a mistake. Good chain diagnostics do not establish model adequacy or causal
+  identification. Agent agreement does not constitute independent evidence.
+
+## Evidence so far, and the next decisive step
+
+The experiments in the Bayescycle repository support a narrow foundation:
+
+- The [hosted workflow pilot](https://github.com/StefanSko/bayescycle/blob/67be105/experiments/workflow-value-pilot/README.md)
+  completed the prescribed study with all three Python setups. It did not show
+  a unique handoff advantage for the custom workflow layer, and it did not
+  execute Bayesite.
+- The [local Gemma pilot](https://github.com/StefanSko/bayescycle/blob/67be105/experiments/gemma-workflow-pilot/README.md)
+  did not complete the full studies. A narrower interface alone did not establish
+  reliable local-agent scientific work.
+- The [binary MVP](https://github.com/StefanSko/bayescycle/blob/67be105/experiments/mvp-agent-binary/README.md)
+  showed that five agents could operate the engine on one supplied model:
+  15 of 15 sessions authored valid IR and 13 of 15 passed every workflow check.
+  The two failures involved transient edits of protected model artifacts.
+  This is evidence for an agent-operable instrument, not autonomous scientific
+  judgment or an enforced immutable history.
+
+Content-addressed, shareable investigation snapshots and their branch/fork
+experience are still to be built and tested. Existing engine and browser
+capabilities are foundations, not proof of the whole vision.
+
+The first end-to-end demonstration should be deliberately small:
+
+1. Conduct one concrete investigation with a clear question and estimand.
+2. Preserve an initial model and a check that exposes a real limitation.
+3. Explore two model branches and compare their evidence honestly.
+4. Publish an immutable snapshot with public data and pinned execution artifacts.
+5. Let another person open it, inspect it without execution, reproduce a
+   supported computation, and fork an earlier modeling decision.
+6. Obtain a new snapshot link without modifying the original investigation.
+
+Success is not merely that a hash verifies or a browser runs the sampler.
+Success is that another person can understand what was done, identify what they
+disagree with, and continue the investigation without reconstructing the author's
+session or erasing its history.
+
+**A small engine. A durable investigation. A link someone else can continue.**
