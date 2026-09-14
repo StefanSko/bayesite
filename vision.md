@@ -76,6 +76,33 @@ The execution path should remain free of Python and package-manager setup.
 That is distinct from having no third-party source dependencies: the core has
 an explicit, audited SHA-256 dependency exception.
 
+## Step back from the ecosystem; rebuild from the instrument
+
+The five-package Bayescycle ecosystem is not the architecture this vision
+assumes or seeks to complete. We return to Bayesite, the small standalone
+engine, as the starting point and add only what concrete investigations
+demonstrate is necessary. This is a reconsideration of the stack from the
+vision, not a new product layer placed on top of the existing stack.
+
+Preserve valuable foundations: the model specification, conformance corpus,
+numerical validation, and lessons from the existing artifacts and experiments.
+But existing package boundaries, Python authoring layers, orchestration,
+visualization integrations, and lockstep releases are not commitments for the
+future product. A development-time oracle or optional producer need not become
+a dependency on the user's execution path.
+
+The investigation layer must earn its existence through a minimal end-to-end
+demonstration. Start with the engine and the smallest explicit artifacts and
+operations that let someone inspect, reproduce, and continue one investigation.
+Reuse existing machinery where it reduces that burden; do not retain it merely
+because it already exists, or replace it with an equally elaborate new ecosystem.
+
+This is a deliberate simplification of direction, not an instruction to
+immediately delete existing code or silently break published contracts. Any
+retirement, migration, or change in responsibility requires its own explicit
+decision. The experiments motivate this reset; they do not establish that every
+existing component is unnecessary.
+
 ## Two connected graphs
 
 Making workflow first-class requires preserving two kinds of relationship.
@@ -167,8 +194,11 @@ and a defined numerical comparison are separate outcomes, not interchangeable
 meanings of "reproduced."
 
 The detailed manifest, identity rules, storage, and publication protocol require
-an explicit design and compatibility decision. This vision does not introduce a
-parallel artifact standard beside the existing Bayeswire and Bayescycle contracts.
+an explicit design and compatibility decision. This vision does not itself
+change the existing Bayeswire and Bayescycle contracts or introduce a competing
+standard. Preserve the model boundary and assess which artifact contracts serve
+the smaller product; any evolution or replacement must be deliberate rather
+than an accidental consequence of stepping back from the ecosystem.
 
 ## Branching and forking are fundamental operations
 
@@ -227,10 +257,13 @@ The vision needs a division of responsibility, not a larger numerical core:
 - **Adapters and viewers:** storage access, sharing, authentication, consent,
   resource enforcement, presentation, and host integration.
 
+These are responsibilities, not a prescribed set of packages or services.
 Where the investigation layer lives, and how much of it the CLI exposes, remain
-implementation questions. Reuse the existing run-directory and provenance work
-where it serves this object. Do not create another orchestration framework or
-broaden package responsibilities merely because this vision is ambitious.
+implementation questions. It is not presumed to be the current Bayescycle layer
+with more features. Reuse run-directory and provenance work only where it helps
+the minimal investigation object without pulling the broader stack back onto
+the execution path. Do not create another orchestration framework or broaden
+package responsibilities merely because this vision is ambitious.
 
 WebAssembly is useful because it provides an explicit execution boundary, not
 because it makes every surrounding component safe. Hosts must constrain
@@ -274,7 +307,11 @@ Content-addressed, shareable investigation snapshots and their branch/fork
 experience are still to be built and tested. Existing engine and browser
 capabilities are foundations, not proof of the whole vision.
 
-The first end-to-end demonstration should be deliberately small:
+The first end-to-end demonstration should be deliberately small. It should
+start from the standalone engine and a minimal investigation representation,
+not require completing or installing the broader Bayescycle ecosystem. Pinned
+browser assets and thin host code are legitimate parts of the demonstration;
+one small numerical binary does not by itself supply a sharing interface.
 
 1. Conduct one concrete investigation with a clear question and estimand.
 2. Preserve an initial model and a check that exposes a real limitation.
