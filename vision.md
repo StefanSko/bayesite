@@ -3,7 +3,7 @@
 > Do not just publish a Bayesian answer. Publish the investigation in a form
 > someone else can inspect, reproduce, challenge, and continue.
 
-This is the product direction we want to reach, recorded on 2026-09-14. It is
+This is the product direction we want to reach, as of 2026-09-16. It is
 not a description of completed functionality, a new wire-format specification,
 or approval to expand the numerical core. Implementation decisions must preserve
 [the project invariants](docs/invariants.md) and earn their complexity through
@@ -71,6 +71,13 @@ This is not a claim to support every probabilistic program, every dataset size,
 or every inference algorithm. Nor is it a claim that agents can replace
 scientific judgment. Bayesite is the instrument; the investigation gives the
 instrument's outputs context.
+
+A model document carries declaration metadata and execution metadata. The
+engine samples from the execution metadata when it is present. Inspecting an
+investigation means seeing the model that was actually executed: the resolved
+parameter layout and the density factors the sampler used, with any
+discrepancy from the declared priors made visible. Showing a reader the
+declared model beside a valid hash is not inspection.
 
 The execution path should remain free of Python and package-manager setup.
 That is distinct from having no third-party source dependencies: the core has
@@ -164,6 +171,14 @@ not a claim to capture an investigator's private reasoning or prove that their
 explanation is correct. Human approvals, when present, must be distinguished
 from agent recommendations and ordinary notes; they must never be invented.
 
+Stated reasons begin as free text with a parent pointer and hash references
+to the artifacts they cite. Three things are typed from the start because
+this vision already requires them to be distinguished: whether a result is
+current or superseded, whether an operation completed, was cancelled, or is
+unsupported, and whether a record is a human approval, an agent
+recommendation, or a note. Everything else earns a field only when a view
+cannot be built without it.
+
 ## Immutable snapshots and unique links
 
 Borrow the content-addressing discipline of systems like Nix without assuming
@@ -193,6 +208,22 @@ different output bytes. Exact artifact verification, byte-identical replay,
 and a defined numerical comparison are separate outcomes, not interchangeable
 meanings of "reproduced."
 
+A snapshot claims that it contains saved, hash-verified evidence. Whether a
+computation has been replayed, and whether a replay agreed, are separate
+recorded outcomes. Cache reuse requires recipe identity including the
+execution target. Cross-target reproduction compares named quantities under
+stated tolerances; it is never a cache hit, and agreement is never permission
+to substitute a result from a different recipe.
+
+The engine already writes a model/data fingerprint into each fit: one hash
+over the concatenated model and data bytes, so that posterior-conditioned
+tools can refuse a fit paired with the wrong inputs. It is a cooperative
+integrity check between tools, not an identity: the concatenation is not
+injective under adversarial inputs, and the fallback identity used when no
+file bytes exist is a non-cryptographic structural hash. Snapshot identity
+must hash model bytes and data bytes independently. This is a design fence
+for new work, not an instruction to migrate existing fits.
+
 The detailed manifest, identity rules, storage, and publication protocol require
 an explicit design and compatibility decision. This vision does not itself
 change the existing Bayeswire and Bayescycle contracts or introduce a competing
@@ -221,8 +252,9 @@ revisit an earlier modeling decision and explore the road not taken.
 
 Do not make scientific merging look like automatic file merging. A branch that
 changes the likelihood and a branch that changes the estimand cannot have their
-conclusions mechanically combined. A later synthesis can reference both,
-record a new decision, and execute the necessary new computations.
+conclusions mechanically combined. There is no merge operation. A synthesis
+is a new decision that references both branches and executes fresh
+computations.
 
 **Failure belongs in the object.** A retained failed check can explain the
 investigation better than the final fit alone. Cancellation, unsupported
@@ -277,6 +309,8 @@ option. Optional arbitrary-code authoring remains separate from IR execution.
 - **Privacy through hashing.** Data and data-derived outputs require explicit
   publication decisions and access controls. Even private data hashes can leak
   information. Restricted investigations must make reproduction limits visible.
+  Restricted or private-data investigations are outside the first
+  demonstration and need their own design decision.
 - **Authenticity through byte identity.** Hashes alone do not authenticate an
   author, a human approval, or the claim that an execution actually occurred.
 - **Safety through protocol choice.** MCP is not a sandbox; Wasm does not make
@@ -298,14 +332,31 @@ The experiments in the Bayescycle repository support a narrow foundation:
   reliable local-agent scientific work.
 - The [binary MVP](https://github.com/StefanSko/bayescycle/blob/67be105/experiments/mvp-agent-binary/README.md)
   showed that five agents could operate the engine on one supplied model:
-  15 of 15 sessions authored valid IR and 13 of 15 passed every workflow check.
-  The two failures involved transient edits of protected model artifacts.
-  This is evidence for an agent-operable instrument, not autonomous scientific
+  15 of 15 sessions authored valid IR on the first attempt, 13 of 15 passed
+  every workflow check, sessions took 54 to 185 seconds with no Python, and
+  no agent reimplemented the likelihood. Because the engine is deterministic
+  given seed and model semantics, the retained draws of all 15 initial fits
+  are identical even though the agents wrote their model files
+  independently; that draw-level determinism is what makes content
+  addressing cheap. The two failures were transient edits of a protected
+  model file: the agent edited the original in place, copied it, then
+  restored it byte-exact. The final bytes verified; only the session's
+  record of tool calls revealed the edit. A hash of final state cannot
+  enforce "the original remains unchanged" against a cooperating but
+  careless agent. Snapshot storage must therefore be append-only or
+  copy-on-write, which is what content-addressed stores provide. This is
+  evidence for an agent-operable instrument, not autonomous scientific
   judgment or an enforced immutable history.
 
 Content-addressed, shareable investigation snapshots and their branch/fork
 experience are still to be built and tested. Existing engine and browser
-capabilities are foundations, not proof of the whole vision.
+capabilities are foundations, not proof of the whole vision. The existing
+browser playground can share a project through a link, but that link carries
+Python source and authoring state inside the URL, with a size cap that
+excludes saved fits; it is source-first, the reverse of what a snapshot link
+needs. The hosted pilot produced a self-contained offline HTML report that
+embeds its evidence and survives being copied elsewhere. That report, not
+the share link, is the nearer starting point for a saved-evidence viewer.
 
 The first end-to-end demonstration should be deliberately small. It should
 start from the standalone engine and a minimal investigation representation,
@@ -315,11 +366,17 @@ one small numerical binary does not by itself supply a sharing interface.
 
 1. Conduct one concrete investigation with a clear question and estimand.
 2. Preserve an initial model and a check that exposes a real limitation.
-3. Explore two model branches and compare their evidence honestly.
-4. Publish an immutable snapshot with public data and pinned execution artifacts.
-5. Let another person open it, inspect it without execution, reproduce a
-   supported computation, and fork an earlier modeling decision.
-6. Obtain a new snapshot link without modifying the original investigation.
+3. Publish an immutable snapshot with public data, the pinned engine, and
+   the retained limitation.
+4. A fresh recipient, without the author's help, identifies the retained
+   limitation, changes one scientifically meaningful assumption at an earlier
+   decision point, and produces a linked continuation with its own snapshot.
+   The original is unchanged.
+
+The demonstration fails if the recipient needs undocumented help, cannot
+determine the effective model, or presents stale results as current. An
+honest continuation may conclude that the evidence does not justify a
+revision; a better model is not the required outcome.
 
 Success is not merely that a hash verifies or a browser runs the sampler.
 Success is that another person can understand what was done, identify what they
