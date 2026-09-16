@@ -80,6 +80,8 @@ $B investigation verify original/
 
 The recipient workflow and editable workspace contract are documented in
 [`docs/investigation-workspace-v0.md`](../../docs/investigation-workspace-v0.md).
+Automated outcomes and the still-unperformed independent human/browser checks
+are separated in [`HANDOFF-REPORT.md`](HANDOFF-REPORT.md).
 
 ## Interpretation boundary
 
