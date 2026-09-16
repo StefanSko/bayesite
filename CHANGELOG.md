@@ -16,8 +16,9 @@ versioned on their own.
   accounting without sampling.
 - Add the experimental content-addressed investigation snapshot format,
   non-clobbering object storage, exact replay, fork/run/snapshot/verify CLI,
-  stale-result handling, and count-data recipient protocol/example as the
-  foundation for immutable, forkable investigation handoffs.
+  stale-result handling, static evidence viewer/export, and count-data recipient
+  protocol/example as the foundation for immutable, forkable investigation
+  handoffs.
 
 ## [0.4.0] - 2026-07-20
 

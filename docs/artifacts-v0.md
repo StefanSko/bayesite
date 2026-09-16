@@ -96,7 +96,11 @@ Header facts include:
 - workflow phases from JSON parse through artifact emission
 - parameter shapes, packing order, `parameter_order`, `parameter_count`, and
   zero-based row-major `coordinate_order`
-- sampler settings, seed, chain count/order, and retained draw count
+- sampler settings (`num_warmup`, `num_draws`, `max_treedepth`,
+  `target_accept`, and the configured `initial_step_size`), seed, chain
+  count/order, and retained draw count. Older v0 fit headers without
+  `initial_step_size` remain readable, but cannot satisfy an investigation
+  recipe's exact-settings contradiction check
 - `sample_stats_mode: "per_draw_v2"`, announcing that every draw line carries
   per-draw sampler statistics (`diverging`, `tree_depth`, `tree_accept`,
   `energy`). The Bayesite CLI also emits `model_data_fingerprint` when it can

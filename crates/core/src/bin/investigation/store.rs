@@ -98,9 +98,42 @@ pub fn insert(
     Ok(reference)
 }
 
+pub fn read_digest(root: &Path, digest: &Digest) -> Result<Vec<u8>, Error> {
+    let path = object_path(root, digest);
+    let metadata = fs::metadata(&path).map_err(|error| {
+        host_error(format!(
+            "cannot inspect object {} at {:?}: {error}",
+            digest.prefixed(),
+            path
+        ))
+    })?;
+    if metadata.len() > MAX_OBJECT_BYTES as u64 {
+        return Err(host_error(format!(
+            "object {} exceeds the {MAX_OBJECT_BYTES}-byte limit",
+            digest.prefixed()
+        )));
+    }
+    let bytes = fs::read(&path).map_err(|error| {
+        host_error(format!(
+            "cannot read object {} at {:?}: {error}",
+            digest.prefixed(),
+            path
+        ))
+    })?;
+    let actual = artifact_digest(&bytes);
+    if actual != *digest {
+        return Err(host_error(format!(
+            "object {} is corrupt (hashes to {}); restore the exact object",
+            digest.prefixed(),
+            actual.prefixed()
+        )));
+    }
+    Ok(bytes)
+}
+
 pub fn read(root: &Path, reference: &ArtifactRef) -> Result<Vec<u8>, Error> {
     let path = object_path(root, &reference.sha256);
-    let bytes = fs::read(&path).map_err(|error| {
+    let bytes = read_digest(root, &reference.sha256).map_err(|error| {
         host_error(format!(
             "cannot read object {} at {:?}: {error}",
             reference.sha256.prefixed(),
@@ -115,15 +148,25 @@ pub fn read(root: &Path, reference: &ArtifactRef) -> Result<Vec<u8>, Error> {
             reference.bytes
         )));
     }
-    let actual = artifact_digest(&bytes);
-    if actual != reference.sha256 {
-        return Err(host_error(format!(
-            "object {} is corrupt (hashes to {}); restore the exact object",
-            reference.sha256.prefixed(),
-            actual.prefixed()
-        )));
-    }
     Ok(bytes)
+}
+
+pub fn import_digest(
+    source_root: &Path,
+    destination_root: &Path,
+    digest: &Digest,
+) -> Result<(), Error> {
+    let bytes = read_digest(source_root, digest)?;
+    let inserted = insert(
+        destination_root,
+        &bytes,
+        ArtifactKind::EngineBinary,
+        "opaque-citation",
+    )?;
+    if inserted.sha256 != *digest {
+        return Err(host_error("imported citation digest changed unexpectedly"));
+    }
+    Ok(())
 }
 
 pub fn import_reference(

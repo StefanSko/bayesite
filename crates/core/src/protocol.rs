@@ -170,6 +170,10 @@ fn header_value(
                     "target_accept".to_string(),
                     Value::Float(settings.target_accept),
                 ),
+                (
+                    "initial_step_size".to_string(),
+                    Value::Float(settings.initial_step_size),
+                ),
             ]),
         ),
         ("seed".to_string(), Value::Int(seed as i64)),
@@ -1188,7 +1192,18 @@ fn parse_header_settings(header: &Value) -> Result<Value, Error> {
             "fit header settings.target_accept must be in (0, 1); rerun `bayesite sample`",
         ));
     }
-    Ok(Value::Object(vec![
+    let initial_step_size = settings
+        .get("initial_step_size")
+        .map(|value| {
+            value
+                .as_f64()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .ok_or_else(|| {
+                    invalid_fit("fit header settings.initial_step_size must be positive and finite")
+                })
+        })
+        .transpose()?;
+    let mut normalized = vec![
         ("num_warmup".to_string(), Value::Int(num_warmup)),
         ("num_draws".to_string(), Value::Int(num_draws as i64)),
         (
@@ -1196,7 +1211,14 @@ fn parse_header_settings(header: &Value) -> Result<Value, Error> {
             Value::Int(max_treedepth as i64),
         ),
         ("target_accept".to_string(), Value::Float(target_accept)),
-    ]))
+    ];
+    if let Some(initial_step_size) = initial_step_size {
+        normalized.push((
+            "initial_step_size".to_string(),
+            Value::Float(initial_step_size),
+        ));
+    }
+    Ok(Value::Object(normalized))
 }
 
 fn parse_workflow_phases(doc: &Value, context: &str) -> Result<Option<Vec<String>>, Error> {

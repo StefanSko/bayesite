@@ -52,7 +52,9 @@ The manifest has exactly these top-level fields:
 - `inputs`: current model and data references;
 - `decisions`: ordered `{id,parent,reason,cites,kind}` records. `kind` is
   `note`, `agent_recommendation`, or `human_approval`. A human approval is only
-  recorded from explicit input; it is not inferred or authenticated by a hash;
+  recorded from explicit input; it is not inferred or authenticated by a hash.
+  Citation-only bytes are retained in the snapshot closure even if no recipe
+  references them;
 - `recipes`: one of `inspect`, `sample`, `diagnose`, or `posterior-check`, with
   typed inputs, normalized settings, recipe identity, and an exact engine
   identity (binary, verbatim capabilities object, target, profile);
@@ -87,8 +89,9 @@ network access. It reports separately:
 It additionally rejects duplicate JSON fields and parses model, data,
 inspection, fit, diagnostics, check, capabilities, and replay artifacts to the
 depth their existing provisional contracts support. Investigation fits must
-carry the older exact-input model/data compatibility fingerprint and have the
-parameter layout resolved from the separately hashed recipe inputs. That
+carry the older exact-input model/data compatibility fingerprint, agree with
+the recipe's seed/chains/sampler settings, and have the parameter layout
+resolved from the separately hashed recipe inputs. That
 fingerprint is not promoted to snapshot identity. A manifest execution claim
 is not authenticated proof that an execution occurred.
 
@@ -110,6 +113,21 @@ The first slice assumes a trusted, operator-controlled workspace. It bounds
 sizes and derives object paths from validated digests, but does not claim
 protection from owner-level mutation, symlink attacks, hostile-neighbour races,
 or copy-on-write filesystem behavior.
+
+## Static publication wrapper
+
+`bayesite investigation export <bundle> --viewer --public-data-confirmed --out
+<fresh-directory>` creates a non-normative publication wrapper around an exact
+snapshot. `entry.json` records the snapshot ID, one pinned engine download for
+the saved target, and SHA-256/length pairs for viewer assets. The wrapper also
+contains `bundle/`, license/notice, protocol/continuation documents, and the
+explicit public-data confirmation. It is not part of snapshot identity.
+
+The static viewer checks the raw manifest bytes under the snapshot domain and
+checks displayed objects when WebCrypto is available. It deliberately claims
+only that partial coverage. CLI verification remains the authoritative full
+recursive check; neither route authenticates an author or asserts scientific
+quality.
 
 ## Deliberate deferrals
 

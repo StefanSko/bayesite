@@ -83,7 +83,7 @@ fn add_continuation_records(workspace: &std::path::Path) {
     std::fs::write(path, format!("{}\n", json::write(&value).unwrap())).unwrap();
 }
 
-fn init_and_run_original(workspace: &std::path::Path) {
+fn initialize(workspace: &std::path::Path) {
     success(&[
         "investigation",
         "init",
@@ -96,6 +96,10 @@ fn init_and_run_original(workspace: &std::path::Path) {
         "--out",
         workspace.to_str().unwrap(),
     ]);
+}
+
+fn init_and_run_original(workspace: &std::path::Path) {
+    initialize(workspace);
     let workspace_path = workspace.join("investigation.json");
     let mut document = json::parse(&std::fs::read_to_string(&workspace_path).unwrap()).unwrap();
     if let Value::Array(recipes) = object_entry_mut(&mut document, "recipes") {
@@ -136,6 +140,7 @@ fn author_replay_fork_continue_snapshot_keeps_source_immutable_and_stale_history
     let replay = temp_dir("replay");
     let fork = temp_dir("fork");
     let continuation = temp_dir("continuation");
+    let publication = temp_dir("publication");
     init_and_run_original(&workspace);
 
     let original_snapshot = success(&[
@@ -242,6 +247,69 @@ fn author_replay_fork_continue_snapshot_keeps_source_immutable_and_stale_history
         Some(1)
     );
 
+    let denied_export = run(&[
+        "investigation",
+        "export",
+        continuation.to_str().unwrap(),
+        "--viewer",
+        "--out",
+        publication.to_str().unwrap(),
+    ]);
+    assert!(!denied_export.status.success());
+    assert!(!publication.exists());
+    let continuation_manifest_before = std::fs::read(continuation.join("manifest.json")).unwrap();
+    success(&[
+        "investigation",
+        "export",
+        continuation.to_str().unwrap(),
+        "--viewer",
+        "--public-data-confirmed",
+        "--out",
+        publication.to_str().unwrap(),
+    ]);
+    for name in [
+        "index.html",
+        "viewer.js",
+        "style.css",
+        "entry.json",
+        "LICENSE",
+        "NOTICE",
+        "PROTOCOL.md",
+        "CONTINUING.md",
+        "IR-FORMAT.md",
+        "IR-TAGS.md",
+        "INSPECTION.md",
+        "PUBLIC-DATA-CONFIRMATION.txt",
+        "downloads/bayesite-engine",
+        "bundle/manifest.json",
+    ] {
+        assert!(publication.join(name).is_file(), "missing exported {name}");
+    }
+    assert_eq!(
+        std::fs::read(publication.join("bundle/manifest.json")).unwrap(),
+        continuation_manifest_before
+    );
+    assert_eq!(
+        std::fs::read(continuation.join("manifest.json")).unwrap(),
+        continuation_manifest_before
+    );
+    let viewer_source = std::fs::read_to_string(publication.join("viewer.js")).unwrap();
+    assert!(!viewer_source.contains("innerHTML"));
+    assert!(!viewer_source.contains("eval("));
+    assert!(!viewer_source.contains("new Function"));
+    assert!(!viewer_source.contains("http://"));
+    assert!(!viewer_source.contains("https://"));
+    let existing_export = run(&[
+        "investigation",
+        "export",
+        continuation.to_str().unwrap(),
+        "--viewer",
+        "--public-data-confirmed",
+        "--out",
+        publication.to_str().unwrap(),
+    ]);
+    assert!(!existing_export.status.success());
+
     assert_eq!(
         std::fs::read(original.join("manifest.json")).unwrap(),
         original_manifest_before
@@ -253,7 +321,7 @@ fn author_replay_fork_continue_snapshot_keeps_source_immutable_and_stale_history
         );
     }
 
-    for path in [workspace, original, replay, fork, continuation] {
+    for path in [workspace, original, replay, fork, continuation, publication] {
         let _ = std::fs::remove_dir_all(path);
     }
 }
@@ -312,6 +380,157 @@ fn snapshot_of_unrun_continuation_records_incomplete_without_current_result() {
         .is_empty());
 
     for path in [workspace, original, fork, incomplete] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[test]
+fn snapshot_preserves_reason_only_citation_after_unrun_model_edit() {
+    let workspace = temp_dir("citation-author");
+    let bundle = temp_dir("citation-bundle");
+    initialize(&workspace);
+    let original_model = std::fs::read(&example("poisson.json")).unwrap();
+    let original_digest = bayesite_core::fingerprint::sha256_bytes(&original_model)
+        .trim_start_matches("sha256:")
+        .to_string();
+    std::fs::copy(
+        example("negative-binomial.json"),
+        workspace.join("inputs/model.json"),
+    )
+    .unwrap();
+    success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        bundle.to_str().unwrap(),
+    ]);
+    success(&["investigation", "verify", bundle.to_str().unwrap()]);
+    assert_eq!(
+        std::fs::read(bundle.join("objects/sha256").join(original_digest)).unwrap(),
+        original_model
+    );
+    for path in [workspace, bundle] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[test]
+fn additional_sample_needs_explicit_selection_and_seed_substitution_is_rejected() {
+    let workspace = temp_dir("selection-author");
+    let bundle = temp_dir("seed-bundle");
+    initialize(&workspace);
+    let path = workspace.join("investigation.json");
+    let mut document = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    *object_entry_mut(&mut document, "recipes") = json::parse(
+        r#"[
+            {"id":"sample-a","operation":"sample","settings":{"chains":1,"warmup":8,"draws":4,"max_treedepth":4,"target_accept":0.8,"initial_step_size":1.0,"seed":100}},
+            {"id":"sample-b","operation":"sample","settings":{"chains":1,"warmup":8,"draws":4,"max_treedepth":4,"target_accept":0.8,"initial_step_size":1.0,"seed":101}}
+        ]"#,
+    )
+    .unwrap();
+    std::fs::write(&path, format!("{}\n", json::write(&document).unwrap())).unwrap();
+
+    let first = success(&[
+        "investigation",
+        "run",
+        workspace.to_str().unwrap(),
+        "--recipe",
+        "sample-a",
+    ]);
+    let second = success(&[
+        "investigation",
+        "run",
+        workspace.to_str().unwrap(),
+        "--recipe",
+        "sample-b",
+    ]);
+    assert_eq!(first.get("selected"), Some(&Value::Bool(true)));
+    assert_eq!(second.get("selected"), Some(&Value::Bool(false)));
+    let inspection = success(&["investigation", "inspect", workspace.to_str().unwrap()]);
+    assert_eq!(
+        inspection
+            .get("evidence")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter(|item| item.get("status").and_then(Value::as_str) == Some("current"))
+            .count(),
+        1
+    );
+
+    let second_execution = second
+        .get("execution")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string();
+    let mut document = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    if let Value::Array(selections) = object_entry_mut(&mut document, "selections") {
+        selections.push(
+            json::parse(&format!(
+                "{{\"name\":\"second-fit\",\"execution\":{}}}",
+                json::write(&Value::Str(second_execution)).unwrap()
+            ))
+            .unwrap(),
+        );
+    }
+    std::fs::write(&path, format!("{}\n", json::write(&document).unwrap())).unwrap();
+    let conflict = run(&["investigation", "inspect", workspace.to_str().unwrap()]);
+    assert!(!conflict.status.success());
+    assert!(
+        String::from_utf8_lossy(&conflict.stderr).contains("current sample selections conflict")
+    );
+
+    let mut document = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    if let Value::Array(selections) = object_entry_mut(&mut document, "selections") {
+        selections.pop();
+    }
+    if let Value::Array(attempts) = object_entry_mut(&mut document, "attempts") {
+        let replacement = attempts
+            .iter()
+            .find(|attempt| {
+                attempt
+                    .get("recipe")
+                    .and_then(|recipe| recipe.get("id"))
+                    .and_then(Value::as_str)
+                    == Some("sample-b")
+            })
+            .and_then(|attempt| attempt.get("execution"))
+            .and_then(|execution| execution.get("output"))
+            .unwrap()
+            .clone();
+        let first_attempt = attempts
+            .iter_mut()
+            .find(|attempt| {
+                attempt
+                    .get("recipe")
+                    .and_then(|recipe| recipe.get("id"))
+                    .and_then(Value::as_str)
+                    == Some("sample-a")
+            })
+            .unwrap();
+        let execution = object_entry_mut(first_attempt, "execution");
+        *object_entry_mut(execution, "output") = replacement;
+    }
+    std::fs::write(&path, format!("{}\n", json::write(&document).unwrap())).unwrap();
+    success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        bundle.to_str().unwrap(),
+    ]);
+    let verification = run(&["investigation", "verify", bundle.to_str().unwrap()]);
+    assert!(!verification.status.success());
+    let verification_error =
+        json::parse(String::from_utf8(verification.stderr).unwrap().trim()).unwrap();
+    assert!(verification_error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap()
+        .contains("recipe setting \"seed\""));
+
+    for path in [workspace, bundle] {
         let _ = std::fs::remove_dir_all(path);
     }
 }

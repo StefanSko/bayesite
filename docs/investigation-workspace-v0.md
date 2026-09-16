@@ -50,6 +50,8 @@ bayesite investigation run alternative/ --recipe diagnose-alternative
 bayesite investigation run alternative/ --recipe check-alternative
 bayesite investigation snapshot alternative/ --out continuation/
 bayesite investigation verify continuation/
+bayesite investigation export continuation/ --viewer \
+  --public-data-confirmed --out published/
 ```
 
 `fork` verifies first, copies working input bytes (never writable hardlinks),
@@ -77,6 +79,29 @@ runs one exact saved recipe into a separate directory, and reports input
 integrity, engine match, execution outcome, actual and expected output hashes,
 and exact-byte agreement separately. Cross-target numerical comparison is
 `unsupported` in this format.
+
+## Static viewer export
+
+`export --viewer` verifies first, requires the explicit
+`--public-data-confirmed` publication choice, and writes only to a fresh output
+directory. It copies the exact bundle closure, the pinned engine for its saved
+target, license/notice files, this continuation guide, the frozen recipient protocol,
+the raw Bayeswire format/tag references needed to edit a model, the inspection
+contract, and dependency-free static viewer assets. `entry.json` hashes those
+assets and points to the exact snapshot ID.
+
+Serve `published/` as ordinary static files; for example, a host-provided local
+static server may expose `index.html`. The browser performs no sampling. When
+WebCrypto is available it verifies the raw manifest identity and every object
+it displays; without WebCrypto it labels the display unverified. Full closure,
+recursive ancestry, and semantic checks remain the job of
+`bayesite investigation verify published/bundle/`.
+
+The viewer uses a duplicate-key-rejecting bounded JSON parser and `textContent`
+for all snapshot-controlled text. It loads only same-directory constant paths
+and lowercase SHA-256 object paths. Hashes authenticate bytes against the
+supplied identifier, not an author or origin. The public-data flag is not a
+privacy scan, human scientific approval, or signature.
 
 Verification never invokes an engine or follows a URL. A fit inside an
 investigation must carry the existing exact-input model/data fingerprint and

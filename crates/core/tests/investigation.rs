@@ -110,7 +110,7 @@ fn bundle_verification_hashes_received_bytes_and_checks_closure() {
     let (manifest_bytes, objects, _) = fixture_bundle();
     let (_, report) = verify_bundle(&manifest_bytes, |reference| {
         objects
-            .get(reference.sha256.as_str())
+            .get(reference.as_str())
             .cloned()
             .ok_or_else(|| panic!("missing test object"))
     })
@@ -139,7 +139,7 @@ fn tampered_and_missing_objects_fail_without_execution() {
     first.push(b'!');
     let error = verify_bundle(&manifest_bytes, |reference| {
         tampered
-            .get(reference.sha256.as_str())
+            .get(reference.as_str())
             .cloned()
             .ok_or_else(|| panic!("missing test object"))
     })
@@ -263,7 +263,7 @@ fn rejects_marker_only_and_duplicate_marker_inspection_artifacts() {
         let bytes = manifest.to_bytes().unwrap();
         let error = verify_bundle(&bytes, |reference| {
             objects
-                .get(reference.sha256.as_str())
+                .get(reference.as_str())
                 .cloned()
                 .ok_or_else(|| panic!("missing test object"))
         })
@@ -377,7 +377,7 @@ fn rejects_current_fit_from_different_exact_model_bytes() {
     }
     let error = verify_bundle(&bytes, |reference| {
         objects
-            .get(reference.sha256.as_str())
+            .get(reference.as_str())
             .cloned()
             .ok_or_else(|| panic!("missing test object"))
     })
@@ -405,7 +405,7 @@ fn ancestry_limit_counts_manifests_not_zero_based_edges() {
     }
     verify_bundle(&bytes, |reference| {
         objects
-            .get(reference.sha256.as_str())
+            .get(reference.as_str())
             .cloned()
             .ok_or_else(|| panic!("missing test object"))
     })
@@ -425,7 +425,7 @@ fn ancestry_limit_counts_manifests_not_zero_based_edges() {
     let seventeenth = current.to_bytes().unwrap();
     let error = verify_bundle(&seventeenth, |reference| {
         objects
-            .get(reference.sha256.as_str())
+            .get(reference.as_str())
             .cloned()
             .ok_or_else(|| panic!("missing test object"))
     })

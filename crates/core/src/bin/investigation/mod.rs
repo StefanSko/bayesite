@@ -39,7 +39,8 @@ fn usage() -> &'static str {
      usage: bayesite investigation snapshot <workspace> --out <bundle>\n\
      usage: bayesite investigation verify <bundle>\n\
      usage: bayesite investigation fork <bundle> --at <decision-id> --out <workspace>\n\
-     usage: bayesite investigation replay <bundle> --recipe <id> --out <replay-dir>"
+     usage: bayesite investigation replay <bundle> --recipe <id> --out <replay-dir>\n\
+     usage: bayesite investigation export <bundle> --viewer --public-data-confirmed --out <directory>"
 }
 
 fn emit(value: &Value) -> Result<(), Error> {
@@ -241,6 +242,22 @@ fn create_fresh_directory(path: &Path, context: &str) -> Result<(), Error> {
     })
 }
 
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            invalid(format!(
+                "cannot create {:?} without replacement: {error}",
+                path
+            ))
+        })?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| invalid(format!("cannot write {:?}: {error}", path)))
+}
+
 fn init(argv: &[String], capabilities: &str) -> Result<(), Error> {
     let (_, flags) = parse_flags(
         argv,
@@ -316,9 +333,12 @@ fn current_sample<'a>(
     workspace: &'a Workspace,
     model: &ArtifactRef,
     data: &ArtifactRef,
-) -> Option<&'a ArtifactRef> {
+) -> Result<Option<&'a ArtifactRef>, Error> {
+    let mut selected = Vec::new();
     for selection in &workspace.selections {
-        let attempt = find_attempt(workspace, &selection.execution)?;
+        let Some(attempt) = find_attempt(workspace, &selection.execution) else {
+            continue;
+        };
         if attempt.execution.outcome != Outcome::Completed
             || attempt.recipe.operation != Operation::Sample
             || attempt.recipe.model != *model
@@ -342,10 +362,18 @@ fn current_sample<'a>(
             continue;
         };
         if current.sha256 == attempt.recipe.sha256 {
-            return attempt.execution.output.as_ref();
+            if let Some(output) = attempt.execution.output.as_ref() {
+                selected.push((selection, output));
+            }
         }
     }
-    None
+    if selected.len() > 1 {
+        return Err(invalid(format!(
+            "{} current sample selections conflict; edit investigation.json selections to retain exactly one before inspection or downstream execution",
+            selected.len()
+        )));
+    }
+    Ok(selected.first().map(|(_, output)| *output))
 }
 
 fn resolve_recipe(
@@ -356,7 +384,7 @@ fn resolve_recipe(
 ) -> Result<Recipe, Error> {
     let fit = match config.operation {
         Operation::Diagnose | Operation::PosteriorCheck => Some(
-            current_sample(workspace, model, data)
+            current_sample(workspace, model, data)?
                 .ok_or_else(|| {
                     invalid(format!(
                         "recipe {:?} needs current sample evidence for the exact current model/data; run a sample recipe first",
@@ -422,7 +450,7 @@ fn inspect_workspace(path: &Path) -> Result<(), Error> {
     let (model_bytes, data_bytes) = current_inputs(path)?;
     validate_model_data(&model_bytes, &data_bytes)?;
     let (model, data) = insert_inputs(path, &model_bytes, &data_bytes)?;
-    let fit = current_sample(&workspace, &model, &data).cloned();
+    let fit = current_sample(&workspace, &model, &data)?.cloned();
     let recipes = workspace
         .recipes
         .iter()
@@ -677,10 +705,12 @@ fn run_recipe(argv: &[String], capabilities: &str) -> Result<(), Error> {
             return Err(error);
         }
     };
-    let selected = !workspace
-        .selections
-        .iter()
-        .any(|selection| selection.name == recipe.id);
+    let selected = !workspace.selections.iter().any(|selection| {
+        find_attempt(&workspace, &selection.execution).is_some_and(|attempt| {
+            attempt.recipe.operation == recipe.operation
+                && is_selection_current(&workspace, selection, &model, &data)
+        })
+    });
     if selected {
         workspace.selections.push(Selection {
             name: recipe.id.clone(),
@@ -699,7 +729,7 @@ fn run_recipe(argv: &[String], capabilities: &str) -> Result<(), Error> {
         (
             "selection_note".into(),
             string(if selected {
-                "first successful result for this recipe was selected"
+                "first current successful result for this operation was selected"
             } else {
                 "result retained but not selected; edit investigation.json selections explicitly"
             }),
@@ -782,9 +812,14 @@ fn collect_manifest(
     let bytes = manifest.to_bytes()?;
     let parsed = Manifest::parse_bytes(&bytes)?;
     // Ensure every referenced local object already exists before creating an
-    // export directory.
+    // export directory, including reason-only citations outside computation.
     for reference in parsed.direct_references() {
         store::read(root, reference)?;
+    }
+    for decision in &parsed.decisions {
+        for citation in &decision.cites {
+            store::read_digest(root, citation)?;
+        }
     }
     Ok(parsed)
 }
@@ -798,6 +833,13 @@ fn copy_manifest_closure(
     for reference in manifest.direct_references() {
         if visited.insert(reference.sha256.as_str().to_string()) {
             store::import_reference(source_root, destination_root, reference)?;
+        }
+    }
+    for decision in &manifest.decisions {
+        for citation in &decision.cites {
+            if visited.insert(citation.as_str().to_string()) {
+                store::import_digest(source_root, destination_root, citation)?;
+            }
         }
     }
     if let Some(source) = &manifest.source {
@@ -852,7 +894,7 @@ fn snapshot(argv: &[String]) -> Result<(), Error> {
 
 fn verify(path: &Path) -> Result<(Manifest, bayesite_core::investigation::Verification), Error> {
     let manifest_bytes = read_bytes(&path.join("manifest.json"), "bundle manifest")?;
-    verify_bundle(&manifest_bytes, |reference| store::read(path, reference))
+    verify_bundle(&manifest_bytes, |digest| store::read_digest(path, digest))
 }
 
 fn verify_command(path: &Path) -> Result<(), Error> {
@@ -1015,6 +1057,193 @@ fn replay(argv: &[String], capabilities: &str) -> Result<(), Error> {
     result
 }
 
+fn export(argv: &[String]) -> Result<(), Error> {
+    let source_value = argv
+        .first()
+        .ok_or_else(|| invalid(format!("export needs a snapshot path; {}", usage())))?;
+    let source = Path::new(source_value);
+    let mut viewer = false;
+    let mut public_data_confirmed = false;
+    let mut out_value: Option<&String> = None;
+    let mut index = 1usize;
+    while index < argv.len() {
+        match argv[index].as_str() {
+            "--viewer" if !viewer => viewer = true,
+            "--public-data-confirmed" if !public_data_confirmed => public_data_confirmed = true,
+            "--out" if out_value.is_none() => {
+                index += 1;
+                out_value =
+                    Some(argv.get(index).ok_or_else(|| {
+                        invalid("investigation export --out requires a directory")
+                    })?);
+            }
+            other => {
+                return Err(invalid(format!(
+                    "unknown or duplicate investigation export option {other:?}"
+                )))
+            }
+        }
+        index += 1;
+    }
+    if !viewer || !public_data_confirmed {
+        return Err(invalid(
+            "investigation export requires explicit --viewer and --public-data-confirmed",
+        ));
+    }
+    let out = Path::new(
+        out_value.ok_or_else(|| invalid("investigation export needs --out <directory>"))?,
+    );
+    let (manifest, verification) = verify(source)?;
+    let manifest_bytes = read_bytes(&source.join("manifest.json"), "investigation manifest")?;
+    let engine = manifest
+        .recipes
+        .first()
+        .map(|recipe| &recipe.engine)
+        .ok_or_else(|| invalid("investigation export needs at least one recipe"))?;
+    if manifest
+        .recipes
+        .iter()
+        .any(|recipe| &recipe.engine != engine)
+    {
+        return Err(invalid(
+            "viewer export currently requires every recipe to use one pinned engine",
+        ));
+    }
+    let engine_bytes = store::read(source, &engine.binary)?;
+
+    create_fresh_directory(out, "viewer export")?;
+    let result = (|| {
+        create_fresh_directory(&out.join("bundle"), "exported bundle directory")?;
+        store::import_all(source, &out.join("bundle"))?;
+        write_new(&out.join("bundle/manifest.json"), &manifest_bytes)?;
+        create_fresh_directory(&out.join("downloads"), "export downloads directory")?;
+        let downloaded_engine = out.join("downloads/bayesite-engine");
+        write_new(&downloaded_engine, &engine_bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&downloaded_engine, fs::Permissions::from_mode(0o755)).map_err(
+                |error| invalid(format!("cannot mark exported engine executable: {error}")),
+            )?;
+        }
+
+        let assets: [(&str, &[u8]); 3] = [
+            (
+                "index.html",
+                include_bytes!("../../../../../demo/investigation/index.html"),
+            ),
+            (
+                "viewer.js",
+                include_bytes!("../../../../../demo/investigation/viewer.js"),
+            ),
+            (
+                "style.css",
+                include_bytes!("../../../../../demo/investigation/style.css"),
+            ),
+        ];
+        let mut asset_entries = Vec::new();
+        for (name, bytes) in assets {
+            write_new(&out.join(name), bytes)?;
+            asset_entries.push((name.to_string(), artifact_digest(bytes), bytes.len()));
+        }
+        write_new(
+            &out.join("LICENSE"),
+            include_bytes!("../../../../../LICENSE"),
+        )?;
+        write_new(&out.join("NOTICE"), include_bytes!("../../../../../NOTICE"))?;
+        write_new(
+            &out.join("PROTOCOL.md"),
+            include_bytes!("../../../../../examples/investigation-counts/PROTOCOL.md"),
+        )?;
+        write_new(
+            &out.join("CONTINUING.md"),
+            include_bytes!("../../../../../docs/investigation-workspace-v0.md"),
+        )?;
+        write_new(
+            &out.join("IR-FORMAT.md"),
+            include_bytes!("../../../../../docs/ir-format-v1.md"),
+        )?;
+        write_new(
+            &out.join("IR-TAGS.md"),
+            include_bytes!("../../../../../docs/ir-v1-tags.md"),
+        )?;
+        write_new(
+            &out.join("INSPECTION.md"),
+            include_bytes!("../../../../../docs/inspection-v0.md"),
+        )?;
+        write_new(
+            &out.join("PUBLIC-DATA-CONFIRMATION.txt"),
+            b"public_data_confirmed=true\nThis explicit publication choice is not a privacy scan, author signature, or scientific approval.\n",
+        )?;
+
+        let entry = Value::Object(vec![
+            ("publication_format".into(), string("v0-provisional")),
+            (
+                "snapshot_id".into(),
+                string(verification.snapshot_id.prefixed()),
+            ),
+            ("manifest".into(), string("bundle/manifest.json")),
+            ("public_data_confirmed".into(), Value::Bool(true)),
+            (
+                "engine".into(),
+                Value::Object(vec![
+                    ("target".into(), string(&engine.target)),
+                    ("profile".into(), string(&engine.profile)),
+                    ("sha256".into(), string(engine.binary.sha256.as_str())),
+                    ("bytes".into(), Value::Int(engine.binary.bytes as i64)),
+                    ("download".into(), string("downloads/bayesite-engine")),
+                ]),
+            ),
+            (
+                "viewer_assets".into(),
+                Value::Object(
+                    asset_entries
+                        .into_iter()
+                        .map(|(name, digest, bytes)| {
+                            (
+                                name,
+                                Value::Object(vec![
+                                    ("sha256".into(), string(digest.as_str())),
+                                    ("bytes".into(), Value::Int(bytes as i64)),
+                                ]),
+                            )
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "verification_scope".into(),
+                string(
+                    "The viewer verifies manifest identity and displayed object bytes when WebCrypto is available; use the bundled engine for full recursive CLI verification.",
+                ),
+            ),
+        ]);
+        write_new(
+            &out.join("entry.json"),
+            format!("{}\n", json::write(&entry)?).as_bytes(),
+        )?;
+        emit(&Value::Object(vec![
+            ("investigation_command".into(), string("export")),
+            (
+                "snapshot_id".into(),
+                string(verification.snapshot_id.prefixed()),
+            ),
+            ("out".into(), string(out.display().to_string())),
+            ("public_data_confirmed".into(), Value::Bool(true)),
+            (
+                "engine_sha256".into(),
+                string(engine.binary.sha256.prefixed()),
+            ),
+        ]))
+    })();
+    if result.is_err() {
+        // A failed export has no usable entry point and is never accepted as a
+        // replacement target; leave bytes for diagnosis without clobbering.
+        let _ = fs::remove_file(out.join("entry.json"));
+    }
+    result
+}
+
 pub fn run(argv: &[String], capabilities: &str) -> Result<(), Error> {
     let Some(command) = argv.first() else {
         return Err(invalid(format!(
@@ -1030,6 +1259,7 @@ pub fn run(argv: &[String], capabilities: &str) -> Result<(), Error> {
         "verify" => verify_command(Path::new(one_positional(&argv[1..], "verify")?)),
         "fork" => fork(&argv[1..]),
         "replay" => replay(&argv[1..], capabilities),
+        "export" => export(&argv[1..]),
         other => Err(invalid(format!(
             "unknown investigation subcommand {other:?}; {}",
             usage()

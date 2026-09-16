@@ -288,6 +288,57 @@ fn validate_sample_execution_inputs(manifest: &Manifest, state: &VerifyState) ->
             )));
         }
 
+        let recorded_settings = header
+            .get("settings")
+            .ok_or_else(|| malformed("sample output header needs settings"))?;
+        let integer_pairs = [
+            ("seed", recipe.settings.get("seed"), header.get("seed")),
+            (
+                "chains",
+                recipe.settings.get("chains"),
+                header.get("chain_count"),
+            ),
+            (
+                "warmup",
+                recipe.settings.get("warmup"),
+                recorded_settings.get("num_warmup"),
+            ),
+            (
+                "draws",
+                recipe.settings.get("draws"),
+                recorded_settings.get("num_draws"),
+            ),
+            (
+                "max_treedepth",
+                recipe.settings.get("max_treedepth"),
+                recorded_settings.get("max_treedepth"),
+            ),
+        ];
+        let integer_mismatch = integer_pairs.iter().find(|(_, expected, recorded)| {
+            expected.and_then(Value::as_i64) != recorded.and_then(Value::as_i64)
+        });
+        let float_pairs = [
+            (
+                "target_accept",
+                recipe.settings.get("target_accept"),
+                recorded_settings.get("target_accept"),
+            ),
+            (
+                "initial_step_size",
+                recipe.settings.get("initial_step_size"),
+                recorded_settings.get("initial_step_size"),
+            ),
+        ];
+        let float_mismatch = float_pairs.iter().find(|(_, expected, recorded)| {
+            expected.and_then(Value::as_f64) != recorded.and_then(Value::as_f64)
+        });
+        if let Some((name, _, _)) = integer_mismatch.or(float_mismatch) {
+            return Err(malformed(format!(
+                "sample execution {:?} output contradicts recipe setting {name:?}; mark the fit historical and rerun the exact recipe",
+                execution.id
+            )));
+        }
+
         // The legacy combined fingerprint is only a compatibility check, not
         // snapshot identity. Independently compare the fit's parameter layout
         // to the posterior built from the separately hashed model and data.
@@ -337,7 +388,7 @@ struct VerifyState {
 fn verify_recursive(
     manifest_bytes: &[u8],
     depth: usize,
-    loader: &mut impl FnMut(&ArtifactRef) -> Result<Vec<u8>, Error>,
+    loader: &mut impl FnMut(&Digest) -> Result<Vec<u8>, Error>,
     state: &mut VerifyState,
 ) -> Result<Manifest, Error> {
     if depth >= MAX_ANCESTRY {
@@ -357,7 +408,7 @@ fn verify_recursive(
     let mut loaded_parent: Option<Vec<u8>> = None;
     for reference in manifest.direct_references() {
         let key = reference.sha256.as_str().to_string();
-        let bytes = loader(reference)?;
+        let bytes = loader(&reference.sha256)?;
         if bytes.len() != reference.bytes {
             return Err(malformed(format!(
                 "object {} has {} bytes but its reference requires {}",
@@ -418,13 +469,43 @@ fn verify_recursive(
     }
     for decision in &manifest.decisions {
         for citation in &decision.cites {
-            if !state.objects.contains(citation.as_str()) {
-                return Err(malformed(format!(
-                    "decision {:?} cites artifact {} outside the verified bundle closure",
+            if state.objects.contains(citation.as_str()) {
+                continue;
+            }
+            let bytes = loader(citation).map_err(|_| {
+                malformed(format!(
+                    "decision {:?} cites missing artifact {}; restore its exact bytes",
                     decision.id,
                     citation.prefixed()
+                ))
+            })?;
+            if bytes.len() > manifest::MAX_OBJECT_BYTES {
+                return Err(malformed(format!(
+                    "cited object {} exceeds the {}-byte limit",
+                    citation.prefixed(),
+                    manifest::MAX_OBJECT_BYTES
                 )));
             }
+            let actual = artifact_digest(&bytes);
+            if actual != *citation {
+                return Err(malformed(format!(
+                    "decision {:?} citation integrity failure: expected {}, exact bytes hash to {}",
+                    decision.id,
+                    citation.prefixed(),
+                    actual.prefixed()
+                )));
+            }
+            if state.objects.insert(citation.as_str().to_string())
+                && state.objects.len() > MAX_OBJECTS
+            {
+                return Err(malformed(format!(
+                    "bundle exceeds the {MAX_OBJECTS}-object limit"
+                )));
+            }
+            state
+                .object_bytes
+                .entry(citation.as_str().to_string())
+                .or_insert(bytes);
         }
     }
     Ok(manifest)
@@ -434,7 +515,7 @@ fn verify_recursive(
 /// any recipe or following a network link.
 pub fn verify_bundle(
     manifest_bytes: &[u8],
-    mut loader: impl FnMut(&ArtifactRef) -> Result<Vec<u8>, Error>,
+    mut loader: impl FnMut(&Digest) -> Result<Vec<u8>, Error>,
 ) -> Result<(Manifest, Verification), Error> {
     let mut state = VerifyState {
         objects: HashSet::new(),

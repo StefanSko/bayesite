@@ -26,7 +26,7 @@ bayesite simulate
 bayesite recover-check
 bayesite recover
 bayesite sbc
-bayesite investigation <init|inspect|run|snapshot|verify|fork|replay>
+bayesite investigation <init|inspect|run|snapshot|verify|fork|replay|export>
 ```
 
 Current runtime capabilities:
