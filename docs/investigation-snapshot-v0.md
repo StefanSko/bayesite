@@ -29,6 +29,8 @@ Three identities remain separate:
    (digest, length, kind, format); data reference; either `fit` plus the fit
    reference or `no-fit`; engine binary reference; capabilities reference;
    target; profile; and deterministic compact JSON for normalized settings.
+   Sample settings include the resolved initial step size as well as chains,
+   warmup, draws, tree depth, target acceptance, and seed.
    The human recipe ID is not part of this identity.
 3. **Snapshot identity:** SHA-256 over
    `bayesite-investigation-snapshot-v0\0` followed by the exact received
@@ -82,10 +84,13 @@ network access. It reports separately:
 - whether a replay report is recorded; and
 - the computed snapshot ID.
 
-It additionally parses model, data, inspection, fit, diagnostics, check,
-capabilities, and replay artifacts to the depth their existing provisional
-contracts support. A manifest execution claim is not authenticated proof that
-an execution occurred.
+It additionally rejects duplicate JSON fields and parses model, data,
+inspection, fit, diagnostics, check, capabilities, and replay artifacts to the
+depth their existing provisional contracts support. Investigation fits must
+carry the older exact-input model/data compatibility fingerprint and have the
+parameter layout resolved from the separately hashed recipe inputs. That
+fingerprint is not promoted to snapshot identity. A manifest execution claim
+is not authenticated proof that an execution occurred.
 
 A continuation includes its parent manifest as an object and all required
 ancestral objects. Verification follows only local object references, detects

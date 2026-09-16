@@ -45,7 +45,7 @@ maps, and unsupported versions.
 The CLI and wasm/native protocol must expose the intended command set:
 
 ```text
-sample | diagnose | generate | prior-predictive | posterior-predictive | posterior-check | simulate | recover-check | recover | sbc
+sample | diagnose | inspect | generate | prior-predictive | posterior-predictive | posterior-check | simulate | recover-check | recover | sbc | investigation
 ```
 
 G1 pins the common artifact contract:

@@ -14,9 +14,10 @@ versioned on their own.
   protocol, reporting the exact bound state layout, resolved transforms, actual
   density factors, declaration differences, data shapes, and Jacobian
   accounting without sampling.
-- Add the experimental content-addressed investigation snapshot format and
-  count-data recipient protocol/example as the foundation for immutable,
-  forkable investigation handoffs.
+- Add the experimental content-addressed investigation snapshot format,
+  non-clobbering object storage, exact replay, fork/run/snapshot/verify CLI,
+  stale-result handling, and count-data recipient protocol/example as the
+  foundation for immutable, forkable investigation handoffs.
 
 ## [0.4.0] - 2026-07-20
 

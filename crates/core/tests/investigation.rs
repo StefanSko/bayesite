@@ -1,12 +1,16 @@
 use std::collections::HashMap;
+use std::process::Command;
 
+use bayesite_core::inspect::inspect_json;
 use bayesite_core::investigation::identity::{artifact_digest, snapshot_digest};
 use bayesite_core::investigation::manifest::{
     ArtifactKind, ArtifactRef, Decision, DecisionKind, EngineIdentity, EvidenceSelection,
     EvidenceStatus, Execution, Manifest, Operation, Outcome, Recipe,
 };
 use bayesite_core::investigation::verify_bundle;
+use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
+use bayesite_core::model::data_from_json;
 
 fn reference(bytes: &[u8], kind: ArtifactKind, format: &str) -> ArtifactRef {
     ArtifactRef {
@@ -22,7 +26,15 @@ fn fixture_bundle() -> (Vec<u8>, HashMap<String, Vec<u8>>, Manifest) {
     let model =
         std::fs::read(format!("{root}/examples/investigation-counts/poisson.json")).unwrap();
     let data = std::fs::read(format!("{root}/examples/investigation-counts/data.json")).unwrap();
-    let inspection = br#"{"inspection_format":"v0-provisional"}"#.to_vec();
+    let inspection = format!(
+        "{}\n",
+        inspect_json(
+            decode_model(&json::parse(std::str::from_utf8(&model).unwrap()).unwrap()).unwrap(),
+            data_from_json(&json::parse(std::str::from_utf8(&data).unwrap()).unwrap()).unwrap(),
+        )
+        .unwrap()
+    )
+    .into_bytes();
     let engine = b"test engine bytes".to_vec();
     let capabilities = br#"{"capabilities_format":"v0-provisional"}"#.to_vec();
     let model_ref = reference(&model, ArtifactKind::ModelIr, "bayeswire-ir-v1");
@@ -209,6 +221,219 @@ fn stale_or_conflicting_current_evidence_is_rejected() {
 }
 
 #[test]
+fn rejects_self_parent_decision_lineage() {
+    let (_, _, manifest) = fixture_bundle();
+    let mut value = manifest.to_value();
+    if let Value::Object(entries) = &mut value {
+        let decisions = entries
+            .iter_mut()
+            .find(|(name, _)| name == "decisions")
+            .map(|(_, value)| value)
+            .unwrap();
+        let first = match decisions {
+            Value::Array(entries) => &mut entries[0],
+            _ => unreachable!(),
+        };
+        if let Value::Object(entries) = first {
+            entries
+                .iter_mut()
+                .find(|(name, _)| name == "parent")
+                .unwrap()
+                .1 = Value::Str("initial-likelihood".into());
+        }
+    }
+    let error = Manifest::parse(&value).unwrap_err();
+    assert!(error.message.contains("earlier local decision"));
+}
+
+#[test]
+fn rejects_marker_only_and_duplicate_marker_inspection_artifacts() {
+    for inspection in [
+        br#"{"inspection_format":"v0-provisional"}"#.to_vec(),
+        br#"{"inspection_format":"v0-provisional","inspection_format":"unsupported"}"#.to_vec(),
+    ] {
+        let (_, mut objects, mut manifest) = fixture_bundle();
+        let inspection_ref = reference(
+            &inspection,
+            ArtifactKind::Inspection,
+            "inspection-v0-provisional",
+        );
+        manifest.executions[0].output = Some(inspection_ref.clone());
+        objects.insert(inspection_ref.sha256.0.clone(), inspection);
+        let bytes = manifest.to_bytes().unwrap();
+        let error = verify_bundle(&bytes, |reference| {
+            objects
+                .get(reference.sha256.as_str())
+                .cloned()
+                .ok_or_else(|| panic!("missing test object"))
+        })
+        .unwrap_err();
+        assert!(
+            error.message.contains("inspection") || error.message.contains("duplicate"),
+            "{}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn rejects_current_fit_from_different_exact_model_bytes() {
+    let root = format!("{}/../..", env!("CARGO_MANIFEST_DIR"));
+    let poisson_path = format!("{root}/examples/investigation-counts/poisson.json");
+    let negative_path = format!("{root}/examples/investigation-counts/negative-binomial.json");
+    let data_path = format!("{root}/examples/investigation-counts/data.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args([
+            "sample",
+            "--model",
+            &poisson_path,
+            "--data",
+            &data_path,
+            "--chains",
+            "1",
+            "--warmup",
+            "10",
+            "--draws",
+            "4",
+            "--max-treedepth",
+            "4",
+            "--target-accept",
+            "0.8",
+            "--seed",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let fit = output.stdout;
+    let model = std::fs::read(negative_path).unwrap();
+    let data = std::fs::read(data_path).unwrap();
+    let engine = b"test engine".to_vec();
+    let capabilities = br#"{"capabilities_format":"v0-provisional"}"#.to_vec();
+    let model_ref = reference(&model, ArtifactKind::ModelIr, "bayeswire-ir-v1");
+    let data_ref = reference(&data, ArtifactKind::Data, "bayesite-data-json-v1");
+    let fit_ref = reference(
+        &fit,
+        ArtifactKind::PosteriorDraws,
+        "draws-v0-provisional-ndjson",
+    );
+    let recipe = Recipe::new(
+        "sample-initial".into(),
+        Operation::Sample,
+        model_ref.clone(),
+        data_ref.clone(),
+        None,
+        EngineIdentity {
+            binary: reference(&engine, ArtifactKind::EngineBinary, "native-executable"),
+            capabilities: reference(
+                &capabilities,
+                ArtifactKind::EngineCapabilities,
+                "capabilities-v0-provisional",
+            ),
+            target: "test-target".into(),
+            profile: "release".into(),
+        },
+        json::parse(
+            r#"{"chains":1,"warmup":10,"draws":4,"max_treedepth":4,"target_accept":0.8,"initial_step_size":1.0,"seed":1}"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let manifest = Manifest {
+        question: "Question".into(),
+        estimand_description: "Expected daily count".into(),
+        estimand_parameter: "mean_daily_count".into(),
+        source: None,
+        model: model_ref.clone(),
+        data: data_ref.clone(),
+        decisions: vec![Decision {
+            id: "initial-likelihood".into(),
+            parent: None,
+            reason: "Test stale evidence.".into(),
+            cites: vec![model_ref.sha256.clone()],
+            kind: DecisionKind::Note,
+        }],
+        recipes: vec![recipe.clone()],
+        executions: vec![Execution {
+            id: "exec-1".into(),
+            recipe: recipe.id.clone(),
+            recipe_sha256: recipe.sha256.clone(),
+            outcome: Outcome::Completed,
+            output: Some(fit_ref.clone()),
+            error: None,
+        }],
+        evidence: vec![EvidenceSelection {
+            name: "sample-initial".into(),
+            execution: "exec-1".into(),
+            status: EvidenceStatus::Current,
+        }],
+        interpretation: "Test".into(),
+        unresolved_questions: vec![],
+    };
+    let bytes = manifest.to_bytes().unwrap();
+    let mut objects = HashMap::new();
+    for object in [model, data, fit, engine, capabilities] {
+        objects.insert(artifact_digest(&object).0, object);
+    }
+    let error = verify_bundle(&bytes, |reference| {
+        objects
+            .get(reference.sha256.as_str())
+            .cloned()
+            .ok_or_else(|| panic!("missing test object"))
+    })
+    .unwrap_err();
+    assert!(error.message.contains("model/data fingerprint"));
+}
+
+#[test]
+fn ancestry_limit_counts_manifests_not_zero_based_edges() {
+    let (mut bytes, mut objects, base) = fixture_bundle();
+    let mut current = base;
+    for _ in 1..16 {
+        let parent_ref = reference(
+            &bytes,
+            ArtifactKind::InvestigationManifest,
+            "investigation-snapshot-v0-provisional",
+        );
+        objects.insert(parent_ref.sha256.0.clone(), bytes.clone());
+        current.source = Some(bayesite_core::investigation::manifest::Source {
+            snapshot_id: snapshot_digest(&bytes),
+            manifest: parent_ref,
+            decision: "initial-likelihood".into(),
+        });
+        bytes = current.to_bytes().unwrap();
+    }
+    verify_bundle(&bytes, |reference| {
+        objects
+            .get(reference.sha256.as_str())
+            .cloned()
+            .ok_or_else(|| panic!("missing test object"))
+    })
+    .unwrap();
+
+    let parent_ref = reference(
+        &bytes,
+        ArtifactKind::InvestigationManifest,
+        "investigation-snapshot-v0-provisional",
+    );
+    objects.insert(parent_ref.sha256.0.clone(), bytes.clone());
+    current.source = Some(bayesite_core::investigation::manifest::Source {
+        snapshot_id: snapshot_digest(&bytes),
+        manifest: parent_ref,
+        decision: "initial-likelihood".into(),
+    });
+    let seventeenth = current.to_bytes().unwrap();
+    let error = verify_bundle(&seventeenth, |reference| {
+        objects
+            .get(reference.sha256.as_str())
+            .cloned()
+            .ok_or_else(|| panic!("missing test object"))
+    })
+    .unwrap_err();
+    assert!(error.message.contains("16-manifest"));
+}
+
+#[test]
 fn fixed_identity_vector_is_stable() {
     let (bytes, _, manifest) = fixture_bundle();
     let recipe = &manifest.recipes[0];
@@ -218,7 +443,7 @@ fn fixed_identity_vector_is_stable() {
     );
     assert_eq!(
         snapshot_digest(&bytes).as_str(),
-        "11e4d7ee097d44f18c46333024275276878ec58b464665016fb7aaa0d750b39a"
+        "4f20087b1322489bb87aed90e43c79f084810245b604a391309ec3ec07d45f4b"
     );
     assert_eq!(
         json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap(),

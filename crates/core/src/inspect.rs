@@ -416,6 +416,29 @@ fn discrepancy_report(meta: &ModelMeta) -> Value {
             ])),
             Some(_) => {}
         }
+        if let Some(site) = sites.iter().find(|site| site.name == *name) {
+            let declared_target = Expr::Param(name.clone());
+            if site.value != declared_target {
+                out.push(Value::Object(vec![
+                    ("name".into(), string(name)),
+                    (
+                        "kind".into(),
+                        string("declared_value_target_differs_from_execution_factor"),
+                    ),
+                    (
+                        "declared_value_expression".into(),
+                        expr_value(&declared_target),
+                    ),
+                    ("execution_value_expression".into(), expr_value(&site.value)),
+                    (
+                        "note".into(),
+                        string(
+                            "structural difference only; no mathematical inequivalence is asserted",
+                        ),
+                    ),
+                ]));
+            }
+        }
     }
     for observed in &meta.observed_nodes {
         match sites.iter().find(|site| site.name == observed.name) {
@@ -450,6 +473,29 @@ fn discrepancy_report(meta: &ModelMeta) -> Value {
                 ),
             ])),
             Some(_) => {}
+        }
+        if let Some(site) = sites.iter().find(|site| site.name == observed.name) {
+            let declared_target = Expr::Data(observed.name.clone());
+            if site.value != declared_target {
+                out.push(Value::Object(vec![
+                    ("name".into(), string(&observed.name)),
+                    (
+                        "kind".into(),
+                        string("declared_value_target_differs_from_execution_factor"),
+                    ),
+                    (
+                        "declared_value_expression".into(),
+                        expr_value(&declared_target),
+                    ),
+                    ("execution_value_expression".into(), expr_value(&site.value)),
+                    (
+                        "note".into(),
+                        string(
+                            "structural difference only; no mathematical inequivalence is asserted",
+                        ),
+                    ),
+                ]));
+            }
         }
     }
     for site in &sites {

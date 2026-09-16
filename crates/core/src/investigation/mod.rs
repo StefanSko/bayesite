@@ -5,15 +5,18 @@
 pub mod identity;
 pub mod manifest;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, ErrorKind};
+use crate::fingerprint::model_data_fingerprint;
 use crate::ir::decode_model;
 use crate::json::{self, Value};
-use crate::model::data_from_json;
+use crate::model::{data_from_json, Posterior};
 
 use identity::{artifact_digest, snapshot_digest, Digest};
-use manifest::{ArtifactKind, ArtifactRef, Manifest, MAX_ANCESTRY, MAX_OBJECTS};
+use manifest::{
+    ArtifactKind, ArtifactRef, Manifest, Operation, Outcome, MAX_ANCESTRY, MAX_OBJECTS,
+};
 
 fn malformed(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::MalformedDocument, message)
@@ -72,31 +75,135 @@ impl Verification {
     }
 }
 
+fn reject_duplicate_json_fields(value: &Value, context: &str) -> Result<(), Error> {
+    match value {
+        Value::Object(entries) => {
+            let mut names = HashSet::new();
+            for (name, child) in entries {
+                if !names.insert(name.as_str()) {
+                    return Err(malformed(format!(
+                        "{context} has duplicate field {name:?}; remove one"
+                    )));
+                }
+                reject_duplicate_json_fields(child, context)?;
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                reject_duplicate_json_fields(child, context)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn parse_json_artifact(bytes: &[u8], context: &str) -> Result<Value, Error> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| malformed(format!("{context} must be UTF-8 JSON")))?;
+    let value = json::parse(text)?;
+    reject_duplicate_json_fields(&value, context)?;
+    if !matches!(value, Value::Object(_)) {
+        return Err(malformed(format!("{context} must be a JSON object")));
+    }
+    Ok(value)
+}
+
+fn required_array(value: &Value, name: &str, context: &str) -> Result<(), Error> {
+    if value.get(name).and_then(Value::as_array).is_none() {
+        Err(malformed(format!(
+            "{context} needs an array field {name:?}"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_inspection(value: &Value) -> Result<(), Error> {
+    let context = "inspection artifact";
+    for name in [
+        "free_slots",
+        "density_factors",
+        "data",
+        "structural_discrepancies",
+    ] {
+        required_array(value, name, context)?;
+    }
+    if value
+        .get("unconstrained_parameter_count")
+        .and_then(Value::as_i64)
+        .is_none()
+        || !matches!(value.get("execution_metadata"), Some(Value::Object(_)))
+        || !matches!(value.get("declarations"), Some(Value::Object(_)))
+        || !matches!(value.get("density_accounting"), Some(Value::Object(_)))
+    {
+        return Err(malformed(
+            "inspection artifact needs execution_metadata, unconstrained_parameter_count, declarations, and density_accounting",
+        ));
+    }
+    for (index, slot) in value
+        .get("free_slots")
+        .and_then(Value::as_array)
+        .expect("checked")
+        .iter()
+        .enumerate()
+    {
+        if slot.get("name").and_then(Value::as_str).is_none()
+            || slot.get("shape").and_then(Value::as_array).is_none()
+            || slot.get("offset").and_then(Value::as_i64).is_none()
+            || slot.get("length").and_then(Value::as_i64).is_none()
+            || !matches!(slot.get("resolved_constraint"), Some(Value::Object(_)))
+        {
+            return Err(malformed(format!(
+                "inspection artifact free_slots[{index}] is missing typed layout fields"
+            )));
+        }
+    }
+    for (index, factor) in value
+        .get("density_factors")
+        .and_then(Value::as_array)
+        .expect("checked")
+        .iter()
+        .enumerate()
+    {
+        if factor.get("name").and_then(Value::as_str).is_none()
+            || !matches!(factor.get("distribution"), Some(Value::Object(_)))
+            || !matches!(factor.get("value_expression"), Some(Value::Object(_)))
+        {
+            return Err(malformed(format!(
+                "inspection artifact density_factors[{index}] is missing name/distribution/value_expression"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_artifact(reference: &ArtifactRef, bytes: &[u8]) -> Result<(), Error> {
     match reference.kind {
         ArtifactKind::ModelIr => {
-            let text = std::str::from_utf8(bytes)
-                .map_err(|_| malformed("model_ir artifact must be UTF-8 JSON"))?;
-            decode_model(&json::parse(text)?)?;
+            let value = parse_json_artifact(bytes, "model_ir artifact")?;
+            decode_model(&value)?;
         }
         ArtifactKind::Data => {
-            let text = std::str::from_utf8(bytes)
-                .map_err(|_| malformed("data artifact must be UTF-8 JSON"))?;
-            data_from_json(&json::parse(text)?)?;
+            let value = parse_json_artifact(bytes, "data artifact")?;
+            data_from_json(&value)?;
         }
         ArtifactKind::Inspection => {
-            let text = std::str::from_utf8(bytes)
-                .map_err(|_| malformed("inspection artifact must be UTF-8 JSON"))?;
-            let value = json::parse(text)?;
+            let value = parse_json_artifact(bytes, "inspection artifact")?;
             if value.get("inspection_format").and_then(Value::as_str) != Some("v0-provisional") {
                 return Err(malformed(
                     "inspection artifact needs inspection_format \"v0-provisional\"",
                 ));
             }
+            validate_inspection(&value)?;
         }
         ArtifactKind::PosteriorDraws => {
             let text = std::str::from_utf8(bytes)
                 .map_err(|_| malformed("posterior_draws artifact must be UTF-8 NDJSON"))?;
+            for (index, line) in text.lines().enumerate() {
+                let value = json::parse(line)?;
+                reject_duplicate_json_fields(&value, &format!("posterior_draws line {index}"))?;
+            }
             crate::protocol::diagnose_ndjson(text)?;
         }
         ArtifactKind::Diagnostics => {
@@ -117,9 +224,7 @@ fn validate_artifact(reference: &ArtifactRef, bytes: &[u8]) -> Result<(), Error>
 }
 
 fn marker(bytes: &[u8], field: &str) -> Result<(), Error> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| malformed(format!("artifact carrying {field} must be UTF-8 JSON")))?;
-    let value = json::parse(text)?;
+    let value = parse_json_artifact(bytes, &format!("artifact carrying {field}"))?;
     if value.get(field).and_then(Value::as_str) != Some("v0-provisional") {
         return Err(malformed(format!(
             "artifact needs {field} \"v0-provisional\""
@@ -128,8 +233,101 @@ fn marker(bytes: &[u8], field: &str) -> Result<(), Error> {
     Ok(())
 }
 
+fn validate_sample_execution_inputs(manifest: &Manifest, state: &VerifyState) -> Result<(), Error> {
+    for execution in &manifest.executions {
+        if execution.outcome != Outcome::Completed {
+            continue;
+        }
+        let recipe = manifest
+            .recipes
+            .iter()
+            .find(|recipe| recipe.id == execution.recipe)
+            .expect("manifest relationships validated recipe references");
+        if recipe.operation != Operation::Sample {
+            continue;
+        }
+        let output = execution
+            .output
+            .as_ref()
+            .expect("completed execution has output");
+        let model = state
+            .object_bytes
+            .get(recipe.model.sha256.as_str())
+            .expect("direct model reference was loaded");
+        let data = state
+            .object_bytes
+            .get(recipe.data.sha256.as_str())
+            .expect("direct data reference was loaded");
+        let fit = state
+            .object_bytes
+            .get(output.sha256.as_str())
+            .expect("direct output reference was loaded");
+        let model_text = std::str::from_utf8(model)
+            .map_err(|_| malformed("sample recipe model must be UTF-8"))?;
+        let data_text =
+            std::str::from_utf8(data).map_err(|_| malformed("sample recipe data must be UTF-8"))?;
+        let expected = model_data_fingerprint(model_text, data_text);
+        let header_text = std::str::from_utf8(fit)
+            .map_err(|_| malformed("sample output must be UTF-8 NDJSON"))?
+            .lines()
+            .next()
+            .ok_or_else(|| malformed("sample output is empty"))?;
+        let header = json::parse(header_text)?;
+        let recorded = header
+            .get("model_data_fingerprint")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                malformed(
+                    "investigation sample output must carry a model/data fingerprint from exact recipe inputs",
+                )
+            })?;
+        if recorded != expected {
+            return Err(malformed(format!(
+                "sample execution {:?} model/data fingerprint does not match its exact recipe model/data; mark the fit historical and rerun",
+                execution.id
+            )));
+        }
+
+        // The legacy combined fingerprint is only a compatibility check, not
+        // snapshot identity. Independently compare the fit's parameter layout
+        // to the posterior built from the separately hashed model and data.
+        let meta = decode_model(&json::parse(model_text)?)?;
+        let bound_data = data_from_json(&json::parse(data_text)?)?;
+        let expected_packing = Posterior::new(meta, bound_data)?.packing();
+        let params = header
+            .get("params")
+            .and_then(Value::as_array)
+            .ok_or_else(|| malformed("sample output header needs params for compatibility"))?;
+        if params.len() != expected_packing.len() {
+            return Err(malformed(format!(
+                "sample execution {:?} parameter layout does not match its recipe model/data",
+                execution.id
+            )));
+        }
+        for (param, (expected_name, expected_shape)) in params.iter().zip(&expected_packing) {
+            let name = param.get("name").and_then(Value::as_str);
+            let shape = param.get("shape").and_then(Value::as_array);
+            let shape_matches = shape.is_some_and(|shape| {
+                shape.len() == expected_shape.len()
+                    && shape.iter().zip(expected_shape).all(|(got, expected)| {
+                        got.as_i64()
+                            .is_some_and(|got| got >= 0 && got as usize == *expected)
+                    })
+            });
+            if name != Some(expected_name.as_str()) || !shape_matches {
+                return Err(malformed(format!(
+                    "sample execution {:?} parameter layout does not match its recipe model/data",
+                    execution.id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 struct VerifyState {
     objects: HashSet<String>,
+    object_bytes: HashMap<String, Vec<u8>>,
     snapshots: HashSet<String>,
     replay_recorded: bool,
     engine_available: bool,
@@ -142,7 +340,7 @@ fn verify_recursive(
     loader: &mut impl FnMut(&ArtifactRef) -> Result<Vec<u8>, Error>,
     state: &mut VerifyState,
 ) -> Result<Manifest, Error> {
-    if depth > MAX_ANCESTRY {
+    if depth >= MAX_ANCESTRY {
         return Err(malformed(format!(
             "snapshot ancestry exceeds the {MAX_ANCESTRY}-manifest limit"
         )));
@@ -176,11 +374,15 @@ fn verify_recursive(
                 actual.prefixed()
             )));
         }
-        if state.objects.insert(key) && state.objects.len() > MAX_OBJECTS {
+        if state.objects.insert(key.clone()) && state.objects.len() > MAX_OBJECTS {
             return Err(malformed(format!(
                 "bundle exceeds the {MAX_OBJECTS}-object limit"
             )));
         }
+        state
+            .object_bytes
+            .entry(key)
+            .or_insert_with(|| bytes.clone());
         validate_artifact(reference, &bytes)?;
         state.replay_recorded |= reference.kind == ArtifactKind::ReplayReport;
         state.engine_available |= reference.kind == ArtifactKind::EngineBinary;
@@ -192,6 +394,7 @@ fn verify_recursive(
             loaded_parent = Some(bytes);
         }
     }
+    validate_sample_execution_inputs(&manifest, state)?;
     if let Some(source) = &manifest.source {
         let parent_bytes = loaded_parent.ok_or_else(|| {
             malformed("source manifest was not available in the verified object closure")
@@ -213,6 +416,17 @@ fn verify_recursive(
             )));
         }
     }
+    for decision in &manifest.decisions {
+        for citation in &decision.cites {
+            if !state.objects.contains(citation.as_str()) {
+                return Err(malformed(format!(
+                    "decision {:?} cites artifact {} outside the verified bundle closure",
+                    decision.id,
+                    citation.prefixed()
+                )));
+            }
+        }
+    }
     Ok(manifest)
 }
 
@@ -224,6 +438,7 @@ pub fn verify_bundle(
 ) -> Result<(Manifest, Verification), Error> {
     let mut state = VerifyState {
         objects: HashSet::new(),
+        object_bytes: HashMap::new(),
         snapshots: HashSet::new(),
         replay_recorded: false,
         engine_available: false,

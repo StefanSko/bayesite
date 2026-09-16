@@ -21,6 +21,7 @@
 //!       [--out <report.json|->]
 //!   bayesite sbc --model <ir.json|-> --scenario <scenario.json|->
 //!       [--replicates N] [--out <report.json|->]
+//!   bayesite investigation <init|inspect|run|snapshot|verify|fork|replay> ...
 //!   bayesite capabilities
 //!
 //! `sample` writes the v0-provisional NDJSON protocol (see `protocol.rs`).
@@ -36,6 +37,8 @@
 
 use std::io::Read;
 use std::io::Write;
+
+mod investigation;
 
 use bayesite_core::error::{Error, ErrorKind};
 use bayesite_core::fingerprint::model_data_fingerprint;
@@ -213,6 +216,7 @@ enum Command {
     RecoverCheck(RecoverCheckArgs),
     Recover(RecoverArgs),
     Sbc(SbcArgs),
+    Investigation(InvestigationArgs),
     Capabilities,
 }
 
@@ -252,6 +256,9 @@ const COMMANDS: &[(&str, ParseCommandFn)] = &[
         parse_recover_args(argv).map(Command::Recover)
     }),
     ("sbc", |argv| parse_sbc_args(argv).map(Command::Sbc)),
+    ("investigation", |argv| {
+        parse_investigation_args(argv).map(Command::Investigation)
+    }),
     ("capabilities", parse_capabilities_args),
 ];
 
@@ -348,6 +355,10 @@ struct SbcArgs {
     replicates_override: Option<usize>,
 }
 
+struct InvestigationArgs {
+    argv: Vec<String>,
+}
+
 struct RecoverScenario {
     data: Vec<(String, DataValue)>,
     settings: RecoverSettings,
@@ -385,6 +396,7 @@ fn usage() -> &'static str {
      [--out <report.json|->]\n\
      usage: bayesite sbc --model <ir.json|-> --scenario <scenario.json|-> \
      [--replicates N] [--out <report.json|->]\n\
+     usage: bayesite investigation <init|inspect|run|snapshot|verify|fork|replay> ...\n\
      usage: bayesite capabilities"
 }
 
@@ -399,6 +411,17 @@ fn parse_args(argv: &[String]) -> Result<Command, Error> {
             usage()
         ))),
     }
+}
+
+fn parse_investigation_args(argv: &[String]) -> Result<InvestigationArgs, Error> {
+    if argv.is_empty() {
+        return Err(usage_error(
+            "investigation needs a subcommand: init, inspect, run, snapshot, verify, fork, or replay",
+        ));
+    }
+    Ok(InvestigationArgs {
+        argv: argv.to_vec(),
+    })
 }
 
 fn parse_capabilities_args(argv: &[String]) -> Result<Command, Error> {
@@ -1627,6 +1650,14 @@ fn capabilities_document() -> Value {
                     Value::Str("v0-provisional".to_string()),
                 ),
                 (
+                    "investigation_snapshot".to_string(),
+                    Value::Str("v0-provisional".to_string()),
+                ),
+                (
+                    "investigation_workspace".to_string(),
+                    Value::Str("v0-provisional".to_string()),
+                ),
+                (
                     "recover_scenario".to_string(),
                     Value::Str("v0-provisional".to_string()),
                 ),
@@ -1666,6 +1697,10 @@ fn run() -> Result<(), Error> {
         Command::RecoverCheck(args) => run_recover_check(args),
         Command::Recover(args) => run_recover(args),
         Command::Sbc(args) => run_sbc(args),
+        Command::Investigation(args) => {
+            let capabilities = format!("{}\n", json::write(&capabilities_document())?);
+            investigation::run(&args.argv, &capabilities)
+        }
         Command::Capabilities => run_capabilities(),
     }
 }

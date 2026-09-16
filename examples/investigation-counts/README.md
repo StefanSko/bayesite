@@ -60,6 +60,23 @@ evidence. The investigation snapshot records model and data independently; the
 older fit's combined model/data fingerprint remains only its cooperative
 compatibility check.
 
+Create the durable object with the same binary:
+
+```sh
+$B investigation init --metadata examples/investigation-counts/metadata.json \
+  --model examples/investigation-counts/poisson.json \
+  --data examples/investigation-counts/data.json --out study/
+$B investigation run study/ --recipe inspect-initial
+$B investigation run study/ --recipe sample-initial
+$B investigation run study/ --recipe diagnose-initial
+$B investigation run study/ --recipe check-initial
+$B investigation snapshot study/ --out original/
+$B investigation verify original/
+```
+
+The recipient workflow and editable workspace contract are documented in
+[`docs/investigation-workspace-v0.md`](../../docs/investigation-workspace-v0.md).
+
 ## Interpretation boundary
 
 The initial evidence can show that this Poisson data-generating story does not

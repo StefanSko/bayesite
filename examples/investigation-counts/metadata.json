@@ -1,0 +1,53 @@
+{
+  "investigation_metadata": "v0-provisional",
+  "question": "For this synthetic 30-day dataset, what expected number of support requests should planning use for a future exchangeable day?",
+  "estimand": {
+    "description": "Expected support-request count for one future exchangeable day",
+    "parameter": "mean_daily_count"
+  },
+  "decisions": [
+    {
+      "id": "initial-likelihood",
+      "parent": null,
+      "reason": "Start with a deliberately simple Poisson baseline whose conditional variance equals its shared mean; preserve a posterior predictive dispersion check before revising it.",
+      "cites": ["model", "data"],
+      "kind": "note"
+    }
+  ],
+  "recipes": [
+    {
+      "id": "inspect-initial",
+      "operation": "inspect",
+      "settings": {}
+    },
+    {
+      "id": "sample-initial",
+      "operation": "sample",
+      "settings": {
+        "chains": 4,
+        "warmup": 250,
+        "draws": 250,
+        "max_treedepth": 8,
+        "target_accept": 0.85,
+        "initial_step_size": 1.0,
+        "seed": 20260916
+      }
+    },
+    {
+      "id": "diagnose-initial",
+      "operation": "diagnose",
+      "settings": {}
+    },
+    {
+      "id": "check-initial",
+      "operation": "posterior-check",
+      "settings": {"seed": 20260917}
+    }
+  ],
+  "interpretation": "The Poisson baseline is intentionally provisional; the retained posterior check should be read for factual dispersion and tail discrepancies, not as an automatic verdict.",
+  "unresolved_questions": [
+    "What process creates the unusually large synthetic count days?",
+    "Are days exchangeable enough for one shared expected-count estimand?",
+    "Would a changed likelihood reproduce dispersion without hiding a different mismatch?"
+  ]
+}

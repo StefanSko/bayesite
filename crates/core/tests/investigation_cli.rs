@@ -1,0 +1,356 @@
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use bayesite_core::json::{self, Value};
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn temp_dir(label: &str) -> std::path::PathBuf {
+    let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "bayesite-investigation-{label}-{}-{id}",
+        std::process::id()
+    ))
+}
+
+fn example(name: &str) -> String {
+    format!(
+        "{}/../../examples/investigation-counts/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+fn run(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_bayesite"))
+        .args(args)
+        .output()
+        .expect("bayesite starts")
+}
+
+fn success(args: &[&str]) -> Value {
+    let output = run(args);
+    assert!(
+        output.status.success(),
+        "args={args:?}\nstderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    json::parse(String::from_utf8(output.stdout).unwrap().trim()).unwrap()
+}
+
+fn object_entry_mut<'a>(value: &'a mut Value, key: &str) -> &'a mut Value {
+    match value {
+        Value::Object(entries) => entries
+            .iter_mut()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("missing {key}")),
+        _ => panic!("expected object"),
+    }
+}
+
+fn add_continuation_records(workspace: &std::path::Path) {
+    let path = workspace.join("investigation.json");
+    let mut value = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    match object_entry_mut(&mut value, "decisions") {
+        Value::Array(decisions) => decisions.push(
+            json::parse(
+                r#"{
+                    "id":"alternative-likelihood",
+                    "parent":"initial-likelihood",
+                    "reason":"The retained check shows dispersion and tail behavior that the Poisson likelihood does not reproduce, so test a likelihood with a separate positive overdispersion parameter while keeping the estimand fixed.",
+                    "cites":["model"],
+                    "kind":"note"
+                }"#,
+            )
+            .unwrap(),
+        ),
+        _ => panic!("decisions array"),
+    }
+    *object_entry_mut(&mut value, "recipes") = json::parse(
+        r#"[
+            {"id":"inspect-alternative","operation":"inspect","settings":{}},
+            {"id":"sample-alternative","operation":"sample","settings":{"chains":1,"warmup":20,"draws":8,"max_treedepth":6,"target_accept":0.85,"initial_step_size":1.0,"seed":20260918}},
+            {"id":"diagnose-alternative","operation":"diagnose","settings":{}},
+            {"id":"check-alternative","operation":"posterior-check","settings":{"seed":20260919}}
+        ]"#,
+    )
+    .unwrap();
+    *object_entry_mut(&mut value, "interpretation") = Value::Str(
+        "The alternative is evaluated as a continuation; inherited Poisson evidence remains historical and no automatic scientific ranking is asserted."
+            .into(),
+    );
+    std::fs::write(path, format!("{}\n", json::write(&value).unwrap())).unwrap();
+}
+
+fn init_and_run_original(workspace: &std::path::Path) {
+    success(&[
+        "investigation",
+        "init",
+        "--metadata",
+        &example("metadata.json"),
+        "--model",
+        &example("poisson.json"),
+        "--data",
+        &example("data.json"),
+        "--out",
+        workspace.to_str().unwrap(),
+    ]);
+    let workspace_path = workspace.join("investigation.json");
+    let mut document = json::parse(&std::fs::read_to_string(&workspace_path).unwrap()).unwrap();
+    if let Value::Array(recipes) = object_entry_mut(&mut document, "recipes") {
+        let sample = recipes
+            .iter_mut()
+            .find(|recipe| recipe.get("id").and_then(Value::as_str) == Some("sample-initial"))
+            .unwrap();
+        *object_entry_mut(sample, "settings") = json::parse(
+            r#"{"chains":1,"warmup":20,"draws":8,"max_treedepth":6,"target_accept":0.85,"initial_step_size":1.0,"seed":20260916}"#,
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        &workspace_path,
+        format!("{}\n", json::write(&document).unwrap()),
+    )
+    .unwrap();
+    for recipe in [
+        "inspect-initial",
+        "sample-initial",
+        "diagnose-initial",
+        "check-initial",
+    ] {
+        success(&[
+            "investigation",
+            "run",
+            workspace.to_str().unwrap(),
+            "--recipe",
+            recipe,
+        ]);
+    }
+}
+
+#[test]
+fn author_replay_fork_continue_snapshot_keeps_source_immutable_and_stale_history_visible() {
+    let workspace = temp_dir("author");
+    let original = temp_dir("original");
+    let replay = temp_dir("replay");
+    let fork = temp_dir("fork");
+    let continuation = temp_dir("continuation");
+    init_and_run_original(&workspace);
+
+    let original_snapshot = success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        original.to_str().unwrap(),
+    ]);
+    let original_id = original_snapshot
+        .get("snapshot_id")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string();
+    let original_manifest_before = std::fs::read(original.join("manifest.json")).unwrap();
+    let original_objects_before = std::fs::read_dir(original.join("objects/sha256"))
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name(), std::fs::read(entry.path()).unwrap())
+        })
+        .collect::<Vec<_>>();
+
+    let verification = success(&["investigation", "verify", original.to_str().unwrap()]);
+    assert!(matches!(
+        verification.get("object_integrity_valid"),
+        Some(Value::Bool(true))
+    ));
+    let replay_report = success(&[
+        "investigation",
+        "replay",
+        original.to_str().unwrap(),
+        "--recipe",
+        "sample-initial",
+        "--out",
+        replay.to_str().unwrap(),
+    ]);
+    assert!(matches!(
+        replay_report.get("exact_output_bytes_agree"),
+        Some(Value::Bool(true))
+    ));
+
+    success(&[
+        "investigation",
+        "fork",
+        original.to_str().unwrap(),
+        "--at",
+        "initial-likelihood",
+        "--out",
+        fork.to_str().unwrap(),
+    ]);
+    std::fs::copy(
+        example("negative-binomial.json"),
+        fork.join("inputs/model.json"),
+    )
+    .unwrap();
+    add_continuation_records(&fork);
+
+    let before_resampling = success(&["investigation", "inspect", fork.to_str().unwrap()]);
+    let evidence = before_resampling
+        .get("evidence")
+        .and_then(Value::as_array)
+        .unwrap();
+    assert!(!evidence.is_empty());
+    assert!(evidence.iter().all(|entry| {
+        entry.get("status").and_then(Value::as_str) == Some("historical")
+            && entry.get("origin").and_then(Value::as_str) == Some("source_snapshot")
+    }));
+    assert!(before_resampling.get("current_fit_sha256") == Some(&Value::Null));
+
+    for recipe in [
+        "inspect-alternative",
+        "sample-alternative",
+        "diagnose-alternative",
+        "check-alternative",
+    ] {
+        success(&[
+            "investigation",
+            "run",
+            fork.to_str().unwrap(),
+            "--recipe",
+            recipe,
+        ]);
+    }
+    let continuation_snapshot = success(&[
+        "investigation",
+        "snapshot",
+        fork.to_str().unwrap(),
+        "--out",
+        continuation.to_str().unwrap(),
+    ]);
+    assert_ne!(
+        continuation_snapshot
+            .get("snapshot_id")
+            .and_then(Value::as_str),
+        Some(original_id.as_str())
+    );
+    let continuation_verification =
+        success(&["investigation", "verify", continuation.to_str().unwrap()]);
+    assert_eq!(
+        continuation_verification
+            .get("ancestry_depth")
+            .and_then(Value::as_i64),
+        Some(1)
+    );
+
+    assert_eq!(
+        std::fs::read(original.join("manifest.json")).unwrap(),
+        original_manifest_before
+    );
+    for (name, bytes) in original_objects_before {
+        assert_eq!(
+            std::fs::read(original.join("objects/sha256").join(name)).unwrap(),
+            bytes
+        );
+    }
+
+    for path in [workspace, original, replay, fork, continuation] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[test]
+fn snapshot_of_unrun_continuation_records_incomplete_without_current_result() {
+    let workspace = temp_dir("incomplete-author");
+    let original = temp_dir("incomplete-original");
+    let fork = temp_dir("incomplete-fork");
+    let incomplete = temp_dir("incomplete-snapshot");
+    init_and_run_original(&workspace);
+    success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        original.to_str().unwrap(),
+    ]);
+    success(&[
+        "investigation",
+        "fork",
+        original.to_str().unwrap(),
+        "--at",
+        "initial-likelihood",
+        "--out",
+        fork.to_str().unwrap(),
+    ]);
+    std::fs::copy(
+        example("negative-binomial.json"),
+        fork.join("inputs/model.json"),
+    )
+    .unwrap();
+    add_continuation_records(&fork);
+    success(&[
+        "investigation",
+        "snapshot",
+        fork.to_str().unwrap(),
+        "--out",
+        incomplete.to_str().unwrap(),
+    ]);
+    success(&["investigation", "verify", incomplete.to_str().unwrap()]);
+    let manifest =
+        json::parse(&std::fs::read_to_string(incomplete.join("manifest.json")).unwrap()).unwrap();
+    let executions = manifest
+        .get("executions")
+        .and_then(Value::as_array)
+        .unwrap();
+    assert!(executions.iter().any(|execution| {
+        execution.get("outcome").and_then(Value::as_str) == Some("incomplete")
+            && execution.get("recipe").and_then(Value::as_str) == Some("sample-alternative")
+    }));
+    assert!(manifest
+        .get("evidence")
+        .and_then(Value::as_array)
+        .unwrap()
+        .is_empty());
+
+    for path in [workspace, original, fork, incomplete] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[test]
+fn verify_detects_tampered_object_and_does_not_run_engine() {
+    let workspace = temp_dir("tamper-author");
+    let bundle = temp_dir("tamper-bundle");
+    init_and_run_original(&workspace);
+    success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        bundle.to_str().unwrap(),
+    ]);
+    let object = std::fs::read_dir(bundle.join("objects/sha256"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut bytes = std::fs::read(&object).unwrap();
+    bytes.push(b'!');
+    std::fs::write(object, bytes).unwrap();
+    let output = run(&["investigation", "verify", bundle.to_str().unwrap()]);
+    assert!(!output.status.success());
+    let error = json::parse(String::from_utf8(output.stderr).unwrap().trim()).unwrap();
+    assert_eq!(
+        error.get("error_format").and_then(Value::as_str),
+        Some("v0-provisional")
+    );
+    assert!(error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap()
+        .contains("object"));
+
+    for path in [workspace, bundle] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}

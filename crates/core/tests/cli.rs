@@ -3663,6 +3663,7 @@ fn capabilities_emits_versioned_document_matching_dispatch_table() {
             "recover-check",
             "recover",
             "sbc",
+            "investigation",
             "capabilities",
         ]
     );
@@ -3708,6 +3709,8 @@ fn capabilities_emits_versioned_document_matching_dispatch_table() {
     let schemas = doc.get("schemas").expect("schemas field");
     for schema in [
         "inspection",
+        "investigation_snapshot",
+        "investigation_workspace",
         "recover_scenario",
         "sbc_scenario",
         "recover_check_targets",

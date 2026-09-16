@@ -170,6 +170,35 @@ fn exposes_declared_execution_distribution_mismatch_without_equivalence_claim() 
 }
 
 #[test]
+fn exposes_factor_value_expression_mismatch() {
+    let fixture = fixture("linear_regression");
+    let mut ir = fixture.get("ir").unwrap().clone();
+    let model = object_entry_mut(&mut ir, "model");
+    let mut sites = object_entry_mut(model, "stochastic_sites")
+        .as_array()
+        .unwrap()
+        .to_vec();
+    *object_entry_mut(&mut sites[0], "value") =
+        json::parse(r#"{"node":"ParamRef","name":"beta"}"#).unwrap();
+    *object_entry_mut(model, "stochastic_sites") = Value::Array(sites);
+
+    let report = inspect_model(
+        decode_model(&ir).unwrap(),
+        data_from_json(fixture.get("data").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let discrepancies = report
+        .get("structural_discrepancies")
+        .and_then(Value::as_array)
+        .unwrap();
+    assert!(discrepancies.iter().any(|discrepancy| {
+        discrepancy.get("name").and_then(Value::as_str) == Some("alpha")
+            && discrepancy.get("kind").and_then(Value::as_str)
+                == Some("declared_value_target_differs_from_execution_factor")
+    }));
+}
+
+#[test]
 fn binding_errors_prevent_partial_inspection() {
     let fixture = fixture("linear_regression");
     let meta = decode_model(fixture.get("ir").unwrap()).unwrap();

@@ -98,7 +98,7 @@ fn bounded_text(value: &str, context: &str) -> Result<String, Error> {
     Ok(value.to_string())
 }
 
-fn identifier(value: &str, context: &str) -> Result<String, Error> {
+pub fn validate_identifier(value: &str, context: &str) -> Result<String, Error> {
     if value.is_empty()
         || value.len() > 128
         || !value
@@ -188,7 +188,7 @@ impl ArtifactRef {
             )));
         }
         let kind = ArtifactKind::parse(required_str(value, "kind", context)?, context)?;
-        let format = identifier(required_str(value, "format", context)?, context)?;
+        let format = validate_identifier(required_str(value, "format", context)?, context)?;
         Ok(Self {
             sha256,
             bytes: bytes as usize,
@@ -216,7 +216,7 @@ pub struct EngineIdentity {
 }
 
 impl EngineIdentity {
-    fn parse(value: &Value, context: &str) -> Result<Self, Error> {
+    pub fn parse(value: &Value, context: &str) -> Result<Self, Error> {
         checked_object(
             value,
             context,
@@ -244,8 +244,8 @@ impl EngineIdentity {
         Ok(Self {
             binary,
             capabilities,
-            target: identifier(required_str(value, "target", context)?, context)?,
-            profile: identifier(required_str(value, "profile", context)?, context)?,
+            target: validate_identifier(required_str(value, "target", context)?, context)?,
+            profile: validate_identifier(required_str(value, "profile", context)?, context)?,
         })
     }
 
@@ -312,6 +312,7 @@ fn normalized_settings(operation: Operation, value: &Value, context: &str) -> Re
                 "draws",
                 "max_treedepth",
                 "target_accept",
+                "initial_step_size",
                 "seed",
             ];
             checked_object(value, context, &names, &names)?;
@@ -355,6 +356,17 @@ fn normalized_settings(operation: Operation, value: &Value, context: &str) -> Re
                     "{context}.target_accept must be in (0, 1)"
                 )));
             }
+            let initial_step_size = value
+                .get("initial_step_size")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| {
+                    malformed(format!("{context}.initial_step_size must be a number"))
+                })?;
+            if !initial_step_size.is_finite() || initial_step_size <= 0.0 {
+                return Err(malformed(format!(
+                    "{context}.initial_step_size must be positive and finite"
+                )));
+            }
             let seed = value
                 .get("seed")
                 .and_then(Value::as_i64)
@@ -368,6 +380,7 @@ fn normalized_settings(operation: Operation, value: &Value, context: &str) -> Re
                 ("draws".into(), Value::Int(draws)),
                 ("max_treedepth".into(), Value::Int(max_treedepth)),
                 ("target_accept".into(), Value::Float(target_accept)),
+                ("initial_step_size".into(), Value::Float(initial_step_size)),
                 ("seed".into(), Value::Int(seed)),
             ]))
         }
@@ -414,7 +427,7 @@ impl Recipe {
         engine: EngineIdentity,
         settings: Value,
     ) -> Result<Self, Error> {
-        let id = identifier(&id, "recipe id")?;
+        let id = validate_identifier(&id, "recipe id")?;
         if model.kind != ArtifactKind::ModelIr || data.kind != ArtifactKind::Data {
             return Err(malformed(
                 "recipe model/data references must have model_ir/data kinds",
@@ -476,14 +489,14 @@ impl Recipe {
         }))
     }
 
-    fn parse(value: &Value, context: &str) -> Result<Self, Error> {
+    pub fn parse(value: &Value, context: &str) -> Result<Self, Error> {
         checked_object(
             value,
             context,
             &["id", "sha256", "operation", "inputs", "engine", "settings"],
             &["id", "sha256", "operation", "inputs", "engine", "settings"],
         )?;
-        let id = identifier(required_str(value, "id", context)?, context)?;
+        let id = validate_identifier(required_str(value, "id", context)?, context)?;
         let expected = Digest::parse(required_str(value, "sha256", context)?, context)?;
         let operation = Operation::parse(required_str(value, "operation", context)?, context)?;
         let inputs = value.get("inputs").expect("required");
@@ -594,7 +607,7 @@ pub struct Decision {
 }
 
 impl Decision {
-    fn parse(value: &Value, context: &str) -> Result<Self, Error> {
+    pub fn parse(value: &Value, context: &str) -> Result<Self, Error> {
         checked_object(
             value,
             context,
@@ -603,7 +616,7 @@ impl Decision {
         )?;
         let parent = match value.get("parent").expect("required") {
             Value::Null => None,
-            Value::Str(parent) => Some(identifier(parent, context)?),
+            Value::Str(parent) => Some(validate_identifier(parent, context)?),
             _ => {
                 return Err(malformed(format!(
                     "{context}.parent must be null or a string"
@@ -620,7 +633,7 @@ impl Decision {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
-            id: identifier(required_str(value, "id", context)?, context)?,
+            id: validate_identifier(required_str(value, "id", context)?, context)?,
             parent,
             reason: bounded_text(required_str(value, "reason", context)?, context)?,
             cites,
@@ -695,7 +708,7 @@ pub struct Execution {
 }
 
 impl Execution {
-    fn parse(value: &Value, context: &str) -> Result<Self, Error> {
+    pub fn parse(value: &Value, context: &str) -> Result<Self, Error> {
         checked_object(
             value,
             context,
@@ -751,8 +764,8 @@ impl Execution {
             _ => {}
         }
         Ok(Self {
-            id: identifier(required_str(value, "id", context)?, context)?,
-            recipe: identifier(required_str(value, "recipe", context)?, context)?,
+            id: validate_identifier(required_str(value, "id", context)?, context)?,
+            recipe: validate_identifier(required_str(value, "recipe", context)?, context)?,
             recipe_sha256: Digest::parse(required_str(value, "recipe_sha256", context)?, context)?,
             outcome,
             output,
@@ -814,7 +827,7 @@ pub struct EvidenceSelection {
 }
 
 impl EvidenceSelection {
-    fn parse(value: &Value, context: &str) -> Result<Self, Error> {
+    pub fn parse(value: &Value, context: &str) -> Result<Self, Error> {
         checked_object(
             value,
             context,
@@ -822,8 +835,8 @@ impl EvidenceSelection {
             &["name", "execution", "status"],
         )?;
         Ok(Self {
-            name: identifier(required_str(value, "name", context)?, context)?,
-            execution: identifier(required_str(value, "execution", context)?, context)?,
+            name: validate_identifier(required_str(value, "name", context)?, context)?,
+            execution: validate_identifier(required_str(value, "execution", context)?, context)?,
             status: EvidenceStatus::parse(required_str(value, "status", context)?, context)?,
         })
     }
@@ -845,7 +858,7 @@ pub struct Source {
 }
 
 impl Source {
-    fn parse(value: &Value, context: &str) -> Result<Self, Error> {
+    pub fn parse(value: &Value, context: &str) -> Result<Self, Error> {
         checked_object(
             value,
             context,
@@ -864,7 +877,7 @@ impl Source {
         Ok(Self {
             snapshot_id: Digest::parse(required_str(value, "snapshot_id", context)?, context)?,
             manifest,
-            decision: identifier(required_str(value, "decision", context)?, context)?,
+            decision: validate_identifier(required_str(value, "decision", context)?, context)?,
         })
     }
 
@@ -998,7 +1011,7 @@ impl Manifest {
                 required_str(estimand, "description", "estimand")?,
                 "estimand description",
             )?,
-            estimand_parameter: identifier(
+            estimand_parameter: validate_identifier(
                 required_str(estimand, "parameter", "estimand")?,
                 "estimand parameter",
             )?,
@@ -1022,7 +1035,7 @@ impl Manifest {
     fn validate_relationships(&self) -> Result<(), Error> {
         let mut decision_ids = HashSet::new();
         for decision in &self.decisions {
-            if !decision_ids.insert(decision.id.as_str()) {
+            if decision_ids.contains(decision.id.as_str()) {
                 return Err(malformed(format!(
                     "duplicate decision id {:?}",
                     decision.id
@@ -1036,6 +1049,7 @@ impl Manifest {
                     )));
                 }
             }
+            decision_ids.insert(decision.id.as_str());
         }
         let mut recipes = HashMap::new();
         let mut recipe_digests = HashSet::new();
@@ -1132,22 +1146,6 @@ impl Manifest {
                             .sha256
                             .as_str(),
                     );
-                }
-            }
-        }
-        let known_artifacts = self
-            .direct_references()
-            .into_iter()
-            .map(|reference| reference.sha256.as_str())
-            .collect::<HashSet<_>>();
-        for decision in &self.decisions {
-            for citation in &decision.cites {
-                if !known_artifacts.contains(citation.as_str()) {
-                    return Err(malformed(format!(
-                        "decision {:?} cites artifact {} that is not referenced by this snapshot",
-                        decision.id,
-                        citation.prefixed()
-                    )));
                 }
             }
         }
