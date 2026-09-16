@@ -19,6 +19,7 @@ pub mod error;
 pub mod fingerprint;
 pub mod generation;
 pub mod inspect;
+pub mod investigation;
 pub mod ir;
 pub mod json;
 pub mod linalg;
