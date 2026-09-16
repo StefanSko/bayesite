@@ -323,8 +323,8 @@ struct FreeSlot {
     size: usize,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum ResolvedConstraint {
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResolvedConstraint {
     Positive,
     Interval {
         lower: f64,
@@ -336,6 +336,20 @@ pub(crate) enum ResolvedConstraint {
         lower: Option<Vec<f64>>,
         upper: Option<Vec<f64>>,
     },
+}
+
+/// Read-only projection of one bound unconstrained-state slot.
+///
+/// This is intentionally narrower than exposing the evaluator's mutable
+/// internals. Inspection uses it to report the exact layout and transforms
+/// that [`Posterior`] resolved during binding.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundFreeSlot {
+    pub name: String,
+    pub constraint: Option<ResolvedConstraint>,
+    pub shape: Vec<usize>,
+    pub offset: usize,
+    pub length: usize,
 }
 
 struct VectorSupportEdges {
@@ -651,6 +665,20 @@ impl Posterior {
         self.free
             .iter()
             .map(|slot| (slot.name.clone(), slot.shape.clone()))
+            .collect()
+    }
+
+    /// Exact bound layout and resolved constraints, in packing order.
+    pub fn free_slot_details(&self) -> Vec<BoundFreeSlot> {
+        self.free
+            .iter()
+            .map(|slot| BoundFreeSlot {
+                name: slot.name.clone(),
+                constraint: slot.constraint.clone(),
+                shape: slot.shape.clone(),
+                offset: slot.offset,
+                length: slot.size,
+            })
             .collect()
     }
 

@@ -8,6 +8,12 @@ versioned on their own.
 
 ## [Unreleased]
 
+### Added
+
+- Add effective-model inspection across the pure core, CLI, and native/Wasm
+  protocol, reporting the exact bound state layout, resolved transforms, actual
+  density factors, declaration differences, data shapes, and Jacobian
+  accounting without sampling.
 ## [0.4.0] - 2026-07-20
 
 ### Added

@@ -3654,6 +3654,7 @@ fn capabilities_emits_versioned_document_matching_dispatch_table() {
         [
             "sample",
             "diagnose",
+            "inspect",
             "prior-predictive",
             "generate",
             "posterior-predictive",
@@ -3706,6 +3707,7 @@ fn capabilities_emits_versioned_document_matching_dispatch_table() {
     );
     let schemas = doc.get("schemas").expect("schemas field");
     for schema in [
+        "inspection",
         "recover_scenario",
         "sbc_scenario",
         "recover_check_targets",

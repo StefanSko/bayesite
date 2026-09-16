@@ -20,6 +20,7 @@ Bayesite data documents, including `simulate` output, intentionally do not:
 |---|---|
 | `sample` fit stream | `draws_format: "v0-provisional"` |
 | `diagnose` report | `diagnostics_format: "v0-provisional"` |
+| `inspect` report | `inspection_format: "v0-provisional"` |
 | `prior-predictive` stream | `prior_predictive_format: "v0-provisional"` |
 | `generate` paired stream | `generated_datasets_format: "v0-provisional"` |
 | `posterior-predictive` stream | `posterior_predictive_format: "v0-provisional"` |
@@ -65,6 +66,14 @@ decision.
   booleans in `values`.
 - Report objects are factual records. They do not add recovery, sampler-quality,
   or SBC uniformity verdicts.
+
+## `bayesite inspect`
+
+`inspect` binds model and data through the actual posterior construction and
+emits the effective-model report documented in [inspection-v0.md](inspection-v0.md).
+It reports resolved state layout, transforms, actual density factors,
+declarations, bound data shapes, and conservative structural discrepancies. It
+does not sample or emit a scientific verdict.
 
 ## `bayesite sample`
 

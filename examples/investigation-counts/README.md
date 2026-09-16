@@ -1,0 +1,69 @@
+# Investigation: expected daily support-request count
+
+## Question and estimand
+
+For a deliberately synthetic 30-day public dataset, what expected number of
+support requests should planning use for a future day under an exchangeable-day
+model?
+
+The estimand is `mean_daily_count`: the likelihood's expected count for one
+future exchangeable day. It is not the next observed count, a maximum, or a
+queue-service target.
+
+The data are constructed, public teaching data. Three deliberately large days
+create a visible dispersion problem; this is not an empirical discovery.
+
+## Initial modeling decision
+
+Decision ID `initial-likelihood`: use one Poisson likelihood with a shared
+positive mean. This is a deliberately simple baseline: conditional variance is
+forced to equal the mean. The proper prior is
+`mean_daily_count ~ Exponential(rate=0.1)`. The unconstrained NUTS coordinate is
+mapped through the positive exponential transform, whose Jacobian is included
+in the evaluated density.
+
+The observed counts have mean 2.93 and sample standard deviation about 4.55. The
+retained posterior check is factual rather than a verdict: compare those values
+with the posterior-predictive distributions of mean, standard deviation,
+minimum, maximum, and zero count. The standard-deviation and maximum summaries
+are expected to expose the Poisson limitation.
+
+`negative-binomial.json` is a regression fixture, not part of the original
+published snapshot. It keeps the same expected-count estimand and prior, and
+adds a positive overdispersion parameter. The frozen recipient task does not
+name this alternative.
+
+## Reproduce the author evidence
+
+From the repository root, build one binary and use no Python on the execution
+path:
+
+```sh
+cargo build --release --bin bayesite
+B=target/release/bayesite
+E=examples/investigation-counts/evidence
+$B inspect --model examples/investigation-counts/poisson.json \
+  --data examples/investigation-counts/data.json --out "$E/inspection.json"
+$B sample --model examples/investigation-counts/poisson.json \
+  --data examples/investigation-counts/data.json --chains 4 --warmup 250 \
+  --draws 250 --max-treedepth 8 --target-accept 0.85 --seed 20260916 \
+  --out "$E/fit.jsonl"
+$B diagnose --fit "$E/fit.jsonl" --out "$E/diagnostics.json"
+$B posterior-check --model examples/investigation-counts/poisson.json \
+  --data examples/investigation-counts/data.json --fit "$E/fit.jsonl" \
+  --seed 20260917 --out "$E/posterior-check.json"
+```
+
+`evidence/engine.json` records the exact executable digest, verbatim
+`capabilities` document, target, and release profile used for the committed
+evidence. The investigation snapshot records model and data independently; the
+older fit's combined model/data fingerprint remains only its cooperative
+compatibility check.
+
+## Interpretation boundary
+
+The initial evidence can show that this Poisson data-generating story does not
+reproduce the synthetic dataset's dispersion. It does not establish why counts
+vary, whether the days are exchangeable, whether a negative-binomial likelihood
+is scientifically adequate, or whether staffing should optimize this estimand.
+Those are unresolved questions, not hidden defaults.
