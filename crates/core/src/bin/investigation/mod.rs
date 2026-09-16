@@ -860,6 +860,10 @@ fn snapshot(argv: &[String]) -> Result<(), Error> {
     let (model, data) = insert_inputs(root, &model_bytes, &data_bytes)?;
     let manifest = collect_manifest(root, &workspace, model, data)?;
     let manifest_bytes = manifest.to_bytes()?;
+    // A supported publication must be verifiable before any destination is
+    // created. This also applies the total ancestry bound to the prospective
+    // manifest rather than publishing an unusable seventeenth generation.
+    verify_bundle(&manifest_bytes, |digest| store::read_digest(root, digest))?;
 
     create_fresh_directory(out, "snapshot bundle")?;
     let result = (|| {

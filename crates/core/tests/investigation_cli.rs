@@ -1,6 +1,7 @@
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use bayesite_core::investigation::identity::{artifact_digest, snapshot_digest};
 use bayesite_core::json::{self, Value};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -389,7 +390,7 @@ fn snapshot_preserves_reason_only_citation_after_unrun_model_edit() {
     let workspace = temp_dir("citation-author");
     let bundle = temp_dir("citation-bundle");
     initialize(&workspace);
-    let original_model = std::fs::read(&example("poisson.json")).unwrap();
+    let original_model = std::fs::read(example("poisson.json")).unwrap();
     let original_digest = bayesite_core::fingerprint::sha256_bytes(&original_model)
         .trim_start_matches("sha256:")
         .to_string();
@@ -513,24 +514,81 @@ fn additional_sample_needs_explicit_selection_and_seed_substitution_is_rejected(
         *object_entry_mut(execution, "output") = replacement;
     }
     std::fs::write(&path, format!("{}\n", json::write(&document).unwrap())).unwrap();
-    success(&[
+    let publication = run(&[
         "investigation",
         "snapshot",
         workspace.to_str().unwrap(),
         "--out",
         bundle.to_str().unwrap(),
     ]);
-    let verification = run(&["investigation", "verify", bundle.to_str().unwrap()]);
-    assert!(!verification.status.success());
-    let verification_error =
-        json::parse(String::from_utf8(verification.stderr).unwrap().trim()).unwrap();
-    assert!(verification_error
+    assert!(!publication.status.success());
+    assert!(!bundle.exists());
+    let publication_error =
+        json::parse(String::from_utf8(publication.stderr).unwrap().trim()).unwrap();
+    assert!(publication_error
         .get("message")
         .and_then(Value::as_str)
         .unwrap()
         .contains("recipe setting \"seed\""));
 
     for path in [workspace, bundle] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[test]
+fn snapshot_rejects_seventeenth_manifest_before_creating_destination() {
+    let workspace = temp_dir("ancestry-author");
+    let base = temp_dir("ancestry-base");
+    let rejected = temp_dir("ancestry-rejected");
+    initialize(&workspace);
+    success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        base.to_str().unwrap(),
+    ]);
+    let mut parent_bytes = std::fs::read(base.join("manifest.json")).unwrap();
+    let object_root = workspace.join("objects/sha256");
+    for _ in 1..16 {
+        let parent_artifact = artifact_digest(&parent_bytes);
+        std::fs::write(object_root.join(parent_artifact.as_str()), &parent_bytes).unwrap();
+        let mut child = json::parse(std::str::from_utf8(&parent_bytes).unwrap()).unwrap();
+        *object_entry_mut(&mut child, "source") = json::parse(&format!(
+            "{{\"snapshot_id\":\"{}\",\"manifest\":{{\"sha256\":\"{}\",\"bytes\":{},\"kind\":\"investigation_manifest\",\"format\":\"investigation-snapshot-v0-provisional\"}},\"decision\":\"initial-likelihood\"}}",
+            snapshot_digest(&parent_bytes).as_str(),
+            parent_artifact.as_str(),
+            parent_bytes.len()
+        ))
+        .unwrap();
+        parent_bytes = json::write(&child).unwrap().into_bytes();
+    }
+    let parent_artifact = artifact_digest(&parent_bytes);
+    std::fs::write(object_root.join(parent_artifact.as_str()), &parent_bytes).unwrap();
+    let path = workspace.join("investigation.json");
+    let mut document = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    *object_entry_mut(&mut document, "source") = json::parse(&format!(
+        "{{\"snapshot_id\":\"{}\",\"manifest\":{{\"sha256\":\"{}\",\"bytes\":{},\"kind\":\"investigation_manifest\",\"format\":\"investigation-snapshot-v0-provisional\"}},\"decision\":\"initial-likelihood\"}}",
+        snapshot_digest(&parent_bytes).as_str(),
+        parent_artifact.as_str(),
+        parent_bytes.len()
+    ))
+    .unwrap();
+    std::fs::write(path, format!("{}\n", json::write(&document).unwrap())).unwrap();
+
+    let output = run(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        rejected.to_str().unwrap(),
+    ]);
+    assert!(!output.status.success());
+    assert!(!rejected.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("16-manifest limit"));
+
+    for path in [workspace, base, rejected] {
         let _ = std::fs::remove_dir_all(path);
     }
 }

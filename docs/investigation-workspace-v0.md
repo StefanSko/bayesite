@@ -70,7 +70,9 @@ Human approval is recorded only when the editor explicitly supplies
 Changing model, data, settings, seed, engine, or an upstream fit makes affected
 selections historical by recipe identity. A text-only reason change does not.
 Snapshotting an unrun but resolvable recipe records it as `incomplete`; it does
-not invent a completion or cancellation.
+not invent a completion or cancellation. Snapshot publication runs the full
+non-executing verifier against the prospective manifest before creating the
+output directory, including the total 16-manifest ancestry limit.
 
 ## Replay and verification
 

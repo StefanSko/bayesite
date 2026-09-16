@@ -121,6 +121,12 @@
     return value;
   }
   function text(value) { return value === null || value === undefined ? "—" : String(value); }
+  function safeIdentifier(value, label) {
+    if (typeof value !== "string" || value.length < 1 || value.length > 128 || !/^[A-Za-z0-9._-]+$/.test(value)) {
+      throw new Error(`${label} must use only 1–128 ASCII letters, digits, '.', '_' or '-'`);
+    }
+    return value;
+  }
   function el(tag, content, className) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -280,10 +286,12 @@
     const root = document.getElementById("reproduce"); clear(root);
     const sample = manifest.recipes.find(recipe => recipe.operation === "sample");
     const decision = manifest.decisions[0];
+    const sampleId = sample ? safeIdentifier(sample.id, "sample recipe ID") : null;
+    const decisionId = decision ? safeIdentifier(decision.id, "decision ID") : null;
     const commands = [
       "bayesite investigation verify bundle/",
-      sample ? `bayesite investigation replay bundle/ --recipe ${sample.id} --out replay/` : "# No sample recipe is recorded for replay",
-      decision ? `bayesite investigation fork bundle/ --at ${decision.id} --out alternative/` : "# No branch decision is recorded",
+      sampleId ? `bayesite investigation replay bundle/ --recipe ${sampleId} --out replay/` : "# No sample recipe is recorded for replay",
+      decisionId ? `bayesite investigation fork bundle/ --at ${decisionId} --out alternative/` : "# No branch decision is recorded",
       "# Edit alternative/inputs/model.json and alternative/investigation.json",
       "bayesite investigation inspect alternative/",
       "# Run only the explicit alternative recipes you add, then:",
@@ -314,6 +322,15 @@
     if (manifest.investigation_snapshot !== "v0-provisional") throw new Error("Unsupported investigation snapshot format");
     requireObject(manifest.inputs, "inputs"); requireArray(manifest.recipes, "recipes");
     requireArray(manifest.executions, "executions"); requireArray(manifest.evidence, "evidence");
+    requireArray(manifest.decisions, "decisions").forEach((decision, index) => {
+      safeIdentifier(decision.id, `decisions[${index}].id`);
+      if (decision.parent !== null) safeIdentifier(decision.parent, `decisions[${index}].parent`);
+    });
+    manifest.recipes.forEach((recipe, index) => safeIdentifier(recipe.id, `recipes[${index}].id`));
+    manifest.executions.forEach((execution, index) => {
+      safeIdentifier(execution.id, `executions[${index}].id`);
+      safeIdentifier(execution.recipe, `executions[${index}].recipe`);
+    });
     const digest = await sha256(joinBytes(SNAPSHOT_DOMAIN, manifestBytes));
     const computed = digest === null ? null : `sha256:${digest}`;
     const supplied = new URLSearchParams(location.search).get("snapshot") || entry.snapshot_id;
@@ -336,7 +353,7 @@
     document.getElementById("content").hidden = false;
   }
 
-  globalThis.BAYESITE_VIEWER_TEST = { parseJsonStrict, referencePath };
+  globalThis.BAYESITE_VIEWER_TEST = { parseJsonStrict, referencePath, safeIdentifier };
   if (typeof document !== "undefined") {
     start().catch(error => {
       const status = document.getElementById("integrity"); status.textContent = "Integrity/display failure"; status.className = "badge bad";
