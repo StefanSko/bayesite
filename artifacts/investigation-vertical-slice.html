@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bayesite Investigation Vertical Slice · Steps 00–04</title>
+<style>
+:root{--night:#0d1716;--night2:#152522;--paper:#f3efe5;--card:#fffdf7;--ink:#172522;--muted:#65746f;--teal:#128071;--mint:#a9e4d5;--amber:#e3a33d;--coral:#d56855;--line:#cbd5ce;--code:#18312b;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);line-height:1.55}.hero{color:#eef8f5;background:radial-gradient(circle at 82% 20%,#246d61 0,transparent 32%),linear-gradient(135deg,var(--night),var(--night2));padding:5rem max(1.25rem,calc((100vw - 1160px)/2)) 4rem;overflow:hidden}.eyebrow,.kicker{font:750 .74rem/1.2 ui-monospace,SFMono-Regular,monospace;letter-spacing:.16em;text-transform:uppercase}.eyebrow{color:var(--mint)}h1{max-width:900px;margin:.8rem 0 1rem;font:500 clamp(2.7rem,7vw,6.2rem)/.92 Georgia,serif;letter-spacing:-.055em}.hero p{max-width:760px;color:#bdd0ca;font-size:1.13rem}.hero-meta{display:flex;flex-wrap:wrap;gap:.55rem;margin-top:2rem}.pill{border:1px solid #4c746b;border-radius:999px;padding:.35rem .7rem;color:#d8e7e2;font-size:.78rem}.wrap{width:min(1160px,calc(100% - 2rem));margin:auto}.principle{display:grid;grid-template-columns:1fr 2fr;gap:2rem;padding:3rem 0;border-bottom:1px solid var(--line)}.principle h2,.step h2,.closing h2{margin:0;font:500 clamp(1.8rem,4vw,3.2rem)/1.05 Georgia,serif;letter-spacing:-.025em}.principle blockquote{margin:0;padding:1.2rem 1.4rem;border-left:4px solid var(--teal);background:var(--card);font:1.2rem/1.5 Georgia,serif}.map{padding:3rem 0}.map h2{font:500 2rem Georgia,serif}.rail{display:grid;grid-template-columns:repeat(5,1fr);gap:.55rem;margin-top:1.5rem}.rail a{position:relative;min-height:130px;padding:1rem;text-decoration:none;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:12px}.rail a:hover{border-color:var(--teal);transform:translateY(-2px)}.rail b{display:block;color:var(--teal);font:800 .8rem ui-monospace,monospace}.rail span{display:block;margin-top:.55rem;font-weight:720}.rail small{display:block;color:var(--muted);margin-top:.35rem}.step{padding:4rem 0;border-top:1px solid var(--line)}.step-head{display:grid;grid-template-columns:110px 1fr;gap:1rem;align-items:start}.step-no{color:var(--teal);font:800 3rem/1 ui-monospace,monospace}.step-sub{max-width:760px;color:var(--muted);font-size:1.05rem}.split{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:2rem}.panel{padding:1.2rem;background:var(--card);border:1px solid var(--line);border-radius:14px;min-width:0}.panel h3{margin:0 0 .7rem;font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;color:var(--teal)}.panel ul{margin:.4rem 0;padding-left:1.2rem}.panel li+li{margin-top:.4rem}.technical{background:var(--night);color:#eef8f5;border-color:var(--night)}.technical h3{color:var(--mint)}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}code{font-size:.88em;color:var(--teal)}.technical code{color:var(--mint)}pre{margin:.8rem 0 0;padding:1rem;border-radius:9px;background:#09110f;color:#d9ebe5;font-size:.78rem;overflow:auto;white-space:pre-wrap}.flow{display:flex;flex-wrap:wrap;align-items:center;gap:.45rem;margin:1.25rem 0}.node{padding:.45rem .7rem;border:1px solid var(--line);border-radius:8px;background:var(--card);font:700 .76rem ui-monospace,monospace}.arrow{color:var(--teal);font-weight:900}.callout{margin-top:1rem;padding:1rem 1.1rem;border-radius:10px;background:#e4eee9;border-left:4px solid var(--teal)}.callout.warn{background:#f5e8d1;border-color:var(--amber)}.identity{display:grid;grid-template-columns:repeat(3,1fr);gap:.7rem;margin-top:1rem}.identity .panel{border-top:4px solid var(--teal)}.identity strong{display:block;font:500 1.25rem Georgia,serif}.identity small{color:var(--muted)}table{width:100%;border-collapse:collapse;background:var(--card);margin-top:1rem}th,td{text-align:left;vertical-align:top;padding:.65rem;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:.72rem;letter-spacing:.07em;text-transform:uppercase}.status{font-weight:750;color:var(--teal)}.historical{color:#a26316}.graph{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.graph .panel{min-height:180px}.graph-title{font:600 1.2rem Georgia,serif}.lineage{display:grid;grid-template-columns:1fr auto 1fr;gap:.8rem;align-items:center;margin:1rem 0}.snapshot{padding:1rem;border:1px solid var(--line);border-radius:12px;background:var(--card)}.snapshot b{display:block;font-family:ui-monospace,monospace;color:var(--teal)}.snapshot small{color:var(--muted)}.big-arrow{font-size:2rem;color:var(--teal)}.trust{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem}.trust .panel:first-child{border-top:4px solid var(--teal)}.trust .panel:nth-child(2){border-top:4px solid var(--amber)}.trust .panel:nth-child(3){border-top:4px solid var(--coral)}.files{font: .82rem/1.7 ui-monospace,monospace;color:var(--muted)}.closing{padding:4rem 0 5rem}.outcome{display:grid;grid-template-columns:1.2fr .8fr;gap:1rem;margin-top:1.5rem}.checks{list-style:none;padding:0}.checks li{padding:.55rem 0;border-bottom:1px solid var(--line)}.checks li::before{content:"✓";color:var(--teal);font-weight:900;margin-right:.6rem}footer{padding:2rem max(1rem,calc((100vw - 1160px)/2));color:#acc2bb;background:var(--night);font-size:.8rem}@media(max-width:820px){.rail{grid-template-columns:1fr}.rail a{min-height:0}.principle,.split,.graph,.outcome{grid-template-columns:1fr}.step-head{grid-template-columns:1fr}.identity,.trust{grid-template-columns:1fr}.lineage{grid-template-columns:1fr}.big-arrow{transform:rotate(90deg);text-align:center}}@media print{.hero{padding:2rem;color:var(--ink);background:white}.hero p{color:var(--muted)}.step{break-before:page}.panel,.snapshot{break-inside:avoid}}
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="eyebrow">Bayesite · Investigation vertical slice</div>
+  <h1>From saved computation to a continuable investigation.</h1>
+  <p>Five connected steps turn one Bayesian run into an inspectable, immutable, replayable, forkable, and safely viewable research object—without putting Python, a package manager, or arbitrary code on the recipient path.</p>
+  <div class="hero-meta"><span class="pill">Steps 00–04</span><span class="pill">Exact-byte identity</span><span class="pill">One static binary</span><span class="pill">Offline-capable</span><span class="pill">v0-provisional</span></div>
+</header>
+
+<div class="wrap">
+<section class="principle">
+  <h2>The governing idea</h2>
+  <blockquote>Continue from an earlier decision without rewriting what happened before. Computation and scientific reasoning stay connected, but they are not collapsed into one graph.</blockquote>
+</section>
+
+<nav class="map" aria-label="Five-step map">
+  <div class="kicker">Vertical slice map</div><h2>One protocol, five enforceable boundaries</h2>
+  <div class="rail">
+    <a href="#step-00"><b>00</b><span>Freeze success</span><small>Recipient protocol</small></a>
+    <a href="#step-01"><b>01</b><span>Expose reality</span><small>Example + inspection</small></a>
+    <a href="#step-02"><b>02</b><span>Save exact bytes</span><small>Snapshot + storage</small></a>
+    <a href="#step-03"><b>03</b><span>Continue honestly</span><small>Workflow CLI</small></a>
+    <a href="#step-04"><b>04</b><span>Hand off safely</span><small>Viewer + export</small></a>
+  </div>
+</nav>
+
+<section class="step" id="step-00">
+  <div class="step-head"><div class="step-no">00</div><div><div class="kicker">Recipient protocol</div><h2>Define failure before implementation.</h2><p class="step-sub">The frozen protocol changes the work from “build some investigation features” into a falsifiable handoff experiment.</p></div></div>
+  <div class="split">
+    <div class="panel"><h3>Conceptual achievement</h3><ul><li>A fresh recipient must explain the question, estimand, effective model, and retained limitation.</li><li>They must verify and replay before changing one scientifically meaningful assumption.</li><li>Old evidence must become historical before replacement evidence exists.</li><li>An inconclusive continuation remains a valid result.</li></ul></div>
+    <div class="panel technical"><h3>Technical contract</h3><pre>examples/investigation-counts/PROTOCOL.md
+
+FAIL if:
+  help is required but unpublished
+  old evidence appears current
+  source bytes change
+  incomplete/failed work looks complete
+  continuation loses provenance</pre></div>
+  </div>
+  <div class="callout warn"><strong>Why it matters:</strong> implementation cannot redefine success after seeing what is easy to build.</div>
+</section>
+
+<section class="step" id="step-01">
+  <div class="step-head"><div class="step-no">01</div><div><div class="kicker">Example and effective-model inspection</div><h2>Show what the runtime actually evaluates.</h2><p class="step-sub">A synthetic 30-day count case gives the slice a real question and a deliberately limited Poisson baseline. Inspection reports the bound execution state—not a flattering summary of declarations.</p></div></div>
+  <div class="flow"><span class="node">Bayeswire bytes</span><span class="arrow">→</span><span class="node">decode</span><span class="arrow">→</span><span class="node">bind data</span><span class="arrow">→</span><span class="node">resolve constraints</span><span class="arrow">→</span><span class="node">ordered factors</span></div>
+  <div class="split">
+    <div class="panel"><h3>Conceptual achievement</h3><ul><li>Question: expected support requests for a future exchangeable day.</li><li>Estimand: <code>mean_daily_count</code>, not a maximum or staffing policy.</li><li>Baseline: Exponential prior + Poisson likelihood.</li><li>Retained limitation: Poisson variance is tied to its mean; synthetic tails and dispersion challenge that story.</li></ul></div>
+    <div class="panel technical"><h3>Machine-readable report</h3><pre>bayesite inspect --model poisson.json --data data.json
+
+free_slots[]
+  name · shape · offset · length
+  resolved_constraint
+
+density_factors[]
+  distribution · value_expression
+
+data[] · declarations
+structural_discrepancies[]
+density_accounting.transform_jacobians</pre></div>
+  </div>
+  <table><thead><tr><th>Declared view</th><th>Effective view</th><th>Difference made visible</th></tr></thead><tbody><tr><td>Prior metadata</td><td>Actual stochastic density factor</td><td>Distribution or value-expression mismatch</td></tr><tr><td>Positive parameter</td><td>Flat unconstrained slot + resolved exponential transform</td><td>Layout and Jacobian accounting</td></tr><tr><td>Observed name</td><td>Bound shape, integerness, ordered factor</td><td>What data the posterior really consumes</td></tr></tbody></table>
+</section>
+
+<section class="step" id="step-02">
+  <div class="step-head"><div class="step-no">02</div><div><div class="kicker">Snapshot and content-addressed storage</div><h2>Identity belongs to exact bytes.</h2><p class="step-sub">The snapshot is an immutable manifest plus a flat SHA-256 object store. Received bytes are hashed directly; canonical reserialization is never substituted for identity.</p></div></div>
+  <div class="identity">
+    <div class="panel"><strong>Artifact identity</strong><code>sha256(raw bytes)</code><small>Model, data, fit, report, engine, citation.</small></div>
+    <div class="panel"><strong>Recipe identity</strong><code>sha256(framed inputs)</code><small>Operation + separate model/data/fit + engine + target/profile + normalized settings.</small></div>
+    <div class="panel"><strong>Snapshot identity</strong><code>sha256(domain || manifest bytes)</code><small>Exact manifest encoding is part of the durable object.</small></div>
+  </div>
+  <div class="split">
+    <div class="panel"><h3>Two connected graphs</h3><div class="graph"><div><div class="graph-title">Computation</div><p>Model, data, engine, settings, seed, upstream fit → output.</p></div><div><div class="graph-title">Investigation</div><p>Decision, parent, reason, cited artifact digests.</p></div></div><p class="small">Reason-only citations remain in closure even when no recipe consumes them.</p></div>
+    <div class="panel technical"><h3>Store layout</h3><pre>snapshot/
+  manifest.json
+  objects/
+    sha256/
+      &lt;64 lowercase hex&gt;
+
+write temporary bytes
+fsync
+publish create-new
+verify winner if raced
+publish manifest last</pre></div>
+  </div>
+  <div class="callout"><strong>Verification is bounded and non-executing.</strong> It rejects missing/tampered objects, duplicate JSON keys, invalid relationships, incompatible fit inputs/layout/settings, stale current evidence, ancestry cycles, and closures beyond fixed limits.</div>
+</section>
+
+<section class="step" id="step-03">
+  <div class="step-head"><div class="step-no">03</div><div><div class="kicker">Continuation workflow CLI</div><h2>Make change explicit; keep history visible.</h2><p class="step-sub">A mutable workspace supports authoring. A snapshot supports durable handoff. Forking copies exact source closure and editable input bytes without ever writing the parent.</p></div></div>
+  <div class="lineage"><div class="snapshot"><b>sha256: original</b><span>Poisson evidence · current</span><small>immutable parent</small></div><div class="big-arrow">→</div><div class="snapshot"><b>sha256: continuation</b><span>Negative-binomial experiment · current</span><small>source points to original; inherited evidence historical</small></div></div>
+  <div class="split">
+    <div class="panel"><h3>Lifecycle</h3><pre>investigation init
+investigation inspect
+investigation run --recipe …
+investigation snapshot
+investigation verify
+investigation replay
+investigation fork --at …</pre></div>
+    <div class="panel"><h3>Honest state transitions</h3><ul><li>An attempt is persisted as <code>incomplete</code> before numerical work.</li><li>A typed runtime error becomes <code>failed</code>; it does not replace valid evidence.</li><li>The first current result for an operation is selected; later results remain unselected.</li><li>Conflicting current fits block inspection and downstream execution.</li><li>Changing execution inputs changes recipe identity and makes inherited selections historical.</li></ul></div>
+  </div>
+  <table><thead><tr><th>Operation</th><th>Runs</th><th>Does not do</th></tr></thead><tbody><tr><td><code>verify</code></td><td>Hash/schema/closure/compatibility checks</td><td>Invoke sampler, follow URL, infer authorship</td></tr><tr><td><code>replay</code></td><td>One exact saved recipe with pinned engine match</td><td>Overwrite expected output or claim cross-target equivalence</td></tr><tr><td><code>fork</code></td><td>Copy source closure and editable inputs</td><td>Mutate source or silently select inherited evidence</td></tr></tbody></table>
+</section>
+
+<section class="step" id="step-04">
+  <div class="step-head"><div class="step-no">04</div><div><div class="kicker">Static viewer and fresh-recipient handoff</div><h2>Evidence first; execution stays inert.</h2><p class="step-sub">The browser reads the same snapshot contract as the CLI. It never samples, executes a bundled binary, imports a framework, or follows snapshot-controlled URLs.</p></div></div>
+  <div class="trust">
+    <div class="panel"><h3>Verified in browser</h3><p>Raw manifest identity and each displayed object when WebCrypto exists.</p></div>
+    <div class="panel"><h3>Clearly partial</h3><p>Full recursive closure and semantic verification remain a CLI responsibility.</p></div>
+    <div class="panel"><h3>Never claimed</h3><p>Authorship, privacy, availability, origin trust, or scientific correctness.</p></div>
+  </div>
+  <div class="split">
+    <div class="panel technical"><h3>Static safety boundary</h3><pre>Strict duplicate-key JSON parser
+Depth / bytes / record limits
+SHA-256-only object paths
+textContent for untrusted strings
+No innerHTML · eval · CDN · framework
+No browser engine execution
+WebCrypto absent → visibly unverified</pre></div>
+    <div class="panel"><h3>Portable export</h3><div class="files">published/<br>├── index.html · viewer.js · style.css<br>├── entry.json (snapshot + asset hashes)<br>├── bundle/ (exact verified closure)<br>├── downloads/bayesite-engine<br>├── PROTOCOL.md · CONTINUING.md<br>├── IR-FORMAT.md · IR-TAGS.md<br>├── LICENSE · NOTICE<br>└── PUBLIC-DATA-CONFIRMATION.txt</div></div>
+  </div>
+  <div class="callout warn"><strong>Publication is deliberate.</strong> Export requires <code>--public-data-confirmed</code>, but labels that choice honestly: it is not a privacy scan, signature, or scientific approval.</div>
+</section>
+
+<section class="closing">
+  <div class="kicker">What the vertical slice proves</div><h2>A recipient can inspect, verify, replay, branch, and publish—while the original remains unchanged.</h2>
+  <div class="outcome"><ul class="checks"><li>Effective runtime model is saved as evidence.</li><li>Model and data are independently identified.</li><li>Settings, seed, target, profile, engine, and upstream fit enter recipe identity.</li><li>Scientific reasons retain exact cited bytes.</li><li>Old results become historical on meaningful change.</li><li>Failures and incomplete work remain first-class facts.</li><li>Continuation lineage is recursive and locally verifiable.</li><li>The recipient path remains one Bayesite binary.</li></ul><div class="panel"><h3>Deliberately still out of scope</h3><p>Signatures, private-data publication, hostile multi-user filesystems, remote stores, generic schedulers, arbitrary-code recipes, merge semantics, browser sampling, and cross-target numerical equivalence.</p><p class="small">Those are explicit boundaries—not accidental promises.</p></div></div>
+</section>
+</div>
+<footer>Bayesite investigation slice · explanatory artifact for plans 00–04 · formats remain v0-provisional</footer>
+</body>
+</html>

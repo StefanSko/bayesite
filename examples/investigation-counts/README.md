@@ -35,11 +35,12 @@ name this alternative.
 
 ## Reproduce the author evidence
 
-From the repository root, build one binary and use no Python on the execution
-path:
+From the repository root, regenerate every committed evidence file with one
+script (or follow its commands). It builds one locked release binary and uses no
+Python on the execution path:
 
 ```sh
-cargo build --release --bin bayesite
+scripts/generate_investigation_counts_evidence.sh
 B=target/release/bayesite
 E=examples/investigation-counts/evidence
 $B inspect --model examples/investigation-counts/poisson.json \
@@ -51,8 +52,11 @@ $B sample --model examples/investigation-counts/poisson.json \
 $B diagnose --fit "$E/fit.jsonl" --out "$E/diagnostics.json"
 $B posterior-check --model examples/investigation-counts/poisson.json \
   --data examples/investigation-counts/data.json --fit "$E/fit.jsonl" \
-  --seed 20260917 --out "$E/posterior-check.json"
+  --seed 20260917 --out "$E/check.json"
 ```
+
+The standalone sample command uses its recorded default initial step size of
+`1.0`; the investigation recipe spells that value out.
 
 `evidence/engine.json` records the exact executable digest, verbatim
 `capabilities` document, target, and release profile used for the committed
