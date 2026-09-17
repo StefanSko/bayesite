@@ -3654,6 +3654,7 @@ fn capabilities_emits_versioned_document_matching_dispatch_table() {
         [
             "sample",
             "diagnose",
+            "inspect",
             "prior-predictive",
             "generate",
             "posterior-predictive",
@@ -3662,6 +3663,7 @@ fn capabilities_emits_versioned_document_matching_dispatch_table() {
             "recover-check",
             "recover",
             "sbc",
+            "investigation",
             "capabilities",
         ]
     );
@@ -3706,6 +3708,9 @@ fn capabilities_emits_versioned_document_matching_dispatch_table() {
     );
     let schemas = doc.get("schemas").expect("schemas field");
     for schema in [
+        "inspection",
+        "investigation_snapshot",
+        "investigation_workspace",
         "recover_scenario",
         "sbc_scenario",
         "recover_check_targets",
@@ -3788,6 +3793,25 @@ fn missing_command_error_names_missing_command_and_supported_commands() {
     assert!(message.contains("prior-predictive --model <ir.json|-> --data <data.json|->"));
     assert!(message.contains("recover --model <ir.json|-> --scenario <scenario.json|->"));
     assert!(message.contains("sbc --model <ir.json|-> --scenario <scenario.json|->"));
+}
+
+#[test]
+fn investigation_usage_advertises_export_everywhere() {
+    for args in [vec!["not-a-command"], vec!["investigation"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+            .args(args)
+            .output()
+            .expect("bayesite runs");
+        assert!(!output.status.success());
+        let payload = json::parse(String::from_utf8(output.stderr).unwrap().trim()).unwrap();
+        let message = payload.get("message").and_then(Value::as_str).unwrap();
+        assert!(
+            message.contains("export"),
+            "investigation usage omitted export: {message}"
+        );
+    }
+    assert!(include_str!("../../../AGENTS.md").contains("investigation"));
+    assert!(include_str!("../../../AGENTS.md").contains("inspect"));
 }
 
 #[test]

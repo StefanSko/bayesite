@@ -5,6 +5,8 @@
 //!       [--chains C] [--warmup W] [--draws D] [--max-treedepth T]
 //!       [--target-accept A] [--out <fit.jsonl|->]
 //!   bayesite diagnose --fit <fit.jsonl|-> [--out <diagnostics.json|->]
+//!   bayesite inspect --model <ir.json|-> --data <data.json|->
+//!       [--out <inspection.json|->]
 //!   bayesite prior-predictive --model <ir.json|-> --data <data.json|->
 //!       [--seed N] [--draws D] [--out <pp.jsonl|->]
 //!   bayesite posterior-predictive --model <ir.json|-> --data <data.json|->
@@ -19,6 +21,7 @@
 //!       [--out <report.json|->]
 //!   bayesite sbc --model <ir.json|-> --scenario <scenario.json|->
 //!       [--replicates N] [--out <report.json|->]
+//!   bayesite investigation <init|inspect|run|snapshot|verify|fork|replay|export> ...
 //!   bayesite capabilities
 //!
 //! `sample` writes the v0-provisional NDJSON protocol (see `protocol.rs`).
@@ -35,11 +38,14 @@
 use std::io::Read;
 use std::io::Write;
 
+mod investigation;
+
 use bayesite_core::error::{Error, ErrorKind};
 use bayesite_core::fingerprint::model_data_fingerprint;
 use bayesite_core::generation::{
     generated_datasets_ndjson_lines, sha256_bytes, GenerationRequest, GenerationSource,
 };
+use bayesite_core::inspect::inspect_json;
 use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, data_to_json, DataValue, Posterior};
@@ -201,6 +207,7 @@ fn validate_sbc_replicates(value: usize, name: &str) -> Result<(), Error> {
 enum Command {
     Sample(SampleArgs),
     Diagnose(DiagnoseArgs),
+    Inspect(InspectArgs),
     PriorPredictive(PriorPredictiveArgs),
     Generate(GenerateArgs),
     PosteriorPredictive(PosteriorPredictiveArgs),
@@ -209,6 +216,7 @@ enum Command {
     RecoverCheck(RecoverCheckArgs),
     Recover(RecoverArgs),
     Sbc(SbcArgs),
+    Investigation(InvestigationArgs),
     Capabilities,
 }
 
@@ -222,6 +230,9 @@ const COMMANDS: &[(&str, ParseCommandFn)] = &[
     }),
     ("diagnose", |argv| {
         parse_diagnose_args(argv).map(Command::Diagnose)
+    }),
+    ("inspect", |argv| {
+        parse_inspect_args(argv).map(Command::Inspect)
     }),
     ("prior-predictive", |argv| {
         parse_prior_predictive_args(argv).map(Command::PriorPredictive)
@@ -245,6 +256,9 @@ const COMMANDS: &[(&str, ParseCommandFn)] = &[
         parse_recover_args(argv).map(Command::Recover)
     }),
     ("sbc", |argv| parse_sbc_args(argv).map(Command::Sbc)),
+    ("investigation", |argv| {
+        parse_investigation_args(argv).map(Command::Investigation)
+    }),
     ("capabilities", parse_capabilities_args),
 ];
 
@@ -259,6 +273,12 @@ struct SampleArgs {
 
 struct DiagnoseArgs {
     fit_path: String,
+    out_path: String,
+}
+
+struct InspectArgs {
+    model_path: String,
+    data_path: String,
     out_path: String,
 }
 
@@ -335,6 +355,10 @@ struct SbcArgs {
     replicates_override: Option<usize>,
 }
 
+struct InvestigationArgs {
+    argv: Vec<String>,
+}
+
 struct RecoverScenario {
     data: Vec<(String, DataValue)>,
     settings: RecoverSettings,
@@ -352,6 +376,8 @@ fn usage() -> &'static str {
      [--chains C] [--warmup W] [--draws D] [--max-treedepth T] [--target-accept A] \
      [--out <fit.jsonl|->]\n\
      usage: bayesite diagnose --fit <fit.jsonl|-> [--out <diagnostics.json|->]\n\
+     usage: bayesite inspect --model <ir.json|-> --data <data.json|-> \
+     [--out <inspection.json|->]\n\
      usage: bayesite prior-predictive --model <ir.json|-> --data <data.json|-> \
      [--seed N] [--draws D] [--out <pp.jsonl|->]\n\
      usage: bayesite generate --model <ir.json|-> --design <data.json|-> \
@@ -370,6 +396,7 @@ fn usage() -> &'static str {
      [--out <report.json|->]\n\
      usage: bayesite sbc --model <ir.json|-> --scenario <scenario.json|-> \
      [--replicates N] [--out <report.json|->]\n\
+     usage: bayesite investigation <init|inspect|run|snapshot|verify|fork|replay|export> ...\n\
      usage: bayesite capabilities"
 }
 
@@ -384,6 +411,17 @@ fn parse_args(argv: &[String]) -> Result<Command, Error> {
             usage()
         ))),
     }
+}
+
+fn parse_investigation_args(argv: &[String]) -> Result<InvestigationArgs, Error> {
+    if argv.is_empty() {
+        return Err(usage_error(
+            "investigation needs a subcommand: init, inspect, run, snapshot, verify, fork, replay, or export",
+        ));
+    }
+    Ok(InvestigationArgs {
+        argv: argv.to_vec(),
+    })
 }
 
 fn parse_capabilities_args(argv: &[String]) -> Result<Command, Error> {
@@ -564,6 +602,39 @@ fn parse_diagnose_args(argv: &[String]) -> Result<DiagnoseArgs, Error> {
     let fit_path =
         fit_path.ok_or_else(|| usage_error("--fit is required (a path or - for stdin)"))?;
     Ok(DiagnoseArgs { fit_path, out_path })
+}
+
+fn parse_inspect_args(argv: &[String]) -> Result<InspectArgs, Error> {
+    reject_duplicate_flags("inspect", argv, &["--model", "--data", "--out"])?;
+    let mut model_path = None;
+    let mut data_path = None;
+    let mut out_path = "-".to_string();
+    let mut iter = argv.iter();
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--model" => model_path = Some(value_for_flag(&mut iter, "--model")?.clone()),
+            "--data" => data_path = Some(value_for_flag(&mut iter, "--data")?.clone()),
+            "--out" => out_path = value_for_flag(&mut iter, "--out")?.clone(),
+            other => {
+                return Err(usage_error(format!(
+                    "unknown flag {other}; see `bayesite inspect` usage"
+                )))
+            }
+        }
+    }
+    let model_path =
+        model_path.ok_or_else(|| usage_error("--model is required (a path or - for stdin)"))?;
+    let data_path =
+        data_path.ok_or_else(|| usage_error("--data is required (a path or - for stdin)"))?;
+    validate_single_stdin_input(
+        "inspect",
+        &[("--model", &model_path), ("--data", &data_path)],
+    )?;
+    Ok(InspectArgs {
+        model_path,
+        data_path,
+        out_path,
+    })
 }
 
 fn parse_prior_predictive_args(argv: &[String]) -> Result<PriorPredictiveArgs, Error> {
@@ -1111,6 +1182,14 @@ fn run_diagnose(args: DiagnoseArgs) -> Result<(), Error> {
     write_text(&args.out_path, &text)
 }
 
+fn run_inspect(args: InspectArgs) -> Result<(), Error> {
+    let model_doc = json::parse(&read_input(&args.model_path)?)?;
+    let meta = decode_model(&model_doc)?;
+    let data_doc = json::parse(&read_input(&args.data_path)?)?;
+    let data = cli_data_from_json(&data_doc, "inspect")?;
+    write_text(&args.out_path, &inspect_json(meta, data)?)
+}
+
 fn run_prior_predictive(args: PriorPredictiveArgs) -> Result<(), Error> {
     let model_doc = json::parse(&read_input(&args.model_path)?)?;
     let meta = decode_model(&model_doc)?;
@@ -1567,6 +1646,18 @@ fn capabilities_document() -> Value {
             "schemas".to_string(),
             Value::Object(vec![
                 (
+                    "inspection".to_string(),
+                    Value::Str("v0-provisional".to_string()),
+                ),
+                (
+                    "investigation_snapshot".to_string(),
+                    Value::Str("v0-provisional".to_string()),
+                ),
+                (
+                    "investigation_workspace".to_string(),
+                    Value::Str("v0-provisional".to_string()),
+                ),
+                (
                     "recover_scenario".to_string(),
                     Value::Str("v0-provisional".to_string()),
                 ),
@@ -1597,6 +1688,7 @@ fn run() -> Result<(), Error> {
     match parse_args(&argv)? {
         Command::Sample(args) => run_sample(args),
         Command::Diagnose(args) => run_diagnose(args),
+        Command::Inspect(args) => run_inspect(args),
         Command::PriorPredictive(args) => run_prior_predictive(args),
         Command::Generate(args) => run_generate(args),
         Command::PosteriorPredictive(args) => run_posterior_predictive(args),
@@ -1605,6 +1697,10 @@ fn run() -> Result<(), Error> {
         Command::RecoverCheck(args) => run_recover_check(args),
         Command::Recover(args) => run_recover(args),
         Command::Sbc(args) => run_sbc(args),
+        Command::Investigation(args) => {
+            let capabilities = format!("{}\n", json::write(&capabilities_document())?);
+            investigation::run(&args.argv, &capabilities)
+        }
         Command::Capabilities => run_capabilities(),
     }
 }

@@ -20,6 +20,7 @@ Bayesite data documents, including `simulate` output, intentionally do not:
 |---|---|
 | `sample` fit stream | `draws_format: "v0-provisional"` |
 | `diagnose` report | `diagnostics_format: "v0-provisional"` |
+| `inspect` report | `inspection_format: "v0-provisional"` |
 | `prior-predictive` stream | `prior_predictive_format: "v0-provisional"` |
 | `generate` paired stream | `generated_datasets_format: "v0-provisional"` |
 | `posterior-predictive` stream | `posterior_predictive_format: "v0-provisional"` |
@@ -29,6 +30,9 @@ Bayesite data documents, including `simulate` output, intentionally do not:
 | `recover` report | `recover_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
 | `sbc` report | `sbc_format: "v0-provisional"`, `workflow_format: "v0-provisional"` |
 | `capabilities` document | `capabilities_format: "v0-provisional"` |
+| investigation snapshot | `investigation_snapshot: "v0-provisional"` |
+| investigation workspace | `investigation_workspace: "v0-provisional"` |
+| investigation verify/replay | `verification_format` / `replay_format: "v0-provisional"` |
 | CLI/protocol errors | `error_format: "v0-provisional"` |
 
 The marker means the artifact is intentionally provisional. Do not build a
@@ -66,6 +70,14 @@ decision.
 - Report objects are factual records. They do not add recovery, sampler-quality,
   or SBC uniformity verdicts.
 
+## `bayesite inspect`
+
+`inspect` binds model and data through the actual posterior construction and
+emits the effective-model report documented in [inspection-v0.md](inspection-v0.md).
+It reports resolved state layout, transforms, actual density factors,
+declarations, bound data shapes, and conservative structural discrepancies. It
+does not sample or emit a scientific verdict.
+
 ## `bayesite sample`
 
 `sample` emits a v0-provisional NDJSON posterior-draw stream.
@@ -84,7 +96,11 @@ Header facts include:
 - workflow phases from JSON parse through artifact emission
 - parameter shapes, packing order, `parameter_order`, `parameter_count`, and
   zero-based row-major `coordinate_order`
-- sampler settings, seed, chain count/order, and retained draw count
+- sampler settings (`num_warmup`, `num_draws`, `max_treedepth`,
+  `target_accept`, and the configured `initial_step_size`), seed, chain
+  count/order, and retained draw count. Older v0 fit headers without
+  `initial_step_size` remain readable, but cannot satisfy an investigation
+  recipe's exact-settings contradiction check
 - `sample_stats_mode: "per_draw_v2"`, announcing that every draw line carries
   per-draw sampler statistics (`diverging`, `tree_depth`, `tree_accept`,
   `energy`). The Bayesite CLI also emits `model_data_fingerprint` when it can

@@ -17,6 +17,7 @@ Implemented command surface:
 ```sh
 bayesite sample
 bayesite diagnose
+bayesite inspect
 bayesite prior-predictive
 bayesite generate
 bayesite posterior-predictive
@@ -25,6 +26,7 @@ bayesite simulate
 bayesite recover-check
 bayesite recover
 bayesite sbc
+bayesite investigation <init|inspect|run|snapshot|verify|fork|replay|export>
 ```
 
 Current runtime capabilities:
@@ -33,6 +35,7 @@ Current runtime capabilities:
 - evaluates log density and gradients with in-tree reverse-mode AD;
 - samples posterior draws with NUTS only;
 - recomputes R-hat/ESS diagnostics from fit streams;
+- inspects the resolved state layout and actual density factors without sampling;
 - emits paired parameter/complete-dataset draws from fixed values, a closed
   model prior, or a compatible posterior in one bounded generation operation;
 - emits prior-predictive draws for directly assignable stochastic sites;
@@ -41,10 +44,15 @@ Current runtime capabilities:
 - simulates plain data documents from fixed supplied truth;
 - compares posterior draws to supplied truth with factual recovery checks;
 - emits factual single-scenario recovery reports;
-- emits factual SBC rank/histogram reports.
+- emits factual SBC rank/histogram reports;
+- verifies, replays, forks, and snapshots content-addressed investigation bundles
+  while keeping stale evidence historical.
 
 Workflow artifacts are **v0-provisional**. Field-level details are in
-[`docs/artifacts-v0.md`](docs/artifacts-v0.md). The model IR is the
+[`docs/artifacts-v0.md`](docs/artifacts-v0.md); investigation formats are in
+[`docs/investigation-snapshot-v0.md`](docs/investigation-snapshot-v0.md) and
+[`docs/investigation-workspace-v0.md`](docs/investigation-workspace-v0.md).
+The model IR is the
 separate `bayeswire_ir` v1 format; [`docs/ir-format-v1.md`](docs/ir-format-v1.md)
 and [`docs/ir-v1-tags.md`](docs/ir-v1-tags.md) are byte-identical vendored
 copies of the normative bayeswire spec, pinned by `BAYESWIRE_TAG` and

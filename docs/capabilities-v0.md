@@ -8,9 +8,12 @@ discover what an engine binary supports.
 {
   "capabilities_format": "v0-provisional",
   "version": "0.4.0",
-  "commands": ["sample", "diagnose", "prior-predictive", "generate", "posterior-predictive", "posterior-check", "simulate", "recover-check", "recover", "sbc", "capabilities"],
+  "commands": ["sample", "diagnose", "inspect", "prior-predictive", "generate", "posterior-predictive", "posterior-check", "simulate", "recover-check", "recover", "sbc", "investigation", "capabilities"],
   "ir": {"bayeswire_ir": 1},
   "schemas": {
+    "inspection": "v0-provisional",
+    "investigation_snapshot": "v0-provisional",
+    "investigation_workspace": "v0-provisional",
     "recover_scenario": "v0-provisional",
     "sbc_scenario": "v0-provisional",
     "recover_check_targets": "v0-provisional",
@@ -32,6 +35,9 @@ discover what an engine binary supports.
   decodes `{"bayeswire_ir": 1, "model": ...}` documents.
 - `schemas`: version markers for the machine-readable input schemas and the
   error format. Each key names a schema documented in this directory:
+  - `inspection`: [inspection-v0.md](inspection-v0.md)
+  - `investigation_snapshot`: [investigation-snapshot-v0.md](investigation-snapshot-v0.md)
+  - `investigation_workspace`: [investigation-workspace-v0.md](investigation-workspace-v0.md)
   - `recover_scenario`: [recover-scenario-v0.md](recover-scenario-v0.md)
   - `sbc_scenario`: [sbc-scenario-v0.md](sbc-scenario-v0.md)
   - `recover_check_targets`: [recover-check-targets-v0.md](recover-check-targets-v0.md)

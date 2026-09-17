@@ -22,6 +22,7 @@ use crate::fingerprint::model_data_fingerprint;
 use crate::generation::{
     generated_datasets_ndjson_lines, AuthoredProvenance, GenerationRequest, GenerationSource,
 };
+use crate::inspect::inspect_json;
 use crate::ir::{decode_model, ModelMeta};
 use crate::json::{self, Value};
 use crate::model::{data_from_json, data_to_json, DataValue, Posterior};
@@ -168,6 +169,10 @@ fn header_value(
                 (
                     "target_accept".to_string(),
                     Value::Float(settings.target_accept),
+                ),
+                (
+                    "initial_step_size".to_string(),
+                    Value::Float(settings.initial_step_size),
                 ),
             ]),
         ),
@@ -1187,7 +1192,18 @@ fn parse_header_settings(header: &Value) -> Result<Value, Error> {
             "fit header settings.target_accept must be in (0, 1); rerun `bayesite sample`",
         ));
     }
-    Ok(Value::Object(vec![
+    let initial_step_size = settings
+        .get("initial_step_size")
+        .map(|value| {
+            value
+                .as_f64()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .ok_or_else(|| {
+                    invalid_fit("fit header settings.initial_step_size must be positive and finite")
+                })
+        })
+        .transpose()?;
+    let mut normalized = vec![
         ("num_warmup".to_string(), Value::Int(num_warmup)),
         ("num_draws".to_string(), Value::Int(num_draws as i64)),
         (
@@ -1195,7 +1211,14 @@ fn parse_header_settings(header: &Value) -> Result<Value, Error> {
             Value::Int(max_treedepth as i64),
         ),
         ("target_accept".to_string(), Value::Float(target_accept)),
-    ]))
+    ];
+    if let Some(initial_step_size) = initial_step_size {
+        normalized.push((
+            "initial_step_size".to_string(),
+            Value::Float(initial_step_size),
+        ));
+    }
+    Ok(Value::Object(normalized))
 }
 
 fn parse_workflow_phases(doc: &Value, context: &str) -> Result<Option<Vec<String>>, Error> {
@@ -2780,6 +2803,8 @@ pub fn recover_check_report(
 ///    "seed":N,"chain_id":N}` -> v0-provisional NDJSON (one chain).
 /// - `{"command":"diagnose","fit":"<v0-provisional NDJSON>"}`
 ///   -> v0-provisional JSON diagnostics.
+/// - `{"command":"inspect","model":<ir>,"data":<data>}`
+///   -> v0-provisional effective-model inspection.
 /// - `{"command":"prior-predictive","model":<ir>,"data":<data>,
 ///    "settings":{"num_draws":N},"seed":N}` -> v0-provisional NDJSON.
 /// - `{"command":"simulate","model":<ir>,"data":<data>,"truth":<truth>,
@@ -3215,6 +3240,15 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
                 })?;
             diagnose_ndjson(fit)
         }
+        Some("inspect") => {
+            reject_unknown_fields(
+                &request,
+                "inspect request",
+                &["command", "model", "data"],
+            )?;
+            let (meta, data) = request_model_data(&request, "inspect")?;
+            inspect_json(meta, data)
+        }
         Some("generate") => {
             reject_unknown_fields(
                 &request,
@@ -3642,10 +3676,10 @@ fn handle_request_inner(text: &str) -> Result<String, Error> {
             json::write(&response)
         }
         Some(command) => Err(invalid_request(format!(
-            "unknown command \"{command}\"; supported commands are \"sample\", \"diagnose\", \"diagnostics\", \"generate\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"simulate\", \"recover-check\", \"recover\", and \"sbc\""
+            "unknown command \"{command}\"; supported commands are \"sample\", \"diagnose\", \"diagnostics\", \"inspect\", \"generate\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"simulate\", \"recover-check\", \"recover\", and \"sbc\""
         ))),
         None => Err(invalid_request(
-            "request needs \"command\": \"sample\", \"diagnose\", \"diagnostics\", \"generate\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"simulate\", \"recover-check\", \"recover\", or \"sbc\"",
+            "request needs \"command\": \"sample\", \"diagnose\", \"diagnostics\", \"inspect\", \"generate\", \"prior-predictive\", \"posterior-predictive\", \"posterior-check\", \"simulate\", \"recover-check\", \"recover\", or \"sbc\"",
         )),
     }
 }

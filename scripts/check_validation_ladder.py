@@ -329,6 +329,10 @@ def main() -> None:
         "conformance summary helper tests",
         ["python3", "scripts/test_conformance_summary.py"],
     )
+    _run(
+        "investigation viewer parser and render-model checks",
+        ["node", "scripts/check_investigation_viewer.mjs"],
+    )
     _check_release_cli_binary()
     if not args.skip_sbc_uniformity:
         _run(
