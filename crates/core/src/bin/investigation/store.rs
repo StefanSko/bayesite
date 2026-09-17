@@ -187,60 +187,22 @@ pub fn import_reference(
     Ok(())
 }
 
-pub fn import_all(source_root: &Path, destination_root: &Path) -> Result<usize, Error> {
-    let source = objects_root(source_root);
-    let mut count = 0usize;
-    for entry in fs::read_dir(&source).map_err(|error| {
-        host_error(format!(
-            "cannot list object directory {:?}: {error}",
-            source
-        ))
-    })? {
-        let entry = entry.map_err(|error| host_error(format!("cannot list object: {error}")))?;
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| host_error("object filename must be UTF-8"))?;
-        let digest = match Digest::parse(&name, "object filename") {
-            Ok(digest) => digest,
-            Err(_) if name.starts_with(".tmp-") => continue,
-            Err(error) => return Err(error),
-        };
-        let bytes = fs::read(entry.path())
-            .map_err(|error| host_error(format!("cannot read source object {name}: {error}")))?;
-        if artifact_digest(&bytes) != digest {
-            return Err(host_error(format!(
-                "source object {} is corrupt; verification is required before import",
-                digest.prefixed()
-            )));
-        }
+pub fn import_verified(
+    source_root: &Path,
+    destination_root: &Path,
+    digests: &[Digest],
+) -> Result<usize, Error> {
+    for digest in digests {
+        let bytes = read_digest(source_root, digest)?;
         // Kind/format are not encoded in the store path. Raw import preserves
-        // exact bytes; typed verification follows through manifest references.
-        let destination = objects_root(destination_root).join(digest.as_str());
-        fs::create_dir_all(objects_root(destination_root)).map_err(|error| {
-            host_error(format!(
-                "cannot create destination object directory: {error}"
-            ))
-        })?;
-        if destination.exists() {
-            let existing = fs::read(&destination)
-                .map_err(|error| host_error(format!("cannot read destination object: {error}")))?;
-            if existing != bytes {
-                return Err(host_error(format!(
-                    "destination object {} exists with different bytes; refusing to overwrite",
-                    digest.prefixed()
-                )));
-            }
-        } else {
-            let synthetic = insert(
-                destination_root,
-                &bytes,
-                ArtifactKind::EngineBinary,
-                "opaque-import",
-            )?;
-            debug_assert_eq!(synthetic.sha256, digest);
-        }
-        count += 1;
+        // exact bytes; typed verification already followed manifest references.
+        let synthetic = insert(
+            destination_root,
+            &bytes,
+            ArtifactKind::EngineBinary,
+            "opaque-import",
+        )?;
+        debug_assert_eq!(synthetic.sha256, *digest);
     }
-    Ok(count)
+    Ok(digests.len())
 }

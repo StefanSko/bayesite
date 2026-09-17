@@ -368,6 +368,67 @@ fn export_requires_and_copies_an_explicit_recipient_protocol() {
 }
 
 #[test]
+fn fork_and_export_copy_only_the_verified_object_closure() {
+    let workspace = temp_dir("closure-author");
+    let bundle = temp_dir("closure-bundle");
+    let fork = temp_dir("closure-fork");
+    let publication = temp_dir("closure-publication");
+    let protocol = temp_dir("closure-protocol.md");
+    initialize(&workspace);
+    success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        bundle.to_str().unwrap(),
+    ]);
+    let objects = bundle.join("objects/sha256");
+    let valid_orphan = b"unreferenced retained note";
+    let valid_digest = artifact_digest(valid_orphan);
+    std::fs::write(objects.join(valid_digest.as_str()), valid_orphan).unwrap();
+    let corrupt_digest = artifact_digest(b"expected orphan bytes");
+    std::fs::write(
+        objects.join(corrupt_digest.as_str()),
+        b"corrupt orphan bytes",
+    )
+    .unwrap();
+
+    success(&[
+        "investigation",
+        "fork",
+        bundle.to_str().unwrap(),
+        "--at",
+        "initial-likelihood",
+        "--out",
+        fork.to_str().unwrap(),
+    ]);
+    std::fs::write(&protocol, b"# Recipient task\n").unwrap();
+    success(&[
+        "investigation",
+        "export",
+        bundle.to_str().unwrap(),
+        "--viewer",
+        "--public-data-confirmed",
+        "--protocol",
+        protocol.to_str().unwrap(),
+        "--out",
+        publication.to_str().unwrap(),
+    ]);
+    for root in [
+        fork.join("objects/sha256"),
+        publication.join("bundle/objects/sha256"),
+    ] {
+        assert!(!root.join(valid_digest.as_str()).exists());
+        assert!(!root.join(corrupt_digest.as_str()).exists());
+    }
+
+    for path in [workspace, bundle, fork, publication] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+    let _ = std::fs::remove_file(protocol);
+}
+
+#[test]
 fn author_replay_fork_continue_snapshot_keeps_source_immutable_and_stale_history_visible() {
     let workspace = temp_dir("author");
     let original = temp_dir("original");
@@ -1122,10 +1183,17 @@ fn verify_detects_tampered_object_and_does_not_run_engine() {
         .and_then(|model| model.get("sha256"))
         .and_then(Value::as_str)
         .unwrap();
+    let data_digest = manifest
+        .get("inputs")
+        .and_then(|inputs| inputs.get("data"))
+        .and_then(|data| data.get("sha256"))
+        .and_then(Value::as_str)
+        .unwrap();
     let object = bundle.join("objects/sha256").join(model_digest);
     let mut bytes = std::fs::read(&object).unwrap();
     bytes.push(b'!');
     std::fs::write(object, bytes).unwrap();
+    std::fs::remove_file(bundle.join("objects/sha256").join(data_digest)).unwrap();
     let output = run(&["investigation", "verify", bundle.to_str().unwrap()]);
     assert!(!output.status.success());
     let report = json::parse(String::from_utf8(output.stdout).unwrap().trim()).unwrap();
@@ -1134,10 +1202,7 @@ fn verify_detects_tampered_object_and_does_not_run_engine() {
         Some(&Value::Bool(false))
     );
     assert_eq!(report.get("schema_valid"), Some(&Value::Bool(true)));
-    assert_eq!(
-        report.get("reference_closure_valid"),
-        Some(&Value::Bool(true))
-    );
+    assert_eq!(report.get("reference_closure_valid"), Some(&Value::Null));
     assert_eq!(
         report.get("object_integrity_valid"),
         Some(&Value::Bool(false))
@@ -1161,4 +1226,30 @@ fn verify_detects_tampered_object_and_does_not_run_engine() {
     for path in [workspace, bundle] {
         let _ = std::fs::remove_dir_all(path);
     }
+}
+
+#[test]
+fn verify_missing_manifest_still_emits_a_dimensional_report() {
+    let bundle = temp_dir("missing-manifest");
+    let output = run(&["investigation", "verify", bundle.to_str().unwrap()]);
+    assert!(!output.status.success());
+    let report = json::parse(String::from_utf8(output.stdout).unwrap().trim()).unwrap();
+    assert_eq!(report.get("snapshot_id"), Some(&Value::Null));
+    assert_eq!(report.get("schema_valid"), Some(&Value::Null));
+    assert_eq!(
+        report.get("reference_closure_valid"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(report.get("object_integrity_valid"), Some(&Value::Null));
+    assert_eq!(report.get("current_results_valid"), Some(&Value::Null));
+    let finding = report
+        .get("findings")
+        .and_then(Value::as_array)
+        .and_then(|findings| findings.first())
+        .unwrap();
+    assert_eq!(
+        finding.get("dimension").and_then(Value::as_str),
+        Some("reference_closure")
+    );
+    assert!(!output.stderr.is_empty());
 }

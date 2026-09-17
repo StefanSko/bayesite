@@ -14,7 +14,9 @@ use bayesite_core::investigation::manifest::{
     ArtifactKind, ArtifactRef, EngineIdentity, EvidenceSelection, EvidenceStatus, Execution,
     Manifest, Operation, Outcome, Recipe, Source,
 };
-use bayesite_core::investigation::{verify_bundle, verify_bundle_detailed};
+use bayesite_core::investigation::{
+    verify_bundle, verify_bundle_detailed, VerificationDimension, VerificationFailure,
+};
 use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, Posterior};
@@ -937,13 +939,20 @@ fn verify(path: &Path) -> Result<(Manifest, bayesite_core::investigation::Verifi
 }
 
 fn verify_command(path: &Path) -> Result<(), Error> {
-    let manifest_bytes = read_bytes(&path.join("manifest.json"), "bundle manifest")?;
+    let manifest_bytes = match read_bytes(&path.join("manifest.json"), "bundle manifest") {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let failure = VerificationFailure::new(VerificationDimension::ReferenceClosure, error);
+            emit(&failure.to_value(None))?;
+            return Err(failure.error);
+        }
+    };
     match verify_bundle_detailed(&manifest_bytes, |digest| {
         store::read_unverified_digest(path, digest)
     }) {
         Ok((_, report)) => emit(&report.to_value()),
         Err(failure) => {
-            emit(&failure.to_value(&manifest_bytes))?;
+            emit(&failure.to_value(Some(&manifest_bytes)))?;
             Err(failure.error)
         }
     }
@@ -977,7 +986,7 @@ fn fork(argv: &[String]) -> Result<(), Error> {
 
     create_fresh_directory(out, "fork workspace")?;
     let result = (|| {
-        store::import_all(source_root, out)?;
+        store::import_verified(source_root, out, &verification.object_digests)?;
         let inserted = store::insert(
             out,
             &manifest_bytes,
@@ -1186,7 +1195,7 @@ fn export(argv: &[String]) -> Result<(), Error> {
     create_fresh_directory(out, "viewer export")?;
     let result = (|| {
         create_fresh_directory(&out.join("bundle"), "exported bundle directory")?;
-        store::import_all(source, &out.join("bundle"))?;
+        store::import_verified(source, &out.join("bundle"), &verification.object_digests)?;
         write_new(&out.join("bundle/manifest.json"), &manifest_bytes)?;
         create_fresh_directory(&out.join("downloads"), "export downloads directory")?;
         let downloaded_engine = out.join("downloads/bayesite-engine");

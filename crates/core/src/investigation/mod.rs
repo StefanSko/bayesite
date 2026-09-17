@@ -33,6 +33,9 @@ pub struct Verification {
     pub replay_recorded: bool,
     pub object_count: usize,
     pub ancestry_depth: usize,
+    /// Exact verified closure, excluding the separately supplied root
+    /// manifest. Host orchestration uses this list; reports do not serialize it.
+    pub object_digests: Vec<Digest>,
 }
 
 impl Verification {
@@ -103,33 +106,24 @@ pub struct VerificationFailure {
 }
 
 impl VerificationFailure {
-    fn new(dimension: VerificationDimension, error: Error) -> Self {
+    pub fn new(dimension: VerificationDimension, error: Error) -> Self {
         Self { dimension, error }
     }
 
-    pub fn to_value(&self, manifest_bytes: &[u8]) -> Value {
-        let (schema, closure, integrity, current) = match self.dimension {
-            VerificationDimension::FormatSchema => {
-                (Value::Bool(false), Value::Null, Value::Null, Value::Null)
+    pub fn to_value(&self, manifest_bytes: Option<&[u8]>) -> Value {
+        // Recursive schema, closure, integrity, and result checks are
+        // interleaved to stay bounded. A failure proves its own dimension
+        // false, but cannot prove any other recursive dimension complete. The
+        // root manifest schema is the sole completed fact after a later-stage
+        // failure.
+        let status = |dimension| {
+            if self.dimension == dimension {
+                Value::Bool(false)
+            } else if dimension == VerificationDimension::FormatSchema && manifest_bytes.is_some() {
+                Value::Bool(true)
+            } else {
+                Value::Null
             }
-            VerificationDimension::ReferenceClosure => (
-                Value::Bool(true),
-                Value::Bool(false),
-                Value::Null,
-                Value::Null,
-            ),
-            VerificationDimension::ObjectIntegrity => (
-                Value::Bool(true),
-                Value::Bool(true),
-                Value::Bool(false),
-                Value::Null,
-            ),
-            VerificationDimension::CurrentResults => (
-                Value::Bool(true),
-                Value::Bool(true),
-                Value::Bool(true),
-                Value::Bool(false),
-            ),
         };
         Value::Object(vec![
             (
@@ -138,13 +132,27 @@ impl VerificationFailure {
             ),
             (
                 "snapshot_id".into(),
-                Value::Str(snapshot_digest(manifest_bytes).prefixed()),
+                manifest_bytes.map_or(Value::Null, |bytes| {
+                    Value::Str(snapshot_digest(bytes).prefixed())
+                }),
             ),
             ("verification_complete".into(), Value::Bool(false)),
-            ("schema_valid".into(), schema),
-            ("reference_closure_valid".into(), closure),
-            ("object_integrity_valid".into(), integrity),
-            ("current_results_valid".into(), current),
+            (
+                "schema_valid".into(),
+                status(VerificationDimension::FormatSchema),
+            ),
+            (
+                "reference_closure_valid".into(),
+                status(VerificationDimension::ReferenceClosure),
+            ),
+            (
+                "object_integrity_valid".into(),
+                status(VerificationDimension::ObjectIntegrity),
+            ),
+            (
+                "current_results_valid".into(),
+                status(VerificationDimension::CurrentResults),
+            ),
             ("engine_artifacts_available".into(), Value::Null),
             ("replay_recorded".into(), Value::Null),
             ("object_count".into(), Value::Null),
@@ -674,6 +682,13 @@ pub fn verify_bundle_detailed(
         max_depth: 0,
     };
     let manifest = verify_recursive(manifest_bytes, 0, &mut loader, &mut state)?;
+    let mut object_digests = state
+        .objects
+        .iter()
+        .map(|digest| Digest::parse(digest, "verified object digest"))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| VerificationFailure::new(VerificationDimension::ObjectIntegrity, error))?;
+    object_digests.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     let verification = Verification {
         snapshot_id: snapshot_digest(manifest_bytes),
         schema_valid: true,
@@ -684,6 +699,7 @@ pub fn verify_bundle_detailed(
         replay_recorded: state.replay_recorded,
         object_count: state.objects.len(),
         ancestry_depth: state.max_depth,
+        object_digests,
     };
     Ok((manifest, verification))
 }

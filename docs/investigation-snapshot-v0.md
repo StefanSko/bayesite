@@ -88,11 +88,15 @@ network access. It reports separately:
 - the computed snapshot ID.
 
 On failure it exits nonzero but also writes one bounded report to standard
-output. Each dimension is `true`, `false`, or `null` when a prior failed
-boundary prevented that check, and `findings` names the first failed dimension
-with its typed repair message. Standard error retains the ordinary typed CLI
-error. This is fail-fast dimensional reporting, not an attempt to infer later
-facts from untrusted earlier state.
+output. Each dimension is `true`, `false`, or `null`. Because recursive schema,
+closure, integrity, and result checks are interleaved, a failure proves only its
+own dimension false; other recursive dimensions remain `null` rather than
+claiming incomplete work succeeded. A parsed root manifest may still establish
+root schema validity. If the root manifest cannot be read, its snapshot and
+schema fields are also `null`. `findings` names the first failed dimension with
+its typed repair message, while standard error retains the ordinary typed CLI
+error. This is fail-fast dimensional reporting, not an attempt to infer facts
+from untrusted partial traversal.
 
 It additionally rejects duplicate JSON fields and parses model, data,
 inspection, fit, diagnostics, check, capabilities, and replay artifacts to the
@@ -112,10 +116,12 @@ array.
 ## Storage and recovery model
 
 Host storage inserts bytes with create-new/non-clobber semantics and verifies a
-pre-existing object before reuse. Export creates a fresh directory, copies
-objects, and publishes `manifest.json` last. A leftover temporary file is not an
-object or manifest and cannot make a bundle valid. Supported operations never
-replace a snapshot.
+pre-existing object before reuse. Fork and export copy only the sorted digest
+set discovered by successful recursive verification; unreferenced store files
+are not part of the bundle closure and are neither copied nor required to be
+valid. Export creates a fresh directory and publishes `manifest.json` last. A
+leftover temporary file is not an object or manifest and cannot make a bundle
+valid. Supported operations never replace a snapshot.
 
 The first slice assumes a trusted, operator-controlled workspace. It bounds
 sizes and derives object paths from validated digests, but does not claim
