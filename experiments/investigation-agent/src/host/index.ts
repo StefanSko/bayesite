@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { CandidateStore, inspectionSummary } from "./candidates.js";
 import { Engine } from "./engine.js";
 import { nextSteps } from "./orientation.js";
+import { derivePhase, type InvestigationPhase } from "./phase.js";
 import { ProposalStore } from "./proposals.js";
 import { HostError, ReadEvidenceArgumentsSchema, ReadInvestigationArgumentsSchema, malformedUnless } from "./types.js";
 import {
@@ -30,6 +31,7 @@ interface EvidenceRecord {
 
 export interface HostOptions {
   engine?: string;
+  engineTimeoutMs?: number;
 }
 
 export class HostApi {
@@ -40,9 +42,15 @@ export class HostApi {
 
   constructor(root: string, options: HostOptions = {}) {
     this.root = new RootStore(root);
-    this.engine = new Engine(options.engine ?? process.env.BAYESITE_BIN ?? defaultEnginePath());
+    this.engine = new Engine(
+      options.engine ?? process.env.BAYESITE_BIN ?? defaultEnginePath(),
+      options.engineTimeoutMs,
+    );
     this.candidates = new CandidateStore(this.root, this.engine);
-    this.proposals = new ProposalStore(this.root, this.engine, this.candidates);
+    this.proposals = new ProposalStore(this.root, this.engine, this.candidates, async (path) => {
+      const orientation = await this.readInvestigation({ path });
+      return orientation.phase as InvestigationPhase;
+    });
   }
 
   async readInvestigation(arguments_: unknown): Promise<Record<string, unknown>> {
@@ -82,6 +90,7 @@ export class HostApi {
       format: ref.format,
       content: contentResult.content,
       ...(contentResult.truncated ? { truncated: true } : {}),
+      ...(contentResult.truncationNote === undefined ? {} : { truncation_note: contentResult.truncationNote }),
     };
   }
 
@@ -173,6 +182,16 @@ export class HostApi {
         }
       : null;
     const publicEvidence = loaded.evidence.map(({ operation: _operation, output: _output, ...entry }) => entry);
+    const diagnosticsSha256 = byOperation("diagnose")?.output?.sha256;
+    const phase = derivePhase({
+      kind: loaded.kind,
+      inspection: inspectionPublic,
+      hasFit: Boolean(byOperation("sample")),
+      diagnostics,
+      check,
+      decisions: arrayAt(loaded.document, "decisions"),
+      ...(diagnosticsSha256 ? { diagnosticsSha256 } : {}),
+    });
     const recipesCurrent = allRecipesAreCurrent(loaded);
     const historicalOperations = loaded.evidence
       .filter((entry) => entry.status === "historical" && entry.operation)
@@ -186,6 +205,7 @@ export class HostApi {
       allRecipesCurrent: recipesCurrent,
       inheritedHistorical: historicalOperations.length > 0,
       historicalOperations,
+      phase: phase.phase,
     });
     const proposalSummaries = this.proposals
       .list(true)
@@ -197,6 +217,8 @@ export class HostApi {
       ...fields,
       state_sha256: loaded.preconditions.state_sha256,
       engine_target: loaded.preconditions.engine_target,
+      phase: phase.phase,
+      diagnostics_thresholds: phase.diagnostics_thresholds,
       evidence: publicEvidence,
       inspection: inspectionPublic,
       diagnostics,
@@ -421,24 +443,75 @@ function diagnosticsSummary(artifact: JsonObject) {
   return { per_parameter, divergences };
 }
 
-function evidenceContent(bytes: Buffer, kind: string): { content: string; truncated: boolean } {
+const EVIDENCE_BYTE_LIMIT = 256 * 1024;
+
+export function evidenceContent(
+  bytes: Buffer,
+  kind: string,
+): { content: string; truncated: boolean; truncationNote?: string } {
   const text = bytes.toString("utf8");
-  if (kind === "posterior_draws") {
-    const lines = text.trimEnd().split("\n");
-    if (lines.length <= 52) return { content: text, truncated: false };
-    const trailers = lines.filter((line) => {
-      try {
-        const parsed = JSON.parse(line) as JsonObject;
-        return typeof parsed.trailer === "object" && parsed.trailer !== null;
-      } catch {
-        return false;
-      }
-    });
-    return { content: [...lines.slice(0, 51), ...trailers].join("\n") + "\n", truncated: true };
+  if (kind !== "posterior_draws") {
+    if (bytes.length <= EVIDENCE_BYTE_LIMIT) return { content: text, truncated: false };
+    return { content: completeUtf8Prefix(bytes, EVIDENCE_BYTE_LIMIT), truncated: true };
   }
-  const limit = 256 * 1024;
-  if (bytes.length <= limit) return { content: text, truncated: false };
-  return { content: bytes.subarray(0, limit).toString("utf8"), truncated: true };
+
+  const lines = text.trimEnd().split("\n");
+  const header = lines[0] ?? "";
+  const trailers: string[] = [];
+  const draws: string[] = [];
+  for (const line of lines.slice(1)) {
+    try {
+      const parsed = JSON.parse(line) as JsonObject;
+      if (typeof parsed.trailer === "object" && parsed.trailer !== null) {
+        trailers.push(line);
+        continue;
+      }
+    } catch {
+      // A non-trailer line is a draw for truncation purposes.
+    }
+    draws.push(line);
+  }
+  if (bytes.length <= EVIDENCE_BYTE_LIMIT && draws.length <= 50) {
+    return { content: text, truncated: false };
+  }
+
+  const headerChunk = `${header}\n`;
+  const trailerChunk = trailers.map((line) => `${line}\n`).join("");
+  if (Buffer.byteLength(headerChunk) + Buffer.byteLength(trailerChunk) > EVIDENCE_BYTE_LIMIT) {
+    const completeHeader = Buffer.from(headerChunk);
+    return {
+      content: completeHeader.length <= EVIDENCE_BYTE_LIMIT
+        ? headerChunk
+        : completeUtf8Prefix(completeHeader, EVIDENCE_BYTE_LIMIT),
+      truncated: true,
+      truncationNote: "posterior header and trailer lines exceed the evidence budget; returned header only",
+    };
+  }
+
+  const keptDraws: string[] = [];
+  let used = Buffer.byteLength(headerChunk) + Buffer.byteLength(trailerChunk);
+  for (const draw of draws.slice(0, 50)) {
+    const drawBytes = Buffer.byteLength(draw) + 1;
+    if (used + drawBytes > EVIDENCE_BYTE_LIMIT) break;
+    keptDraws.push(draw);
+    used += drawBytes;
+  }
+  return {
+    content: `${headerChunk}${keptDraws.map((line) => `${line}\n`).join("")}${trailerChunk}`,
+    truncated: keptDraws.length !== draws.length || bytes.length > EVIDENCE_BYTE_LIMIT,
+  };
+}
+
+function completeUtf8Prefix(bytes: Buffer, limit: number): string {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  for (let end = Math.min(bytes.length, limit); end >= Math.max(0, limit - 4); end--) {
+    try {
+      return decoder.decode(bytes.subarray(0, end));
+    } catch {
+      // Try before the possibly split final code point.
+    }
+  }
+  return "";
 }
 
 function proposalTouchesPath(proposal: JsonObject, path: string): boolean {

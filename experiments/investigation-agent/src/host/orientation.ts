@@ -1,3 +1,5 @@
+import type { InvestigationPhase } from "./phase.js";
+
 export interface NextStep {
   step: string;
   operation: string;
@@ -13,6 +15,7 @@ export interface OrientationFacts {
   allRecipesCurrent: boolean;
   inheritedHistorical: boolean;
   historicalOperations: Array<{ name: string; operation: string }>;
+  phase?: InvestigationPhase;
 }
 
 export function nextSteps(facts: OrientationFacts): NextStep[] {
@@ -71,12 +74,12 @@ export function nextSteps(facts: OrientationFacts): NextStep[] {
     const highRhat = facts.diagnostics.per_parameter.some((item) => item.rhat !== null && item.rhat > 1.01);
     if (highRhat || facts.diagnostics.divergences > 0) {
       steps.push({
-        step: "consider-sampler-revision",
-        operation: "record decision; consider settings or reparameterisation",
-        why: `Current diagnostics report ${facts.diagnostics.divergences} divergences${highRhat ? " and an R-hat above 1.01" : ""}.`,
+        step: "resolve-diagnostics-thresholds",
+        operation: "record_decision",
+        why: `Current diagnostics report ${facts.diagnostics.divergences} divergences${highRhat ? " and an R-hat above 1.01" : ""}; revise the run or record a diagnostics-citing recommendation and explicit human waiver.`,
       });
     }
-    if (!facts.check) {
+    if (!facts.check && facts.phase !== "diagnostics_decision_required") {
       steps.push({
         step: "check-posterior",
         operation: "posterior-check",
@@ -93,7 +96,7 @@ export function nextSteps(facts: OrientationFacts): NextStep[] {
     });
   }
 
-  if (facts.allRecipesCurrent) {
+  if (facts.allRecipesCurrent && facts.phase !== "diagnostics_decision_required") {
     steps.push({
       step: "snapshot-investigation",
       operation: "snapshot",

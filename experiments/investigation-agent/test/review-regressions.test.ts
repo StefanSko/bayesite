@@ -453,6 +453,69 @@ test("recorded human approval validates its generated decision id before review"
   }
 });
 
+test("successful chat execution prints the resulting investigation phase", async () => {
+  const root = buildCompleteFixture();
+  try {
+    const host = new HostApi(root, { engine: engineBinary });
+    const proposal = await host.submitProposal({
+      action: {
+        type: "record_interpretation",
+        workspace: "study",
+        interpretation: "Print the resulting phase after this host action.",
+        unresolved_questions: [],
+      },
+      rationale: "phase feedback",
+      cites: ["model"],
+    });
+    host.approve(proposal.proposal_id);
+    const output: string[] = [];
+    await handleSlashCommand(
+      `/execute ${proposal.proposal_id}`,
+      host,
+      async () => {},
+      { stdout: (text) => output.push(text), stderr: () => {} },
+    );
+    assert.equal((JSON.parse(output.at(-1) as string) as { phase: string }).phase, "snapshot_ready");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("chat approval accepts the explicit human-approval recording flag", async () => {
+  const root = buildCompleteFixture();
+  try {
+    const host = new HostApi(root, { engine: engineBinary });
+    const proposal = await host.submitProposal({
+      action: {
+        type: "record_decision",
+        workspace: "study",
+        decision: {
+          id: "chat-recorded-decision",
+          parent: "initial-likelihood",
+          reason: "Exercise the human-only chat flag.",
+          cites: ["model"],
+        },
+      },
+      rationale: "chat approval parsing",
+      cites: ["model"],
+    });
+    await handleSlashCommand(
+      `/approve ${proposal.proposal_id} --record-human-approval explicit waiver`,
+      host,
+      async () => {},
+      { stdout: () => {}, stderr: () => {} },
+    );
+    const review = host.showProposal(proposal.proposal_id).review as {
+      record_human_approval?: boolean;
+      note: string;
+    };
+    assert.equal(review.record_human_approval, true);
+    assert.equal(review.note, "explicit waiver");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("malformed proposal citations are refused before persistence", async () => {
   const root = buildCompleteFixture();
   try {

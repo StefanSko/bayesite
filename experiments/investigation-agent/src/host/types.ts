@@ -17,6 +17,15 @@ const settingsSample = Type.Object(
   closed,
 );
 const settingsCheck = Type.Object({ seed: Type.Integer() }, closed);
+const decision = Type.Object(
+  {
+    id,
+    parent: Type.Union([Type.String(), Type.Null()]),
+    reason: Type.String(),
+    cites: Type.Array(Type.String({ minLength: 1 })),
+  },
+  closed,
+);
 
 export const RecipeSchema = Type.Union([
   Type.Object({ id, operation: Type.Literal("inspect"), settings: settingsInspect }, closed),
@@ -35,15 +44,7 @@ export const ActionSchema = Type.Union([
       type: Type.Literal("adopt_candidate"),
       workspace: id,
       candidate_id: Type.String({ pattern: "^c-[0-9a-f]{16}$" }),
-      decision: Type.Object(
-        {
-          id,
-          parent: Type.Union([Type.String(), Type.Null()]),
-          reason: Type.String(),
-          cites: Type.Array(Type.String({ minLength: 1 })),
-        },
-        closed,
-      ),
+      decision,
     },
     closed,
   ),
@@ -53,6 +54,10 @@ export const ActionSchema = Type.Union([
   ),
   Type.Object(
     { type: Type.Literal("snapshot"), workspace: id, out: id },
+    closed,
+  ),
+  Type.Object(
+    { type: Type.Literal("record_decision"), workspace: id, decision },
     closed,
   ),
   Type.Object(
@@ -98,6 +103,7 @@ export type ErrorKind =
   | "StalePreconditions"
   | "TargetMismatch"
   | "RecipeConflict"
+  | "PhaseRefused"
   | "Refused";
 
 export class HostError extends Error {

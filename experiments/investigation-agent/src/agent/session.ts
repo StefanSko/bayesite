@@ -17,6 +17,7 @@ export interface InvestigationSessionOptions {
   engine?: string;
   modelRuntime?: ModelRuntime;
   resolvedModel?: Model<any>;
+  toolCallBudget?: number;
 }
 
 export async function createInvestigationSession(root: string, options: InvestigationSessionOptions = {}) {
@@ -47,6 +48,26 @@ export async function createInvestigationSession(root: string, options: Investig
     customTools: investigationTools(host),
     sessionManager: SessionManager.create(host.root.root, resolve(stateDir, "sessions")),
   });
+  const toolCallBudget = options.toolCallBudget ?? 12;
+  if (!Number.isSafeInteger(toolCallBudget) || toolCallBudget <= 0) {
+    created.session.dispose();
+    throw new HostError("MalformedArguments", "tool-call budget must be a positive integer");
+  }
+  let toolCalls = 0;
+  created.session.agent.subscribe((event) => {
+    if (event.type === "agent_start") toolCalls = 0;
+  });
+  created.session.agent.beforeToolCall = async () => {
+    toolCalls += 1;
+    if (toolCalls <= toolCallBudget) return undefined;
+    return {
+      block: true,
+      terminate: true,
+      reason: JSON.stringify(
+        new HostError("Refused", `tool-call budget exceeded (${toolCallBudget} per turn)`).toJSON(),
+      ),
+    };
+  };
   return { ...created, host, modelRuntime };
 }
 

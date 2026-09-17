@@ -270,6 +270,50 @@ after inspect, after sample, after diagnose, after check, forked bundle),
 and one scripted end-to-end run through fork, prepare, adopt, run, snapshot
 with approvals issued through the host CLI functions.
 
+## Amendments after review
+
+**Amended after review.** The following rules supersede narrower wording above:
+
+- Mutating candidate-adoption, recipe-addition, and decision-recording actions
+  are first applied to an exact temporary workspace copy and validated with
+  `bayesite investigation inspect`. Only a successful staged validation may
+  change accepted workspace bytes. Recipe, decision, generated human-approval,
+  and non-null parent identifiers are validated before persistence; a parent
+  must name an existing earlier decision.
+- Engine children have a 600-second hard timeout and are killed on expiry. A
+  Pi prompt run has a 12-tool-call budget enforced by `beforeToolCall`; excess
+  calls return typed `Refused` JSON and terminate that run. SIGINT during a
+  model turn aborts the turn and returns control to chat rather than approving,
+  executing, or exiting through an untyped path.
+- Every evidence kind shares the 256-KiB UTF-8-safe response budget. Fit
+  truncation reserves space for the header and every complete trailer before
+  adding at most 50 complete draw lines. If header plus trailers do not fit,
+  the response returns the header only and a `truncation_note`.
+- A fork or snapshot output is refused with `InvalidPath` when any existing
+  ancestor inside the root is a workspace or bundle, including one unrelated
+  to the source.
+- Orientation includes `phase` and `diagnostics_thresholds`. Workspace phases
+  are `inspect_required`, `model_revision_required`, `sample_required`,
+  `diagnose_required`, `diagnostics_decision_required`, `check_required`, and
+  `snapshot_ready`; bundles are `fork_required`. The phase is derived from
+  current verified evidence, never supplied by the model.
+- Actions are phase-checked and return `PhaseRefused` with repair guidance when
+  prerequisites are absent. In particular, posterior-check is blocked when a
+  current diagnostic has R-hat strictly above 1.01 or any divergence, and
+  snapshot is allowed only in `snapshot_ready`.
+- `record_decision` is the sixth action:
+  `{"type":"record_decision","workspace":"alternative","decision":{"id":"…","parent":"…","reason":"…","cites":["<bare artifact digest>"]}}`.
+  Execution stages and then appends it as `agent_recommendation` and runs
+  investigation inspection to bind its citations.
+- A diagnostics recommendation is not a waiver. The phase advances from
+  `diagnostics_decision_required` only when a `human_approval` child exists for
+  an agent recommendation citing the current diagnostics artifact. Humans opt
+  into that record with `--record-human-approval`, now valid for both
+  `adopt_candidate` and `record_decision`; the chat `/approve` command accepts
+  the same flag. Successful chat execution prints the resulting path and phase.
+
+The typed error-kind list therefore also includes `PhaseRefused`.
+
 ## Deliberate limits
 
 No MCP server, no remote store, no automatic execution, no delegation

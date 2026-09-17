@@ -147,6 +147,20 @@ export class RootStore {
     return relative(this.root, absolute).split(sep).join("/");
   }
 
+  assertOutputOutsideInvestigation(outputPath: string): void {
+    let cursor = outputPath;
+    while (cursor === this.root || cursor.startsWith(`${this.root}${sep}`)) {
+      if (existsSync(resolve(cursor, "investigation.json")) || existsSync(resolve(cursor, "manifest.json"))) {
+        throw new HostError(
+          "InvalidPath",
+          `output cannot be inside an existing investigation workspace or bundle: ${this.relative(cursor)}`,
+        );
+      }
+      if (cursor === this.root) break;
+      cursor = dirname(cursor);
+    }
+  }
+
   readJson(path: string, description = path): JsonObject {
     try {
       return parseObject(readFileSync(path), description);

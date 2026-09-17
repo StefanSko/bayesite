@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
@@ -10,7 +10,8 @@ import {
 } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createInvestigationSession } from "../src/agent/session.js";
-import { HostApi, HostError } from "../src/host/index.js";
+import { HostApi, HostError, evidenceContent } from "../src/host/index.js";
+import { Engine } from "../src/host/engine.js";
 import { alternativeModel, buildCompleteFixture, copyFixture, engineBinary } from "./fixture.js";
 
 process.env.BAYESITE_BIN = engineBinary;
@@ -18,7 +19,11 @@ const baseline = buildCompleteFixture();
 
 test.after(() => rmSync(baseline, { recursive: true, force: true }));
 
-async function scripted(root: string, responses: ReturnType<typeof fauxAssistantMessage>[]) {
+async function scripted(
+  root: string,
+  responses: ReturnType<typeof fauxAssistantMessage>[],
+  toolCallBudget?: number,
+) {
   const faux = fauxProvider();
   faux.setResponses(responses);
   const runtime = await ModelRuntime.create({
@@ -32,6 +37,7 @@ async function scripted(root: string, responses: ReturnType<typeof fauxAssistant
     resolvedModel: faux.getModel(),
     thinking: "off",
     engine: engineBinary,
+    ...(toolCallBudget === undefined ? {} : { toolCallBudget }),
   });
 }
 
@@ -397,4 +403,187 @@ test("gate: target change", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("gate: candidate decision parent must already exist", async () => {
+  const root = copyFixture(baseline, "missing-parent");
+  try {
+    const host = new HostApi(root, { engine: engineBinary });
+    const candidate = await host.prepareCandidate({
+      workspace: "study",
+      model_json: alternativeModel(),
+      note: "missing parent",
+    });
+    await assert.rejects(
+      host.submitProposal({
+        action: {
+          type: "adopt_candidate",
+          workspace: "study",
+          candidate_id: candidate.candidate_id,
+          decision: {
+            id: "orphaned-recommendation",
+            parent: "does-not-exist",
+            reason: "This cannot attach to an absent decision.",
+            cites: ["model"],
+          },
+        },
+        rationale: "invalid parent",
+        cites: ["model"],
+      }),
+      assertKind("CandidateRejected"),
+    );
+    assert.equal(host.listProposals(true).length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("gate: recipe identifiers are validated before persistence", async () => {
+  const root = copyFixture(baseline, "invalid-recipe-id");
+  try {
+    const host = new HostApi(root, { engine: engineBinary });
+    const target = (await host.readInvestigation({ path: "study" })).engine_target as string;
+    await assert.rejects(
+      host.submitProposal({
+        action: {
+          type: "run_recipe",
+          workspace: "study",
+          recipe: { id: "invalid recipe id", operation: "inspect", settings: {} },
+          target,
+        },
+        rationale: "invalid id",
+        cites: ["model"],
+      }),
+      assertKind("MalformedArguments"),
+    );
+    assert.equal(host.listProposals(true).length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("gate: failed staged adoption leaves accepted workspace bytes unchanged", async () => {
+  const root = copyFixture(baseline, "staged-adoption");
+  try {
+    const host = new HostApi(root, { engine: engineBinary });
+    const candidate = await host.prepareCandidate({
+      workspace: "study",
+      model_json: alternativeModel(),
+      note: "staged validation",
+    });
+    const proposal = await host.submitProposal({
+      action: {
+        type: "adopt_candidate",
+        workspace: "study",
+        candidate_id: candidate.candidate_id,
+        decision: {
+          id: "staged-inspection-failure",
+          parent: "initial-likelihood",
+          reason: "The injected engine failure must occur only against the staged workspace.",
+          cites: ["model"],
+        },
+      },
+      rationale: "exercise staged validation",
+      cites: ["model"],
+    });
+    host.approve(proposal.proposal_id);
+    const originalRun = host.engine.run.bind(host.engine);
+    host.engine.run = async (args) => {
+      if (args[0] === "investigation" && args[1] === "inspect") {
+        throw new HostError("EngineError", "injected staged inspection refusal");
+      }
+      return await originalRun(args);
+    };
+    const modelPath = resolve(root, "study/inputs/model.json");
+    const investigationPath = resolve(root, "study/investigation.json");
+    const modelBefore = readFileSync(modelPath);
+    const investigationBefore = readFileSync(investigationPath);
+    await assert.rejects(host.execute(proposal.proposal_id), assertKind("EngineError"));
+    assert.deepEqual(readFileSync(modelPath), modelBefore);
+    assert.deepEqual(readFileSync(investigationPath), investigationBefore);
+    assert.equal(host.showProposal(proposal.proposal_id).status, "failed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("gate: outputs cannot be nested in an unrelated investigation", async () => {
+  const root = copyFixture(baseline, "unrelated-output");
+  try {
+    const host = new HostApi(root, { engine: engineBinary });
+    await assert.rejects(
+      host.submitProposal({
+        action: { type: "fork", source_bundle: "original", at: "initial-likelihood", out: "study/nested" },
+        rationale: "must not write through another investigation",
+        cites: ["model"],
+      }),
+      assertKind("InvalidPath"),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("gate: engine subprocesses have a hard timeout", async () => {
+  const root = copyFixture(baseline, "engine-timeout");
+  try {
+    const script = resolve(root, "slow-engine");
+    writeFileSync(script, "#!/usr/bin/env node\nsetTimeout(() => process.stdout.write('{}\\n'), 10000);\n");
+    chmodSync(script, 0o755);
+    await assert.rejects(
+      new Engine(script, 25).run(["inspect"]),
+      (error: unknown) => error instanceof HostError && error.kind === "EngineError" && error.message.includes("timed out"),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("gate: one agent turn cannot exceed its tool-call budget", async () => {
+  const root = copyFixture(baseline, "tool-budget");
+  try {
+    const created = await scripted(
+      root,
+      [
+        fauxAssistantMessage(fauxToolCall("read_investigation", { path: "study" }), { stopReason: "toolUse" }),
+        fauxAssistantMessage(fauxToolCall("read_evidence", { path: "study", name: "model" }), { stopReason: "toolUse" }),
+      ],
+      1,
+    );
+    try {
+      await created.session.prompt("Keep using tools.");
+      const results = created.session.messages.filter((message) => message.role === "toolResult");
+      assert.equal(results.length, 2);
+      const refused = results[1];
+      assert.ok(refused?.role === "toolResult" && refused.isError);
+      const text = refused.content.find((block) => block.type === "text")?.text;
+      assert.equal((JSON.parse(text as string) as { error: string }).error, "Refused");
+    } finally {
+      created.session.dispose();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("gate: evidence truncation is UTF-8-safe and fit trailers have priority", () => {
+  const header = JSON.stringify({ schema: "posterior_draws" });
+  const draw = JSON.stringify({ draw: "x".repeat(100_000) });
+  const trailer = JSON.stringify({ trailer: { chain: 1 } });
+  const fit = evidenceContent(Buffer.from(`${header}\n${draw}\n${draw}\n${draw}\n${trailer}\n`), "posterior_draws");
+  assert.equal(fit.truncated, true);
+  assert.ok(Buffer.byteLength(fit.content) <= 256 * 1024);
+  assert.ok(fit.content.startsWith(`${header}\n`));
+  assert.ok(fit.content.endsWith(`${trailer}\n`));
+  assert.equal(fit.content.includes("�"), false);
+
+  const oversizedTrailer = JSON.stringify({ trailer: { payload: "y".repeat(300_000) } });
+  const fixedLines = evidenceContent(Buffer.from(`${header}\n${oversizedTrailer}\n`), "posterior_draws");
+  assert.equal(fixedLines.content, `${header}\n`);
+  assert.match(fixedLines.truncationNote ?? "", /header and trailer/);
+
+  const utf8 = evidenceContent(Buffer.from("😀".repeat(70_000)), "json");
+  assert.equal(utf8.truncated, true);
+  assert.ok(Buffer.byteLength(utf8.content) <= 256 * 1024);
+  assert.equal(utf8.content.includes("�"), false);
 });

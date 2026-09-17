@@ -71,14 +71,34 @@ attempt, including an interrupted `incomplete` attempt, prevents a rerun.
 Failure to refresh the auxiliary read-only browser index is never allowed to
 block the action or rewrite its authoritative outcome.
 
-For candidate adoption, `--record-human-approval` stores that review choice and
-causes execution to append a second `human_approval` decision. Without the flag,
-no human-approval decision is inferred.
+For candidate adoption or `record_decision`, `--record-human-approval` stores
+that review choice and causes execution to append a second `human_approval`
+decision. Without the flag, no human-approval decision is inferred. The chat
+form is `/approve <id> --record-human-approval [note]`.
 
 To use the read-only viewer, serve `<root>/.investigation-agent/` with any local
 static-file server and open `index.html`. The host copies the packaged viewer
 there and refreshes `index.json` whenever it writes a proposal, review, or
 attempt. The browser cannot approve or execute anything.
+
+## Amendments after review
+
+**Amended after review.** Orientation now reports an explicit phase:
+`fork_required`, `inspect_required`, `model_revision_required`,
+`sample_required`, `diagnose_required`, `diagnostics_decision_required`,
+`check_required`, or `snapshot_ready`. The host derives and enforces it. The
+sixth proposal action, `record_decision`, records an agent recommendation using
+the same decision fields as candidate adoption. R-hat above 1.01 or any
+current divergence blocks posterior checking until a diagnostics-citing
+recommendation has an explicitly recorded human-approval child; a recommendation
+alone is not a waiver. Snapshot requires `snapshot_ready`.
+
+Review hardening also stages workspace mutations before accepted-state writes,
+validates identifiers and parents, applies a 600-second engine timeout and a
+12-call Pi prompt budget, supports SIGINT turn abort, enforces one UTF-8-safe
+256-KiB evidence budget, and rejects outputs beneath any existing investigation
+workspace or bundle. These refusals are typed; phase failures use
+`PhaseRefused`. Successful chat execution prints the resulting phase.
 
 ## Deliberate limits
 
@@ -127,14 +147,16 @@ attempt. The browser cannot approve or execute anything.
 - Workspace orientation runs the required engine inspection against an exact
   temporary copy, then removes it. This preserves the contract's read-only rule
   when the engine binds previously unbound decision inputs during inspection.
-- Fit evidence truncation keeps its header, the first 50 draw lines, and every
-  trailer line. Other UTF-8 evidence is byte-truncated at 256 KiB.
+- Fit evidence truncation reserves the 256-KiB budget for its header and all
+  complete trailer lines before adding up to 50 complete draw lines. If those
+  fixed lines do not fit, only the header is returned with `truncation_note`.
+  Other UTF-8 evidence is truncated on a complete-code-point boundary.
 - Orientation lists only proposals whose action names the oriented path as its
   workspace, source bundle, or output.
 - Paths in actions and orientation are stored/reported in canonical root-relative
   form after resolution through their nearest existing ancestor, including
   filesystem case aliases. Fork and snapshot outputs may be nested elsewhere
-  under the root, but never inside their own source bundle or workspace.
+  under the root, but never below any existing workspace or bundle.
   Inherited recipe IDs are reserved
   in forks to prevent local/inherited execution-ID collisions.
 - Proposal citations accept engine-style evidence identifiers or exact

@@ -6,11 +6,12 @@ import { InMemoryCredentialStore, fauxAssistantMessage, fauxProvider, fauxToolCa
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createInvestigationSession } from "../src/agent/session.js";
 import { dispatchHostCommand } from "../src/host/cli.js";
+import { HostError } from "../src/host/index.js";
 import { alternativeModel, buildCompleteFixture, engineBinary, runEngine } from "./fixture.js";
 
 process.env.BAYESITE_BIN = engineBinary;
 
-test("scripted end-to-end: fork, prepare, adopt, run, and snapshot with human CLI approvals", async () => {
+test("scripted end-to-end: fork, prepare, adopt, run, decide, and snapshot with human CLI approvals", async () => {
   const root = buildCompleteFixture();
   const faux = fauxProvider();
   const runtime = await ModelRuntime.create({
@@ -34,7 +35,7 @@ test("scripted end-to-end: fork, prepare, adopt, run, and snapshot with human CL
     ]);
     await session.prompt(`Use ${name} for the next investigation step.`);
     const lastResults = session.messages.filter((message) => message.role === "toolResult").slice(-1);
-    assert.equal(lastResults[0]?.isError, false);
+    assert.equal(lastResults[0]?.isError, false, JSON.stringify(lastResults[0]));
   }
 
   async function submitAndExecute(action: Record<string, unknown>, recordHuman = false): Promise<string> {
@@ -138,9 +139,50 @@ test("scripted end-to-end: fork, prepare, adopt, run, and snapshot with human CL
       { id: "diagnose-alternative", operation: "diagnose", settings: {} },
       { id: "check-alternative", operation: "posterior-check", settings: { seed: 20260919 } },
     ];
-    for (const recipe of recipes) {
+    for (const recipe of recipes.slice(0, 3)) {
       await submitAndExecute({ type: "run_recipe", workspace: "alternative", recipe, target });
     }
+    const afterDiagnostics = await host.readInvestigation({ path: "alternative" });
+    assert.equal(afterDiagnostics.phase, "diagnostics_decision_required");
+    const diagnosticsEvidence = await host.readEvidence({ path: "alternative", name: "diagnose-alternative" });
+    const diagnosticsDigest = (diagnosticsEvidence.sha256 as string).replace(/^sha256:/, "");
+    await submitAndExecute({
+      type: "record_decision",
+      workspace: "alternative",
+      decision: {
+        id: "recommend-diagnostics-waiver",
+        parent: "alternative-likelihood",
+        reason: "Recommend continuing only for the bounded posterior check.",
+        cites: [diagnosticsDigest],
+      },
+    });
+    assert.equal(
+      (await host.readInvestigation({ path: "alternative" })).phase,
+      "diagnostics_decision_required",
+    );
+    await assert.rejects(
+      host.submitProposal({
+        action: { type: "run_recipe", workspace: "alternative", recipe: recipes[3], target },
+        rationale: "A recommendation alone cannot waive the threshold.",
+        cites: ["diagnose-alternative"],
+      }),
+      (error: unknown) => error instanceof HostError && error.kind === "PhaseRefused",
+    );
+    await submitAndExecute(
+      {
+        type: "record_decision",
+        workspace: "alternative",
+        decision: {
+          id: "accept-diagnostics-for-check",
+          parent: "recommend-diagnostics-waiver",
+          reason: "The human explicitly accepts the current diagnostics for a bounded posterior check.",
+          cites: [diagnosticsDigest],
+        },
+      },
+      true,
+    );
+    assert.equal((await host.readInvestigation({ path: "alternative" })).phase, "check_required");
+    await submitAndExecute({ type: "run_recipe", workspace: "alternative", recipe: recipes[3], target });
 
     await submitAndExecute({ type: "snapshot", workspace: "alternative", out: "continuation" });
     assert.ok(existsSync(resolve(root, "continuation/manifest.json")));

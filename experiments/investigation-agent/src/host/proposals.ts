@@ -1,14 +1,19 @@
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import { CandidateStore } from "./candidates.js";
 import { Engine } from "./engine.js";
+import { assertActionAllowed, type InvestigationPhase } from "./phase.js";
 import {
   HostError,
   SubmitProposalArgumentsSchema,
@@ -40,6 +45,7 @@ export class ProposalStore {
     private readonly store: RootStore,
     private readonly engine: Engine,
     private readonly candidates: CandidateStore,
+    private readonly resolvePhase: (path: string) => Promise<InvestigationPhase>,
   ) {}
 
   async submit(arguments_: unknown): Promise<{ proposal_id: string; status: "pending_human_review" }> {
@@ -50,13 +56,16 @@ export class ProposalStore {
       action: canonicalizeActionPaths(this.store, received.action),
     };
     args.cites.forEach((citation, index) => assertProposalCitation(citation, `cites[${index}]`));
-    if (args.action.type === "adopt_candidate") {
+    if (args.action.type === "adopt_candidate" || args.action.type === "record_decision") {
       assertIdentifier(args.action.decision.id, "decision.id");
       if (args.action.decision.parent !== null) assertIdentifier(args.action.decision.parent, "decision.parent");
       assertEngineText(args.action.decision.reason, "decision.reason");
       args.action.decision.cites.forEach((citation, index) =>
         assertDecisionCitation(citation, `decision.cites[${index}]`),
       );
+    }
+    if (args.action.type === "run_recipe") {
+      assertIdentifier(args.action.recipe.id, "recipe.id");
     }
     if (args.action.type === "record_interpretation") {
       assertEngineText(args.action.interpretation, "interpretation");
@@ -116,15 +125,25 @@ export class ProposalStore {
   approve(proposalId: string, note = "", recordHumanApproval = false): ReviewDocument {
     const proposal = this.readProposal(proposalId);
     this.assertProposalIntegrity(proposal);
-    if (recordHumanApproval && proposal.action.type !== "adopt_candidate") {
-      throw new HostError("Refused", "--record-human-approval is only valid for adopt_candidate proposals");
+    if (
+      recordHumanApproval &&
+      proposal.action.type !== "adopt_candidate" &&
+      proposal.action.type !== "record_decision"
+    ) {
+      throw new HostError(
+        "Refused",
+        "--record-human-approval is only valid for adopt_candidate or record_decision proposals",
+      );
     }
     const current = this.readReview(proposalId);
     if (current) {
       if (current.decision === "rejected") throw new HostError("Refused", "cannot approve a rejected proposal");
       return current;
     }
-    if (recordHumanApproval && proposal.action.type === "adopt_candidate") {
+    if (
+      recordHumanApproval &&
+      (proposal.action.type === "adopt_candidate" || proposal.action.type === "record_decision")
+    ) {
       const { document } = this.store.workspaceDocument(proposal.action.workspace);
       const humanId = `${proposal.action.decision.id}-human-approval`;
       assertIdentifier(humanId, "human approval decision id");
@@ -260,10 +279,12 @@ export class ProposalStore {
           throw new HostError("Refused", `bundle has no decision named ${action.at}`);
         }
         const out = this.store.path(action.out);
+        this.store.assertOutputOutsideInvestigation(out);
         if (isDescendantPath(out, path)) {
           throw new HostError("InvalidPath", "fork output must not be inside its immutable source bundle");
         }
         if (existsSync(out)) throw new HostError("Refused", `output already exists: ${action.out}`);
+        assertActionAllowed("fork_required", action);
         return {
           state_sha256: stringAt(verification.json, "snapshot_id"),
           engine_target: this.store.bundleTarget(manifest, path),
@@ -285,9 +306,17 @@ export class ProposalStore {
         if (!Array.isArray(discrepancies) || discrepancies.length > 0) {
           throw new HostError("CandidateRejected", "candidate inspection has structural discrepancies");
         }
-        if (arrayAt(document, "decisions").some((decision) => decision.id === action.decision.id)) {
+        const decisions = arrayAt(document, "decisions");
+        if (decisions.some((decision) => decision.id === action.decision.id)) {
           throw new HostError("CandidateRejected", `decision id already exists: ${action.decision.id}`);
         }
+        if (
+          action.decision.parent !== null &&
+          !decisions.some((decision) => decision.id === action.decision.parent)
+        ) {
+          throw new HostError("CandidateRejected", `decision parent does not exist: ${action.decision.parent}`);
+        }
+        assertActionAllowed(await this.resolvePhase(action.workspace), action);
         return this.store.workspacePreconditions(action.workspace);
       }
       case "run_recipe": {
@@ -309,18 +338,37 @@ export class ProposalStore {
         ) {
           throw new HostError("RecipeConflict", `recipe ${action.recipe.id} conflicts; use a new recipe id`);
         }
+        assertActionAllowed(await this.resolvePhase(action.workspace), action);
         return this.store.workspacePreconditions(action.workspace);
       }
       case "snapshot": {
         const workspace = this.store.workspaceDocument(action.workspace).path;
         const out = this.store.path(action.out);
+        this.store.assertOutputOutsideInvestigation(out);
         if (isDescendantPath(out, workspace)) {
           throw new HostError("InvalidPath", "snapshot output must not be inside its mutable workspace");
         }
         if (existsSync(out)) throw new HostError("Refused", `output already exists: ${action.out}`);
+        assertActionAllowed(await this.resolvePhase(action.workspace), action);
+        return this.store.workspacePreconditions(action.workspace);
+      }
+      case "record_decision": {
+        const { document } = this.store.workspaceDocument(action.workspace);
+        const decisions = arrayAt(document, "decisions");
+        if (decisions.some((decision) => decision.id === action.decision.id)) {
+          throw new HostError("Refused", `decision id already exists: ${action.decision.id}`);
+        }
+        if (
+          action.decision.parent !== null &&
+          !decisions.some((decision) => decision.id === action.decision.parent)
+        ) {
+          throw new HostError("Refused", `decision parent does not exist: ${action.decision.parent}`);
+        }
+        assertActionAllowed(await this.resolvePhase(action.workspace), action);
         return this.store.workspacePreconditions(action.workspace);
       }
       case "record_interpretation":
+        assertActionAllowed(await this.resolvePhase(action.workspace), action);
         return this.store.workspacePreconditions(action.workspace);
     }
   }
@@ -353,6 +401,7 @@ export class ProposalStore {
         return (await this.engine.run(["investigation", "fork", source, "--at", action.at, "--out", out])).json;
       }
       case "adopt_candidate": {
+        await this.validateStagedMutation(action, review);
         const { path, document } = this.store.workspaceDocument(action.workspace);
         const candidate = this.candidates.get(action.candidate_id);
         copyFileSync(candidate.path, resolve(path, "inputs", "model.json"));
@@ -381,6 +430,7 @@ export class ProposalStore {
         return firstInspection.json;
       }
       case "run_recipe": {
+        await this.validateStagedMutation(action, review);
         const { path, document } = this.store.workspaceDocument(action.workspace);
         const recipes = arrayAt(document, "recipes");
         if (!recipes.some((recipe) => recipe.id === action.recipe.id)) {
@@ -401,6 +451,30 @@ export class ProposalStore {
           ])
         ).json;
       }
+      case "record_decision": {
+        await this.validateStagedMutation(action, review);
+        const { path, document } = this.store.workspaceDocument(action.workspace);
+        const decisions = arrayAt(document, "decisions");
+        decisions.push({ ...action.decision, kind: "agent_recommendation" });
+        document.decisions = decisions;
+        this.store.writeJson(resolve(path, "investigation.json"), document);
+        const firstInspection = await this.engine.run(["investigation", "inspect", path]);
+        if (review.record_human_approval) {
+          const refreshed = this.store.readJson(resolve(path, "investigation.json"));
+          const refreshedDecisions = arrayAt(refreshed, "decisions");
+          refreshedDecisions.push({
+            id: `${action.decision.id}-human-approval`,
+            parent: action.decision.id,
+            reason: review.note,
+            cites: ["model"],
+            kind: "human_approval",
+          });
+          refreshed.decisions = refreshedDecisions;
+          this.store.writeJson(resolve(path, "investigation.json"), refreshed);
+          return (await this.engine.run(["investigation", "inspect", path])).json;
+        }
+        return firstInspection.json;
+      }
       case "record_interpretation": {
         const { path, document } = this.store.workspaceDocument(action.workspace);
         document.interpretation = action.interpretation;
@@ -413,6 +487,48 @@ export class ProposalStore {
           unresolved_questions: action.unresolved_questions,
         };
       }
+    }
+  }
+
+  private async validateStagedMutation(
+    action: Extract<InvestigationAction, { type: "adopt_candidate" | "run_recipe" | "record_decision" }>,
+    review: ReviewDocument,
+  ): Promise<void> {
+    const source = this.store.workspaceDocument(action.workspace).path;
+    const temporaryRoot = mkdtempSync(resolve(tmpdir(), "bayesite-agent-stage-"));
+    const staged = resolve(temporaryRoot, "workspace");
+    try {
+      cpSync(source, staged, { recursive: true, force: false, errorOnExist: true });
+      const documentPath = resolve(staged, "investigation.json");
+      const document = this.store.readJson(documentPath, "staged investigation.json");
+      if (action.type === "run_recipe") {
+        const recipes = arrayAt(document, "recipes");
+        if (!recipes.some((recipe) => recipe.id === action.recipe.id)) {
+          recipes.push(action.recipe as unknown as JsonObject);
+          document.recipes = recipes;
+        }
+      } else {
+        if (action.type === "adopt_candidate") {
+          const candidate = this.candidates.get(action.candidate_id);
+          copyFileSync(candidate.path, resolve(staged, "inputs", "model.json"));
+        }
+        const decisions = arrayAt(document, "decisions");
+        decisions.push({ ...action.decision, kind: "agent_recommendation" });
+        if (review.record_human_approval) {
+          decisions.push({
+            id: `${action.decision.id}-human-approval`,
+            parent: action.decision.id,
+            reason: review.note,
+            cites: ["model"],
+            kind: "human_approval",
+          });
+        }
+        document.decisions = decisions;
+      }
+      this.store.writeJson(documentPath, document);
+      await this.engine.run(["investigation", "inspect", staged]);
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
     }
   }
 
@@ -524,6 +640,7 @@ function canonicalizeActionPaths(store: RootStore, action: InvestigationAction):
       };
     case "adopt_candidate":
     case "run_recipe":
+    case "record_decision":
     case "record_interpretation":
       return {
         ...action,

@@ -44,20 +44,44 @@ export async function runChat(argv: readonly string[]): Promise<void> {
     }
   });
   const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  let turnActive = false;
+  let turnInterrupted = false;
+  const promptSession = async (text: string): Promise<void> => {
+    turnActive = true;
+    turnInterrupted = false;
+    try {
+      await session.prompt(text);
+    } catch (error) {
+      if (!turnInterrupted) throw error;
+    } finally {
+      turnActive = false;
+    }
+  };
+  const onSigint = (): void => {
+    if (!turnActive && !session.isStreaming) {
+      readline.close();
+      return;
+    }
+    turnInterrupted = true;
+    process.stdout.write("\n[turn aborted]\n");
+    void session.abort();
+  };
+  readline.on("SIGINT", onSigint);
   try {
     for await (const raw of readline) {
       const line = raw.trim();
       if (!line) continue;
       if (line.startsWith("/")) {
         const quit = await handleSlashCommand(line, host, async (attempt) => {
-          await session.prompt(`[host] ${JSON.stringify(attempt)}`);
+          await promptSession(`[host] ${JSON.stringify(attempt)}`);
         });
         if (quit) break;
       } else {
-        await session.prompt(line);
+        await promptSession(line);
       }
     }
   } finally {
+    readline.off("SIGINT", onSigint);
     unsubscribe();
     readline.close();
     session.dispose();
@@ -85,10 +109,13 @@ export async function handleSlashCommand(
       if (!id) throw new HostError("MalformedArguments", "/show expects a proposal id");
       result = host.showProposal(id);
       break;
-    case "/approve":
+    case "/approve": {
       if (!id) throw new HostError("MalformedArguments", "/approve expects a proposal id");
-      result = host.approve(id, rest.join(" "));
+      const recordHumanApproval = rest.includes("--record-human-approval");
+      const note = rest.filter((item) => item !== "--record-human-approval").join(" ");
+      result = host.approve(id, note, recordHumanApproval);
       break;
+    }
     case "/reject":
       if (!id) throw new HostError("MalformedArguments", "/reject expects a proposal id");
       result = host.reject(id, rest.join(" "));
@@ -113,6 +140,17 @@ export async function handleSlashCommand(
         return false;
       }
       io.stdout(`${JSON.stringify(result)}\n`);
+      const shown = host.showProposal(id);
+      const action = (shown.proposal as { action?: Record<string, unknown> }).action;
+      const phasePath = typeof action?.workspace === "string"
+        ? action.workspace
+        : typeof action?.out === "string"
+          ? action.out
+          : undefined;
+      if (phasePath) {
+        const orientation = await host.readInvestigation({ path: phasePath });
+        io.stdout(`${JSON.stringify({ path: phasePath, phase: orientation.phase })}\n`);
+      }
       await reportExecution(result);
       return false;
     }
