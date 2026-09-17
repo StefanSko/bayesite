@@ -767,6 +767,276 @@ fn snapshot_rejects_seventeenth_manifest_before_creating_destination() {
 }
 
 #[test]
+fn mismatched_engine_target_is_refused_before_an_attempt_is_created() {
+    let workspace = temp_dir("engine-mismatch");
+    initialize(&workspace);
+    let path = workspace.join("investigation.json");
+    let mut document = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let engine = object_entry_mut(&mut document, "engine");
+    *object_entry_mut(engine, "target") = Value::Str("wrong-unknown-target".into());
+    std::fs::write(&path, format!("{}\n", json::write(&document).unwrap())).unwrap();
+
+    let output = run(&[
+        "investigation",
+        "run",
+        workspace.to_str().unwrap(),
+        "--recipe",
+        "inspect-initial",
+    ]);
+    assert!(!output.status.success());
+    let error = json::parse(String::from_utf8(output.stderr).unwrap().trim()).unwrap();
+    assert!(error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap()
+        .contains("running engine does not match recipe pin"));
+    let document = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(document
+        .get("attempts")
+        .and_then(Value::as_array)
+        .unwrap()
+        .is_empty());
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn reason_only_edit_keeps_unchanged_numerical_evidence_current() {
+    let workspace = temp_dir("reason-edit");
+    init_and_run_original(&workspace);
+    let before = success(&["investigation", "inspect", workspace.to_str().unwrap()]);
+    let fit_before = before
+        .get("current_fit_sha256")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string();
+    let path = workspace.join("investigation.json");
+    let mut document = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let decisions = object_entry_mut(&mut document, "decisions");
+    let Value::Array(decisions) = decisions else {
+        panic!("decisions array")
+    };
+    *object_entry_mut(&mut decisions[0], "reason") =
+        Value::Str("Clarified wording only; no computational input changed.".into());
+    std::fs::write(&path, format!("{}\n", json::write(&document).unwrap())).unwrap();
+
+    let after = success(&["investigation", "inspect", workspace.to_str().unwrap()]);
+    assert_eq!(
+        after.get("current_fit_sha256").and_then(Value::as_str),
+        Some(fit_before.as_str())
+    );
+    assert!(after
+        .get("evidence")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .all(|evidence| evidence.get("status").and_then(Value::as_str) == Some("current")));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn failed_sampling_retains_prior_evidence_as_historical() {
+    let workspace = temp_dir("failed-sample");
+    init_and_run_original(&workspace);
+    let path = workspace.join("investigation.json");
+    let before = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let prior_selection = before
+        .get("selections")
+        .and_then(Value::as_array)
+        .unwrap()
+        .first()
+        .unwrap()
+        .clone();
+
+    let model_path = workspace.join("inputs/model.json");
+    let invalid_model = std::fs::read_to_string(&model_path)
+        .unwrap()
+        .replace("\"value\": 0.1", "\"value\": -0.1");
+    assert_ne!(
+        invalid_model,
+        std::fs::read_to_string(example("poisson.json")).unwrap()
+    );
+    std::fs::write(&model_path, invalid_model).unwrap();
+    let mut document = before;
+    *object_entry_mut(&mut document, "recipes") = json::parse(
+        r#"[{"id":"sample-invalid-rate","operation":"sample","settings":{"chains":1,"warmup":8,"draws":4,"max_treedepth":4,"target_accept":0.8,"initial_step_size":1.0,"seed":9}}]"#,
+    )
+    .unwrap();
+    std::fs::write(&path, format!("{}\n", json::write(&document).unwrap())).unwrap();
+
+    let output = run(&[
+        "investigation",
+        "run",
+        workspace.to_str().unwrap(),
+        "--recipe",
+        "sample-invalid-rate",
+    ]);
+    assert!(!output.status.success());
+    let document = json::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        document
+            .get("attempts")
+            .and_then(Value::as_array)
+            .unwrap()
+            .last()
+            .and_then(|attempt| attempt.get("execution"))
+            .and_then(|execution| execution.get("outcome"))
+            .and_then(Value::as_str),
+        Some("failed")
+    );
+    assert_eq!(
+        document
+            .get("selections")
+            .and_then(Value::as_array)
+            .unwrap()
+            .first(),
+        Some(&prior_selection)
+    );
+    let inspection = success(&["investigation", "inspect", workspace.to_str().unwrap()]);
+    assert!(inspection
+        .get("evidence")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .all(|evidence| evidence.get("status").and_then(Value::as_str) == Some("historical")));
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn standalone_and_wrapped_operations_emit_identical_bytes() {
+    let workspace = temp_dir("wrapped-parity");
+    initialize(&workspace);
+    let workspace_path = workspace.join("investigation.json");
+    let mut document = json::parse(&std::fs::read_to_string(&workspace_path).unwrap()).unwrap();
+    let Value::Array(recipes) = object_entry_mut(&mut document, "recipes") else {
+        panic!("recipes array")
+    };
+    let sample = recipes
+        .iter_mut()
+        .find(|recipe| recipe.get("id").and_then(Value::as_str) == Some("sample-initial"))
+        .unwrap();
+    *object_entry_mut(sample, "settings") = json::parse(
+        r#"{"chains":1,"warmup":8,"draws":4,"max_treedepth":4,"target_accept":0.85,"initial_step_size":1.0,"seed":20260916}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &workspace_path,
+        format!("{}\n", json::write(&document).unwrap()),
+    )
+    .unwrap();
+
+    let model = workspace.join("inputs/model.json");
+    let data = workspace.join("inputs/data.json");
+    let fit_path = workspace.join("standalone-fit.jsonl");
+    for (recipe, command) in [
+        (
+            "inspect-initial",
+            vec![
+                "inspect",
+                "--model",
+                model.to_str().unwrap(),
+                "--data",
+                data.to_str().unwrap(),
+            ],
+        ),
+        (
+            "sample-initial",
+            vec![
+                "sample",
+                "--model",
+                model.to_str().unwrap(),
+                "--data",
+                data.to_str().unwrap(),
+                "--chains",
+                "1",
+                "--warmup",
+                "8",
+                "--draws",
+                "4",
+                "--max-treedepth",
+                "4",
+                "--target-accept",
+                "0.85",
+                "--seed",
+                "20260916",
+            ],
+        ),
+    ] {
+        let wrapped = success(&[
+            "investigation",
+            "run",
+            workspace.to_str().unwrap(),
+            "--recipe",
+            recipe,
+        ]);
+        let digest = wrapped
+            .get("output_sha256")
+            .and_then(Value::as_str)
+            .unwrap()
+            .trim_start_matches("sha256:");
+        let wrapped_bytes = std::fs::read(workspace.join("objects/sha256").join(digest)).unwrap();
+        let standalone = run(&command);
+        assert!(
+            standalone.status.success(),
+            "{}",
+            String::from_utf8_lossy(&standalone.stderr)
+        );
+        assert_eq!(
+            standalone.stdout, wrapped_bytes,
+            "byte mismatch for {recipe}"
+        );
+        if recipe == "sample-initial" {
+            std::fs::write(&fit_path, &standalone.stdout).unwrap();
+        }
+    }
+
+    for (recipe, command) in [
+        (
+            "diagnose-initial",
+            vec!["diagnose", "--fit", fit_path.to_str().unwrap()],
+        ),
+        (
+            "check-initial",
+            vec![
+                "posterior-check",
+                "--model",
+                model.to_str().unwrap(),
+                "--data",
+                data.to_str().unwrap(),
+                "--fit",
+                fit_path.to_str().unwrap(),
+                "--seed",
+                "20260917",
+            ],
+        ),
+    ] {
+        let wrapped = success(&[
+            "investigation",
+            "run",
+            workspace.to_str().unwrap(),
+            "--recipe",
+            recipe,
+        ]);
+        let digest = wrapped
+            .get("output_sha256")
+            .and_then(Value::as_str)
+            .unwrap()
+            .trim_start_matches("sha256:");
+        let wrapped_bytes = std::fs::read(workspace.join("objects/sha256").join(digest)).unwrap();
+        let standalone = run(&command);
+        assert!(
+            standalone.status.success(),
+            "{}",
+            String::from_utf8_lossy(&standalone.stderr)
+        );
+        assert_eq!(
+            standalone.stdout, wrapped_bytes,
+            "byte mismatch for {recipe}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn verify_detects_tampered_object_and_does_not_run_engine() {
     let workspace = temp_dir("tamper-author");
     let bundle = temp_dir("tamper-bundle");
