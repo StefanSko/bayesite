@@ -1,0 +1,25 @@
+{
+  "name": "@bayesite/investigation-agent",
+  "version": "0.0.0-experimental",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "investigation-host": "dist/src/host/cli.js",
+    "investigation-agent": "dist/src/agent/chat.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "host": "node dist/src/host/cli.js",
+    "chat": "node dist/src/agent/chat.js"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "@types/node": "25.6.2",
+    "typescript": "5.9.3"
+  }
+}
