@@ -21,7 +21,7 @@
 //!       [--out <report.json|->]
 //!   bayesite sbc --model <ir.json|-> --scenario <scenario.json|->
 //!       [--replicates N] [--out <report.json|->]
-//!   bayesite investigation <init|inspect|run|snapshot|verify|fork|replay> ...
+//!   bayesite investigation <init|inspect|run|snapshot|verify|fork|replay|export> ...
 //!   bayesite capabilities
 //!
 //! `sample` writes the v0-provisional NDJSON protocol (see `protocol.rs`).
@@ -396,7 +396,7 @@ fn usage() -> &'static str {
      [--out <report.json|->]\n\
      usage: bayesite sbc --model <ir.json|-> --scenario <scenario.json|-> \
      [--replicates N] [--out <report.json|->]\n\
-     usage: bayesite investigation <init|inspect|run|snapshot|verify|fork|replay> ...\n\
+     usage: bayesite investigation <init|inspect|run|snapshot|verify|fork|replay|export> ...\n\
      usage: bayesite capabilities"
 }
 
@@ -416,7 +416,7 @@ fn parse_args(argv: &[String]) -> Result<Command, Error> {
 fn parse_investigation_args(argv: &[String]) -> Result<InvestigationArgs, Error> {
     if argv.is_empty() {
         return Err(usage_error(
-            "investigation needs a subcommand: init, inspect, run, snapshot, verify, fork, or replay",
+            "investigation needs a subcommand: init, inspect, run, snapshot, verify, fork, replay, or export",
         ));
     }
     Ok(InvestigationArgs {

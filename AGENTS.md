@@ -31,8 +31,9 @@ versioned format decision owned by bayeswire.
 
 - Consume IR; do not add a Rust model declaration language unless explicitly
   redesigned.
-- Provide an agent-operable CLI workflow: `sample`, `diagnose`, `generate`,
-  `prior-predictive`, `recover`, and `sbc`.
+- Provide an agent-operable CLI workflow: `sample`, `diagnose`, `inspect`,
+  `generate`, `prior-predictive`, `recover`, `sbc`, and the explicit
+  `investigation` lifecycle commands.
 - Keep the default agent path to one downloaded binary: no Python, no package
   manager, no NumPy question, and no runtime dependency graph.
 - Run NUTS only unless there is an explicit design decision to expand scope.

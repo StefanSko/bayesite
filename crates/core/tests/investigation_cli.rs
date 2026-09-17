@@ -84,6 +84,28 @@ fn add_continuation_records(workspace: &std::path::Path) {
     std::fs::write(path, format!("{}\n", json::write(&value).unwrap())).unwrap();
 }
 
+fn expected_rust_target() -> &'static str {
+    if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+        "aarch64-apple-darwin"
+    } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
+        "x86_64-apple-darwin"
+    } else if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_env = "musl"
+    )) {
+        "x86_64-unknown-linux-musl"
+    } else if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_env = "gnu"
+    )) {
+        "x86_64-unknown-linux-gnu"
+    } else {
+        panic!("add the current test target to expected_rust_target")
+    }
+}
+
 fn initialize(workspace: &std::path::Path) {
     success(&[
         "investigation",
@@ -132,6 +154,151 @@ fn init_and_run_original(workspace: &std::path::Path) {
             recipe,
         ]);
     }
+}
+
+#[test]
+fn workspace_engine_uses_canonical_rust_target_vocabulary() {
+    let workspace = temp_dir("canonical-target");
+    initialize(&workspace);
+    let document =
+        json::parse(&std::fs::read_to_string(workspace.join("investigation.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        document
+            .get("engine")
+            .and_then(|engine| engine.get("target"))
+            .and_then(Value::as_str),
+        Some(expected_rust_target())
+    );
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn fork_restores_inputs_bound_to_the_named_decision_not_snapshot_tip() {
+    let author = temp_dir("branch-author");
+    let original = temp_dir("branch-original");
+    let continuation_workspace = temp_dir("branch-continuation-workspace");
+    let continuation = temp_dir("branch-continuation");
+    let initial_branch = temp_dir("branch-initial");
+    let alternative_branch = temp_dir("branch-alternative");
+    initialize(&author);
+    success(&[
+        "investigation",
+        "snapshot",
+        author.to_str().unwrap(),
+        "--out",
+        original.to_str().unwrap(),
+    ]);
+    success(&[
+        "investigation",
+        "fork",
+        original.to_str().unwrap(),
+        "--at",
+        "initial-likelihood",
+        "--out",
+        continuation_workspace.to_str().unwrap(),
+    ]);
+    std::fs::copy(
+        example("negative-binomial.json"),
+        continuation_workspace.join("inputs/model.json"),
+    )
+    .unwrap();
+    add_continuation_records(&continuation_workspace);
+    success(&[
+        "investigation",
+        "snapshot",
+        continuation_workspace.to_str().unwrap(),
+        "--out",
+        continuation.to_str().unwrap(),
+    ]);
+
+    success(&[
+        "investigation",
+        "fork",
+        continuation.to_str().unwrap(),
+        "--at",
+        "initial-likelihood",
+        "--out",
+        initial_branch.to_str().unwrap(),
+    ]);
+    success(&[
+        "investigation",
+        "fork",
+        continuation.to_str().unwrap(),
+        "--at",
+        "alternative-likelihood",
+        "--out",
+        alternative_branch.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        std::fs::read(initial_branch.join("inputs/model.json")).unwrap(),
+        std::fs::read(example("poisson.json")).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(alternative_branch.join("inputs/model.json")).unwrap(),
+        std::fs::read(example("negative-binomial.json")).unwrap()
+    );
+
+    for path in [
+        author,
+        original,
+        continuation_workspace,
+        continuation,
+        initial_branch,
+        alternative_branch,
+    ] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[test]
+fn export_requires_and_copies_an_explicit_recipient_protocol() {
+    let workspace = temp_dir("protocol-author");
+    let bundle = temp_dir("protocol-bundle");
+    let publication = temp_dir("protocol-publication");
+    let protocol = temp_dir("protocol-input.md");
+    initialize(&workspace);
+    success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        bundle.to_str().unwrap(),
+    ]);
+    let protocol_bytes = b"# Recipient task\n\nInvestigate this specific saved question.\n";
+    std::fs::write(&protocol, protocol_bytes).unwrap();
+
+    let missing_protocol = run(&[
+        "investigation",
+        "export",
+        bundle.to_str().unwrap(),
+        "--viewer",
+        "--public-data-confirmed",
+        "--out",
+        publication.to_str().unwrap(),
+    ]);
+    assert!(!missing_protocol.status.success());
+    assert!(!publication.exists());
+    success(&[
+        "investigation",
+        "export",
+        bundle.to_str().unwrap(),
+        "--viewer",
+        "--public-data-confirmed",
+        "--protocol",
+        protocol.to_str().unwrap(),
+        "--out",
+        publication.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        std::fs::read(publication.join("PROTOCOL.md")).unwrap(),
+        protocol_bytes
+    );
+
+    for path in [workspace, bundle, publication] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+    let _ = std::fs::remove_file(protocol);
 }
 
 #[test]
@@ -253,6 +420,8 @@ fn author_replay_fork_continue_snapshot_keeps_source_immutable_and_stale_history
         "export",
         continuation.to_str().unwrap(),
         "--viewer",
+        "--protocol",
+        &example("PROTOCOL.md"),
         "--out",
         publication.to_str().unwrap(),
     ]);
@@ -265,6 +434,8 @@ fn author_replay_fork_continue_snapshot_keeps_source_immutable_and_stale_history
         continuation.to_str().unwrap(),
         "--viewer",
         "--public-data-confirmed",
+        "--protocol",
+        &example("PROTOCOL.md"),
         "--out",
         publication.to_str().unwrap(),
     ]);
@@ -306,6 +477,8 @@ fn author_replay_fork_continue_snapshot_keeps_source_immutable_and_stale_history
         continuation.to_str().unwrap(),
         "--viewer",
         "--public-data-confirmed",
+        "--protocol",
+        &example("PROTOCOL.md"),
         "--out",
         publication.to_str().unwrap(),
     ]);

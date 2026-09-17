@@ -50,7 +50,8 @@ The manifest has exactly these top-level fields:
 - `source`: null, or parent `snapshot_id`, parent-manifest artifact reference,
   and local branch-point `decision` ID in that parent;
 - `inputs`: current model and data references;
-- `decisions`: ordered `{id,parent,reason,cites,kind}` records. `kind` is
+- `decisions`: ordered `{id,parent,reason,cites,kind,inputs}` records. `inputs`
+  binds exact model and data artifact references to that branch point. `kind` is
   `note`, `agent_recommendation`, or `human_approval`. A human approval is only
   recorded from explicit input; it is not inferred or authenticated by a hash.
   Citation-only bytes are retained in the snapshot closure even if no recipe
@@ -116,11 +117,13 @@ or copy-on-write filesystem behavior.
 
 ## Static publication wrapper
 
-`bayesite investigation export <bundle> --viewer --public-data-confirmed --out
-<fresh-directory>` creates a non-normative publication wrapper around an exact
+`bayesite investigation export <bundle> --viewer --public-data-confirmed
+--protocol <protocol.md> --out <fresh-directory>` creates a non-normative
+publication wrapper around an exact
 snapshot. `entry.json` records the snapshot ID, one pinned engine download for
-the saved target, and SHA-256/length pairs for viewer assets. The wrapper also
-contains `bundle/`, license/notice, protocol/continuation documents, and the
+the saved target, the exact supplied recipient-protocol digest, and SHA-256/length
+pairs for viewer assets. The wrapper also contains `bundle/`, license/notice,
+protocol/continuation documents, and the
 explicit public-data confirmation. It is not part of snapshot identity.
 
 The static viewer checks the raw manifest bytes under the snapshot domain and

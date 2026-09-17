@@ -3796,6 +3796,25 @@ fn missing_command_error_names_missing_command_and_supported_commands() {
 }
 
 #[test]
+fn investigation_usage_advertises_export_everywhere() {
+    for args in [vec!["not-a-command"], vec!["investigation"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))
+            .args(args)
+            .output()
+            .expect("bayesite runs");
+        assert!(!output.status.success());
+        let payload = json::parse(String::from_utf8(output.stderr).unwrap().trim()).unwrap();
+        let message = payload.get("message").and_then(Value::as_str).unwrap();
+        assert!(
+            message.contains("export"),
+            "investigation usage omitted export: {message}"
+        );
+    }
+    assert!(include_str!("../../../AGENTS.md").contains("investigation"));
+    assert!(include_str!("../../../AGENTS.md").contains("inspect"));
+}
+
+#[test]
 fn duplicate_cli_flags_are_json_errors() {
     let (model_path, data_path) = write_fixture_inputs("linear_regression");
     let output = Command::new(env!("CARGO_BIN_EXE_bayesite"))

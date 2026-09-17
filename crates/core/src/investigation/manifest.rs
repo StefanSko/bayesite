@@ -598,12 +598,46 @@ impl DecisionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionInputs {
+    pub model: ArtifactRef,
+    pub data: ArtifactRef,
+}
+
+impl DecisionInputs {
+    fn parse(value: &Value, context: &str) -> Result<Self, Error> {
+        checked_object(value, context, &["model", "data"], &["model", "data"])?;
+        let model = ArtifactRef::parse(
+            value.get("model").expect("required"),
+            &format!("{context}.model"),
+        )?;
+        let data = ArtifactRef::parse(
+            value.get("data").expect("required"),
+            &format!("{context}.data"),
+        )?;
+        if model.kind != ArtifactKind::ModelIr || data.kind != ArtifactKind::Data {
+            return Err(malformed(format!(
+                "{context} must carry model_ir and data artifact references"
+            )));
+        }
+        Ok(Self { model, data })
+    }
+
+    pub fn to_value(&self) -> Value {
+        Value::Object(vec![
+            ("model".into(), self.model.to_value()),
+            ("data".into(), self.data.to_value()),
+        ])
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decision {
     pub id: String,
     pub parent: Option<String>,
     pub reason: String,
     pub cites: Vec<Digest>,
     pub kind: DecisionKind,
+    pub inputs: DecisionInputs,
 }
 
 impl Decision {
@@ -611,8 +645,8 @@ impl Decision {
         checked_object(
             value,
             context,
-            &["id", "parent", "reason", "cites", "kind"],
-            &["id", "parent", "reason", "cites", "kind"],
+            &["id", "parent", "reason", "cites", "kind", "inputs"],
+            &["id", "parent", "reason", "cites", "kind", "inputs"],
         )?;
         let parent = match value.get("parent").expect("required") {
             Value::Null => None,
@@ -638,6 +672,10 @@ impl Decision {
             reason: bounded_text(required_str(value, "reason", context)?, context)?,
             cites,
             kind: DecisionKind::parse(required_str(value, "kind", context)?, context)?,
+            inputs: DecisionInputs::parse(
+                value.get("inputs").expect("required"),
+                &format!("{context}.inputs"),
+            )?,
         })
     }
 
@@ -659,6 +697,7 @@ impl Decision {
                 ),
             ),
             ("kind".into(), string(self.kind.as_str())),
+            ("inputs".into(), self.inputs.to_value()),
         ])
     }
 }
@@ -1234,6 +1273,9 @@ impl Manifest {
         let mut out = vec![&self.model, &self.data];
         if let Some(source) = &self.source {
             out.push(&source.manifest);
+        }
+        for decision in &self.decisions {
+            out.extend([&decision.inputs.model, &decision.inputs.data]);
         }
         for recipe in &self.recipes {
             out.extend([&recipe.model, &recipe.data]);

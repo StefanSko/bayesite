@@ -40,7 +40,7 @@ fn usage() -> &'static str {
      usage: bayesite investigation verify <bundle>\n\
      usage: bayesite investigation fork <bundle> --at <decision-id> --out <workspace>\n\
      usage: bayesite investigation replay <bundle> --recipe <id> --out <replay-dir>\n\
-     usage: bayesite investigation export <bundle> --viewer --public-data-confirmed --out <directory>"
+     usage: bayesite investigation export <bundle> --viewer --public-data-confirmed --protocol <protocol.md> --out <directory>"
 }
 
 fn emit(value: &Value) -> Result<(), Error> {
@@ -127,9 +127,35 @@ fn parse_flags(
 }
 
 fn target_name() -> String {
-    option_env!("TARGET")
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS))
+    if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
+        "aarch64-apple-darwin".into()
+    } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
+        "x86_64-apple-darwin".into()
+    } else if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_env = "musl"
+    )) {
+        "x86_64-unknown-linux-musl".into()
+    } else if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_env = "gnu"
+    )) {
+        "x86_64-unknown-linux-gnu".into()
+    } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+        if cfg!(target_env = "musl") {
+            "aarch64-unknown-linux-musl".into()
+        } else {
+            "aarch64-unknown-linux-gnu".into()
+        }
+    } else {
+        format!(
+            "{}-unknown-{}",
+            std::env::consts::ARCH,
+            std::env::consts::OS
+        )
+    }
 }
 
 fn profile_name() -> String {
@@ -912,11 +938,14 @@ fn fork(argv: &[String]) -> Result<(), Error> {
     let out = Path::new(&flags["--out"]);
     let at = &flags["--at"];
     let (manifest, verification) = verify(source_root)?;
-    if manifest.decision(at).is_none() {
-        return Err(invalid(format!(
-            "source snapshot has no decision {at:?}; choose an exact recorded decision id"
-        )));
-    }
+    let branch_inputs = manifest
+        .decision(at)
+        .map(|decision| decision.inputs.clone())
+        .ok_or_else(|| {
+            invalid(format!(
+                "source snapshot has no decision {at:?}; choose an exact recorded decision id"
+            ))
+        })?;
     let engine = manifest
         .recipes
         .first()
@@ -941,8 +970,8 @@ fn fork(argv: &[String]) -> Result<(), Error> {
         debug_assert_eq!(inserted, source_manifest);
         fs::create_dir_all(out.join("inputs"))
             .map_err(|error| invalid(format!("cannot create fork inputs: {error}")))?;
-        let model = store::read(out, &manifest.model)?;
-        let data = store::read(out, &manifest.data)?;
+        let model = store::read(out, &branch_inputs.model)?;
+        let data = store::read(out, &branch_inputs.data)?;
         let (model_path, data_path) = input_paths(out);
         fs::write(&model_path, model)
             .map_err(|error| invalid(format!("cannot write fork model copy: {error}")))?;
@@ -1068,12 +1097,19 @@ fn export(argv: &[String]) -> Result<(), Error> {
     let source = Path::new(source_value);
     let mut viewer = false;
     let mut public_data_confirmed = false;
+    let mut protocol_value: Option<&String> = None;
     let mut out_value: Option<&String> = None;
     let mut index = 1usize;
     while index < argv.len() {
         match argv[index].as_str() {
             "--viewer" if !viewer => viewer = true,
             "--public-data-confirmed" if !public_data_confirmed => public_data_confirmed = true,
+            "--protocol" if protocol_value.is_none() => {
+                index += 1;
+                protocol_value = Some(argv.get(index).ok_or_else(|| {
+                    invalid("investigation export --protocol requires a Markdown file")
+                })?);
+            }
             "--out" if out_value.is_none() => {
                 index += 1;
                 out_value =
@@ -1097,6 +1133,21 @@ fn export(argv: &[String]) -> Result<(), Error> {
     let out = Path::new(
         out_value.ok_or_else(|| invalid("investigation export needs --out <directory>"))?,
     );
+    let protocol_path = Path::new(
+        protocol_value
+            .ok_or_else(|| invalid("investigation export needs --protocol <protocol.md>"))?,
+    );
+    let protocol_metadata = fs::metadata(protocol_path)
+        .map_err(|error| invalid(format!("cannot inspect recipient protocol: {error}")))?;
+    if protocol_metadata.len() > bayesite_core::investigation::manifest::MAX_MANIFEST_BYTES as u64 {
+        return Err(invalid(format!(
+            "recipient protocol exceeds the {}-byte limit",
+            bayesite_core::investigation::manifest::MAX_MANIFEST_BYTES
+        )));
+    }
+    let protocol_bytes = read_bytes(protocol_path, "recipient protocol")?;
+    std::str::from_utf8(&protocol_bytes)
+        .map_err(|_| invalid("recipient protocol must be UTF-8 Markdown"))?;
     let (manifest, verification) = verify(source)?;
     let manifest_bytes = read_bytes(&source.join("manifest.json"), "investigation manifest")?;
     let engine = manifest
@@ -1155,10 +1206,7 @@ fn export(argv: &[String]) -> Result<(), Error> {
             include_bytes!("../../../../../LICENSE"),
         )?;
         write_new(&out.join("NOTICE"), include_bytes!("../../../../../NOTICE"))?;
-        write_new(
-            &out.join("PROTOCOL.md"),
-            include_bytes!("../../../../../examples/investigation-counts/PROTOCOL.md"),
-        )?;
+        write_new(&out.join("PROTOCOL.md"), &protocol_bytes)?;
         write_new(
             &out.join("CONTINUING.md"),
             include_bytes!("../../../../../docs/investigation-workspace-v0.md"),
@@ -1188,6 +1236,17 @@ fn export(argv: &[String]) -> Result<(), Error> {
             ),
             ("manifest".into(), string("bundle/manifest.json")),
             ("public_data_confirmed".into(), Value::Bool(true)),
+            (
+                "recipient_protocol".into(),
+                Value::Object(vec![
+                    ("path".into(), string("PROTOCOL.md")),
+                    (
+                        "sha256".into(),
+                        string(artifact_digest(&protocol_bytes).as_str()),
+                    ),
+                    ("bytes".into(), Value::Int(protocol_bytes.len() as i64)),
+                ]),
+            ),
             (
                 "engine".into(),
                 Value::Object(vec![

@@ -51,18 +51,21 @@ bayesite investigation run alternative/ --recipe check-alternative
 bayesite investigation snapshot alternative/ --out continuation/
 bayesite investigation verify continuation/
 bayesite investigation export continuation/ --viewer \
-  --public-data-confirmed --out published/
+  --public-data-confirmed --protocol recipient-protocol.md --out published/
 ```
 
-`fork` verifies first, copies working input bytes (never writable hardlinks),
-imports the local source closure, and records both source snapshot and branch
-decision. It never writes the source bundle. Inherited evidence is shown as
+`fork` verifies first, restores the exact model/data references bound to the
+named decision (never the snapshot tip merely because it is newer), copies them
+as working bytes without writable hardlinks, imports the local source closure,
+and records both source snapshot and branch decision. It never writes the source bundle. Inherited evidence is shown as
 historical even before the model changes.
 
 The mutable workspace accepts `"model"` and `"data"` in a decision's `cites`
 array and resolves them from the actual working bytes on the next command; an
-editor need not calculate content hashes. Add a new decision with its explicit
-kind and reason, and use a new recipe ID when execution-relevant inputs change.
+editor need not calculate content hashes. A newly added decision without an
+`inputs` field is bound once to those current model/data bytes; saved decisions
+retain their prior branch-point inputs when only their text changes. Add a new
+decision with its explicit kind and reason, and use a new recipe ID when execution-relevant inputs change.
 Reusing one recipe ID for a different identity is rejected to preserve history.
 Human approval is recorded only when the editor explicitly supplies
 `"kind":"human_approval"`.
@@ -84,11 +87,12 @@ and exact-byte agreement separately. Cross-target numerical comparison is
 
 ## Static viewer export
 
-`export --viewer` verifies first, requires the explicit
-`--public-data-confirmed` publication choice, and writes only to a fresh output
+`export --viewer` verifies first, requires an investigation-specific UTF-8
+recipient task via `--protocol`, requires the explicit `--public-data-confirmed`
+publication choice, and writes only to a fresh output
 directory. It copies the exact bundle closure, the pinned engine for its saved
-target, license/notice files, this continuation guide, the frozen recipient protocol,
-the raw Bayeswire format/tag references needed to edit a model, the inspection
+target, license/notice files, this continuation guide, the explicitly supplied
+recipient protocol, the raw Bayeswire format/tag references needed to edit a model, the inspection
 contract, and dependency-free static viewer assets. `entry.json` hashes those
 assets and points to the exact snapshot ID.
 

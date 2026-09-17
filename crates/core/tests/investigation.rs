@@ -4,8 +4,8 @@ use std::process::Command;
 use bayesite_core::inspect::inspect_json;
 use bayesite_core::investigation::identity::{artifact_digest, snapshot_digest};
 use bayesite_core::investigation::manifest::{
-    ArtifactKind, ArtifactRef, Decision, DecisionKind, EngineIdentity, EvidenceSelection,
-    EvidenceStatus, Execution, Manifest, Operation, Outcome, Recipe,
+    ArtifactKind, ArtifactRef, Decision, DecisionInputs, DecisionKind, EngineIdentity,
+    EvidenceSelection, EvidenceStatus, Execution, Manifest, Operation, Outcome, Recipe,
 };
 use bayesite_core::investigation::verify_bundle;
 use bayesite_core::ir::decode_model;
@@ -86,6 +86,10 @@ fn fixture_bundle() -> (Vec<u8>, HashMap<String, Vec<u8>>, Manifest) {
             reason: "Start with a Poisson baseline.".into(),
             cites: vec![model_ref.sha256.clone()],
             kind: DecisionKind::Note,
+            inputs: DecisionInputs {
+                model: model_ref.clone(),
+                data: data_ref.clone(),
+            },
         }],
         recipes: vec![recipe],
         executions: vec![execution],
@@ -352,6 +356,10 @@ fn rejects_current_fit_from_different_exact_model_bytes() {
             reason: "Test stale evidence.".into(),
             cites: vec![model_ref.sha256.clone()],
             kind: DecisionKind::Note,
+            inputs: DecisionInputs {
+                model: model_ref.clone(),
+                data: data_ref.clone(),
+            },
         }],
         recipes: vec![recipe.clone()],
         executions: vec![Execution {
@@ -443,7 +451,7 @@ fn fixed_identity_vector_is_stable() {
     );
     assert_eq!(
         snapshot_digest(&bytes).as_str(),
-        "4f20087b1322489bb87aed90e43c79f084810245b604a391309ec3ec07d45f4b"
+        "f620b347aa2c73a68dc984cdd010f7178029555056b03051e2a4852b721c76ba"
     );
     assert_eq!(
         json::parse(std::str::from_utf8(&bytes).unwrap()).unwrap(),

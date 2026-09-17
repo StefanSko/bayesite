@@ -76,6 +76,40 @@ fn text(value: &str, context: &str) -> Result<String, Error> {
     }
 }
 
+fn input_reference(
+    bytes: &[u8],
+    kind: bayesite_core::investigation::manifest::ArtifactKind,
+    format: &str,
+) -> ArtifactRef {
+    ArtifactRef {
+        sha256: artifact_digest(bytes),
+        bytes: bytes.len(),
+        kind,
+        format: format.to_string(),
+    }
+}
+
+fn ensure_decision_inputs(
+    decision: &mut Value,
+    model: &ArtifactRef,
+    data: &ArtifactRef,
+    context: &str,
+) -> Result<(), Error> {
+    let Value::Object(entries) = decision else {
+        return Err(invalid(format!("{context} must be an object")));
+    };
+    if !entries.iter().any(|(name, _)| name == "inputs") {
+        entries.push((
+            "inputs".into(),
+            Value::Object(vec![
+                ("model".into(), model.to_value()),
+                ("data".into(), data.to_value()),
+            ]),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct ConfiguredRecipe {
     pub id: String,
@@ -467,8 +501,14 @@ impl Metadata {
             .enumerate()
             .map(|(index, decision)| {
                 let mut decision = decision.clone();
+                ensure_decision_inputs(
+                    &mut decision,
+                    model,
+                    data,
+                    &format!("metadata decisions[{index}]"),
+                )?;
                 let Value::Object(entries) = &mut decision else {
-                    return Err(invalid(format!("metadata decisions[{index}] must be an object")));
+                    unreachable!("decision object checked above")
                 };
                 let cites = entries
                     .iter_mut()
@@ -561,8 +601,16 @@ pub fn load(root: &Path) -> Result<Workspace, Error> {
     })?;
     let data = fs::read(root.join("inputs/data.json"))
         .map_err(|error| invalid(format!("cannot read workspace data for citations: {error}")))?;
-    let model_digest = artifact_digest(&model);
-    let data_digest = artifact_digest(&data);
+    let model_ref = input_reference(
+        &model,
+        bayesite_core::investigation::manifest::ArtifactKind::ModelIr,
+        "bayeswire-ir-v1",
+    );
+    let data_ref = input_reference(
+        &data,
+        bayesite_core::investigation::manifest::ArtifactKind::Data,
+        "bayesite-data-json-v1",
+    );
     if let Some(Value::Array(decisions)) = match &mut value {
         Value::Object(entries) => entries
             .iter_mut()
@@ -570,7 +618,13 @@ pub fn load(root: &Path) -> Result<Workspace, Error> {
             .map(|(_, value)| value),
         _ => None,
     } {
-        for decision in decisions {
+        for (index, decision) in decisions.iter_mut().enumerate() {
+            ensure_decision_inputs(
+                decision,
+                &model_ref,
+                &data_ref,
+                &format!("workspace decisions[{index}]"),
+            )?;
             let Some(Value::Array(citations)) = (match decision {
                 Value::Object(entries) => entries
                     .iter_mut()
@@ -582,8 +636,8 @@ pub fn load(root: &Path) -> Result<Workspace, Error> {
             };
             for citation in citations {
                 match citation.as_str() {
-                    Some("model") => *citation = string(model_digest.as_str()),
-                    Some("data") => *citation = string(data_digest.as_str()),
+                    Some("model") => *citation = string(model_ref.sha256.as_str()),
+                    Some("data") => *citation = string(data_ref.sha256.as_str()),
                     _ => {}
                 }
             }
