@@ -101,6 +101,18 @@ fn expected_rust_target() -> &'static str {
         target_env = "gnu"
     )) {
         "x86_64-unknown-linux-gnu"
+    } else if cfg!(all(
+        target_arch = "x86_64",
+        target_os = "windows",
+        target_env = "msvc"
+    )) {
+        "x86_64-pc-windows-msvc"
+    } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
+        if cfg!(target_env = "musl") {
+            "aarch64-unknown-linux-musl"
+        } else {
+            "aarch64-unknown-linux-gnu"
+        }
     } else {
         panic!("add the current test target to expected_rust_target")
     }
@@ -1025,7 +1037,51 @@ fn failed_sampling_retains_prior_evidence_as_historical() {
         .unwrap()
         .iter()
         .all(|evidence| evidence.get("status").and_then(Value::as_str) == Some("historical")));
-    let _ = std::fs::remove_dir_all(workspace);
+
+    let snapshot = temp_dir("failed-sample-snapshot");
+    let replay = temp_dir("failed-sample-replay");
+    success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        snapshot.to_str().unwrap(),
+    ]);
+    let replay_output = run(&[
+        "investigation",
+        "replay",
+        snapshot.to_str().unwrap(),
+        "--recipe",
+        "sample-invalid-rate",
+        "--out",
+        replay.to_str().unwrap(),
+    ]);
+    assert!(!replay_output.status.success());
+    let report_bytes = std::fs::read(replay.join("replay.json")).unwrap();
+    assert_eq!(replay_output.stdout, report_bytes);
+    let report = json::parse(String::from_utf8(report_bytes).unwrap().trim()).unwrap();
+    assert_eq!(
+        report.get("execution_outcome").and_then(Value::as_str),
+        Some("failed")
+    );
+    assert_eq!(
+        report.get("input_integrity").and_then(Value::as_str),
+        Some("verified")
+    );
+    assert_eq!(report.get("engine_match"), Some(&Value::Bool(true)));
+    assert_eq!(report.get("output_sha256"), Some(&Value::Null));
+    assert_eq!(report.get("exact_output_bytes_agree"), Some(&Value::Null));
+    assert_eq!(
+        report
+            .get("failure")
+            .and_then(|failure| failure.get("error"))
+            .and_then(Value::as_str),
+        Some("NonFiniteDensity")
+    );
+    assert!(!replay_output.stderr.is_empty());
+    for path in [workspace, snapshot, replay] {
+        let _ = std::fs::remove_dir_all(path);
+    }
 }
 
 #[test]

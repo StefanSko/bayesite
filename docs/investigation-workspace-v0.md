@@ -22,8 +22,11 @@ bayesite investigation verify original/
 
 `init` copies editable model/data bytes to `inputs/`, pins the exact running
 executable plus verbatim capabilities document in the object store, and writes
-`investigation.json`. Every inspect, run, and snapshot hashes the actual working
-bytes again; timestamps and remembered invalidation commands are not trusted.
+`investigation.json`. The engine target is a canonical Rust target triple for a
+recognized native platform; initialization fails explicitly rather than
+inventing a noncanonical fallback on an unmapped platform. Every inspect, run,
+and snapshot hashes the actual working bytes again; timestamps and remembered
+invalidation commands are not trusted.
 
 A recipe is one closed operation: `inspect`, `sample`, `diagnose`, or
 `posterior-check`. Sample settings explicitly include chains, warmup, draws,
@@ -82,7 +85,10 @@ output directory, including the total 16-manifest ancestry limit.
 Replay verifies the source, checks the running executable/target/capabilities,
 runs one exact saved recipe into a separate directory, and reports input
 integrity, engine match, execution outcome, actual and expected output hashes,
-and exact-byte agreement separately. Cross-target numerical comparison is
+and exact-byte agreement separately. If recipe execution fails, replay retains
+`replay.json` and its content-addressed copy, reports the typed failure with
+byte agreement left unchecked, emits that report to standard output, and still
+returns the typed nonzero CLI error. Cross-target numerical comparison is
 `unsupported` in this format.
 
 ## Static viewer export

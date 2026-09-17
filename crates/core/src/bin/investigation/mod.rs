@@ -128,36 +128,41 @@ fn parse_flags(
     Ok((positional, parsed))
 }
 
-fn target_name() -> String {
-    if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
-        "aarch64-apple-darwin".into()
-    } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
-        "x86_64-apple-darwin".into()
-    } else if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "linux",
-        target_env = "musl"
-    )) {
-        "x86_64-unknown-linux-musl".into()
-    } else if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "linux",
-        target_env = "gnu"
-    )) {
-        "x86_64-unknown-linux-gnu".into()
-    } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
-        if cfg!(target_env = "musl") {
-            "aarch64-unknown-linux-musl".into()
-        } else {
-            "aarch64-unknown-linux-gnu".into()
-        }
-    } else {
-        format!(
-            "{}-unknown-{}",
-            std::env::consts::ARCH,
-            std::env::consts::OS
-        )
+fn canonical_target_name(arch: &str, os: &str, environment: &str) -> Option<&'static str> {
+    match (arch, os, environment) {
+        ("aarch64", "macos", _) => Some("aarch64-apple-darwin"),
+        ("x86_64", "macos", _) => Some("x86_64-apple-darwin"),
+        ("x86_64", "linux", "musl") => Some("x86_64-unknown-linux-musl"),
+        ("x86_64", "linux", "gnu") => Some("x86_64-unknown-linux-gnu"),
+        ("aarch64", "linux", "musl") => Some("aarch64-unknown-linux-musl"),
+        ("aarch64", "linux", "gnu") => Some("aarch64-unknown-linux-gnu"),
+        ("x86_64", "windows", "msvc") => Some("x86_64-pc-windows-msvc"),
+        ("aarch64", "windows", "msvc") => Some("aarch64-pc-windows-msvc"),
+        ("x86_64", "windows", "gnu") => Some("x86_64-pc-windows-gnu"),
+        _ => None,
     }
+}
+
+fn target_name() -> Result<&'static str, Error> {
+    let environment = if cfg!(target_env = "musl") {
+        "musl"
+    } else if cfg!(target_env = "gnu") {
+        "gnu"
+    } else if cfg!(target_env = "msvc") {
+        "msvc"
+    } else {
+        ""
+    };
+    canonical_target_name(std::env::consts::ARCH, std::env::consts::OS, environment).ok_or_else(
+        || {
+            invalid(format!(
+                "investigation workflows do not yet define a canonical Rust target for arch {}, OS {}, environment {:?}",
+                std::env::consts::ARCH,
+                std::env::consts::OS,
+                environment
+            ))
+        },
+    )
 }
 
 fn profile_name() -> String {
@@ -190,7 +195,7 @@ fn create_engine(root: &Path, capabilities: &str) -> Result<EngineIdentity, Erro
             ArtifactKind::EngineCapabilities,
             "capabilities-v0-provisional",
         )?,
-        target: target_name(),
+        target: target_name()?.into(),
         profile: profile_name(),
     })
 }
@@ -204,7 +209,7 @@ fn check_engine(
     let binary_digest = artifact_digest(&binary);
     if binary_digest != engine.binary.sha256
         || binary.len() != engine.binary.bytes
-        || target_name() != engine.target
+        || target_name()? != engine.target
         || profile_name() != engine.profile
     {
         return Err(invalid(format!(
@@ -1060,46 +1065,15 @@ fn replay(argv: &[String], capabilities: &str) -> Result<(), Error> {
         .transpose()?;
 
     create_fresh_directory(out, "replay directory")?;
-    let result = (|| {
-        let output_bytes = execute_recipe(recipe, &model, &data, fit.as_deref())?;
-        let (kind, format) = output_description(recipe.operation);
-        let output = store::insert(out, &output_bytes, kind, format)?;
-        let expected = manifest
-            .executions
-            .iter()
-            .find(|execution| {
-                execution.recipe_sha256 == recipe.sha256 && execution.outcome == Outcome::Completed
-            })
-            .and_then(|execution| execution.output.as_ref());
-        let exact = expected.map(|expected| expected.sha256 == output.sha256);
-        let report = Value::Object(vec![
-            ("replay_format".into(), string("v0-provisional")),
-            (
-                "source_snapshot_id".into(),
-                string(verification.snapshot_id.prefixed()),
-            ),
-            ("input_integrity".into(), string("verified")),
-            ("engine_match".into(), Value::Bool(true)),
-            ("execution_outcome".into(), string("completed")),
-            ("recipe".into(), string(&recipe.id)),
-            ("recipe_sha256".into(), string(recipe.sha256.prefixed())),
-            ("output_sha256".into(), string(output.sha256.prefixed())),
-            (
-                "expected_output_sha256".into(),
-                expected
-                    .map(|expected| string(expected.sha256.prefixed()))
-                    .unwrap_or(Value::Null),
-            ),
-            (
-                "exact_output_bytes_agree".into(),
-                exact.map(Value::Bool).unwrap_or(Value::Null),
-            ),
-            (
-                "cross_target_numerical_comparison".into(),
-                string("unsupported"),
-            ),
-        ]);
-        let report_bytes = format!("{}\n", json::write(&report)?).into_bytes();
+    let expected = manifest
+        .executions
+        .iter()
+        .find(|execution| {
+            execution.recipe_sha256 == recipe.sha256 && execution.outcome == Outcome::Completed
+        })
+        .and_then(|execution| execution.output.as_ref());
+    let persist_report = |report: &Value| -> Result<(), Error> {
+        let report_bytes = format!("{}\n", json::write(report)?).into_bytes();
         fs::write(out.join("replay.json"), &report_bytes)
             .map_err(|error| invalid(format!("cannot write replay report: {error}")))?;
         store::insert(
@@ -1108,12 +1082,78 @@ fn replay(argv: &[String], capabilities: &str) -> Result<(), Error> {
             ArtifactKind::ReplayReport,
             "replay-v0-provisional",
         )?;
-        emit(&report)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(out.join("replay.json"));
-    }
-    result
+        emit(report)
+    };
+    let output_bytes = match execute_recipe(recipe, &model, &data, fit.as_deref()) {
+        Ok(bytes) => bytes,
+        Err(execution_error) => {
+            let report = Value::Object(vec![
+                ("replay_format".into(), string("v0-provisional")),
+                (
+                    "source_snapshot_id".into(),
+                    string(verification.snapshot_id.prefixed()),
+                ),
+                ("input_integrity".into(), string("verified")),
+                ("engine_match".into(), Value::Bool(true)),
+                ("execution_outcome".into(), string("failed")),
+                ("recipe".into(), string(&recipe.id)),
+                ("recipe_sha256".into(), string(recipe.sha256.prefixed())),
+                ("output_sha256".into(), Value::Null),
+                (
+                    "expected_output_sha256".into(),
+                    expected
+                        .map(|expected| string(expected.sha256.prefixed()))
+                        .unwrap_or(Value::Null),
+                ),
+                ("exact_output_bytes_agree".into(), Value::Null),
+                (
+                    "failure".into(),
+                    Value::Object(vec![
+                        ("error".into(), string(execution_error.kind.name())),
+                        ("message".into(), string(&execution_error.message)),
+                    ]),
+                ),
+                (
+                    "cross_target_numerical_comparison".into(),
+                    string("unsupported"),
+                ),
+            ]);
+            persist_report(&report)?;
+            return Err(execution_error);
+        }
+    };
+    let (kind, format) = output_description(recipe.operation);
+    let output = store::insert(out, &output_bytes, kind, format)?;
+    let exact = expected.map(|expected| expected.sha256 == output.sha256);
+    let report = Value::Object(vec![
+        ("replay_format".into(), string("v0-provisional")),
+        (
+            "source_snapshot_id".into(),
+            string(verification.snapshot_id.prefixed()),
+        ),
+        ("input_integrity".into(), string("verified")),
+        ("engine_match".into(), Value::Bool(true)),
+        ("execution_outcome".into(), string("completed")),
+        ("recipe".into(), string(&recipe.id)),
+        ("recipe_sha256".into(), string(recipe.sha256.prefixed())),
+        ("output_sha256".into(), string(output.sha256.prefixed())),
+        (
+            "expected_output_sha256".into(),
+            expected
+                .map(|expected| string(expected.sha256.prefixed()))
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "exact_output_bytes_agree".into(),
+            exact.map(Value::Bool).unwrap_or(Value::Null),
+        ),
+        ("failure".into(), Value::Null),
+        (
+            "cross_target_numerical_comparison".into(),
+            string("unsupported"),
+        ),
+    ]);
+    persist_report(&report)
 }
 
 fn export(argv: &[String]) -> Result<(), Error> {
@@ -1353,5 +1393,31 @@ pub fn run(argv: &[String], capabilities: &str) -> Result<(), Error> {
             "unknown investigation subcommand {other:?}; {}",
             usage()
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_target_name;
+
+    #[test]
+    fn every_release_target_has_its_canonical_rust_triple() {
+        assert_eq!(
+            canonical_target_name("x86_64", "linux", "musl"),
+            Some("x86_64-unknown-linux-musl")
+        );
+        assert_eq!(
+            canonical_target_name("x86_64", "macos", ""),
+            Some("x86_64-apple-darwin")
+        );
+        assert_eq!(
+            canonical_target_name("aarch64", "macos", ""),
+            Some("aarch64-apple-darwin")
+        );
+        assert_eq!(
+            canonical_target_name("x86_64", "windows", "msvc"),
+            Some("x86_64-pc-windows-msvc")
+        );
+        assert_eq!(canonical_target_name("mips", "plan9", ""), None);
     }
 }
