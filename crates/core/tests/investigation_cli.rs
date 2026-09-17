@@ -71,6 +71,7 @@ fn add_continuation_records(workspace: &std::path::Path) {
     *object_entry_mut(&mut value, "recipes") = json::parse(
         r#"[
             {"id":"inspect-alternative","operation":"inspect","settings":{}},
+            {"id":"prior-predictive-alternative","operation":"prior-predictive","settings":{"draws":8,"seed":20260920}},
             {"id":"sample-alternative","operation":"sample","settings":{"chains":1,"warmup":20,"draws":8,"max_treedepth":6,"target_accept":0.85,"initial_step_size":1.0,"seed":20260918}},
             {"id":"diagnose-alternative","operation":"diagnose","settings":{}},
             {"id":"check-alternative","operation":"posterior-check","settings":{"seed":20260919}}
@@ -154,6 +155,7 @@ fn init_and_run_original(workspace: &std::path::Path) {
     .unwrap();
     for recipe in [
         "inspect-initial",
+        "prior-predictive-initial",
         "sample-initial",
         "diagnose-initial",
         "check-initial",
@@ -183,6 +185,108 @@ fn workspace_engine_uses_canonical_rust_target_vocabulary() {
         Some(expected_rust_target())
     );
     let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn workspace_run_records_current_prior_predictive_evidence() {
+    let workspace = temp_dir("prior-predictive-author");
+    let bundle = temp_dir("prior-predictive-bundle");
+    initialize(&workspace);
+    let result = success(&[
+        "investigation",
+        "run",
+        workspace.to_str().unwrap(),
+        "--recipe",
+        "prior-predictive-initial",
+    ]);
+    assert_eq!(result.get("selected"), Some(&Value::Bool(true)));
+    let inspection = success(&["investigation", "inspect", workspace.to_str().unwrap()]);
+    assert!(inspection
+        .get("evidence")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .any(|evidence| {
+            evidence.get("name").and_then(Value::as_str) == Some("prior-predictive-initial")
+                && evidence.get("status").and_then(Value::as_str) == Some("current")
+        }));
+    success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        bundle.to_str().unwrap(),
+    ]);
+    success(&["investigation", "verify", bundle.to_str().unwrap()]);
+    let manifest =
+        json::parse(&std::fs::read_to_string(bundle.join("manifest.json")).unwrap()).unwrap();
+    assert!(manifest
+        .get("executions")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .filter_map(|execution| execution.get("output"))
+        .any(|output| {
+            output.get("kind").and_then(Value::as_str) == Some("prior_predictive_draws")
+                && output.get("format").and_then(Value::as_str)
+                    == Some("prior-predictive-v0-provisional-ndjson")
+        }));
+    for path in [workspace, bundle] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[test]
+fn fork_uses_nearest_ancestor_engine_when_top_manifest_has_no_recipes() {
+    let workspace = temp_dir("recipe-less-author");
+    let original = temp_dir("recipe-less-original");
+    let first_fork = temp_dir("recipe-less-first-fork");
+    let recipe_less = temp_dir("recipe-less-snapshot");
+    let second_fork = temp_dir("recipe-less-second-fork");
+    initialize(&workspace);
+    success(&[
+        "investigation",
+        "snapshot",
+        workspace.to_str().unwrap(),
+        "--out",
+        original.to_str().unwrap(),
+    ]);
+    success(&[
+        "investigation",
+        "fork",
+        original.to_str().unwrap(),
+        "--at",
+        "initial-likelihood",
+        "--out",
+        first_fork.to_str().unwrap(),
+    ]);
+    success(&[
+        "investigation",
+        "snapshot",
+        first_fork.to_str().unwrap(),
+        "--out",
+        recipe_less.to_str().unwrap(),
+    ]);
+    let top =
+        json::parse(&std::fs::read_to_string(recipe_less.join("manifest.json")).unwrap()).unwrap();
+    assert!(top
+        .get("recipes")
+        .and_then(Value::as_array)
+        .unwrap()
+        .is_empty());
+    success(&[
+        "investigation",
+        "fork",
+        recipe_less.to_str().unwrap(),
+        "--at",
+        "initial-likelihood",
+        "--out",
+        second_fork.to_str().unwrap(),
+    ]);
+    assert!(second_fork.join("investigation.json").is_file());
+    for path in [workspace, original, first_fork, recipe_less, second_fork] {
+        let _ = std::fs::remove_dir_all(path);
+    }
 }
 
 #[test]
@@ -520,6 +624,7 @@ fn author_replay_fork_continue_snapshot_keeps_source_immutable_and_stale_history
 
     for recipe in [
         "inspect-alternative",
+        "prior-predictive-alternative",
         "sample-alternative",
         "diagnose-alternative",
         "check-alternative",

@@ -39,6 +39,19 @@ The marker means the artifact is intentionally provisional. Do not build a
 load-bearing consumer that assumes field stability without an explicit format
 decision.
 
+## Investigation artifact kinds
+
+Investigation references use a closed kind plus a format label. Numerical
+result rows currently include:
+
+| Kind | Format label |
+|---|---|
+| `inspection` | `inspection-v0-provisional` |
+| `posterior_draws` | `draws-v0-provisional-ndjson` |
+| `prior_predictive_draws` | `prior-predictive-v0-provisional-ndjson` |
+| `diagnostics` | `diagnostics-v0-provisional` |
+| `posterior_check` | `posterior-check-v0-provisional` |
+
 ## Shared conventions
 
 - Successful artifact commands write JSON/NDJSON to stdout or `--out`; stderr is
@@ -226,6 +239,9 @@ Header/trailer facts include:
   `declared_data_conditioned_site_draws`
 - workflow phases from JSON parse through artifact emission
 - seed, settings, draw count, draw-index base
+- an optional exact-input `model_data_fingerprint`; investigation recordings
+  require it and cover the complete recipe model/data bytes, including observed
+  values omitted from prior-predictive conditioning
 - declared data count/order, shapes, coordinate order, integer flags, and
   values
 - generated site count/order, source stochastic-site names, roles, shapes,

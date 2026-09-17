@@ -291,6 +291,109 @@ fn validate_inspection(value: &Value) -> Result<(), Error> {
     Ok(())
 }
 
+fn prior_predictive_header(bytes: &[u8]) -> Result<Value, Error> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| malformed("prior_predictive_draws artifact must be UTF-8 NDJSON"))?;
+    let records = text
+        .lines()
+        .enumerate()
+        .map(|(index, line)| {
+            let value = json::parse(line)?;
+            reject_duplicate_json_fields(&value, &format!("prior_predictive_draws line {index}"))?;
+            if !matches!(value, Value::Object(_)) {
+                return Err(malformed(format!(
+                    "prior_predictive_draws line {index} must be a JSON object"
+                )));
+            }
+            Ok(value)
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let header = records
+        .first()
+        .ok_or_else(|| malformed("prior_predictive_draws artifact is empty"))?;
+    if header
+        .get("prior_predictive_format")
+        .and_then(Value::as_str)
+        != Some("v0-provisional")
+    {
+        return Err(malformed(
+            "prior_predictive_draws header needs prior_predictive_format \"v0-provisional\"",
+        ));
+    }
+    let draw_count = header
+        .get("draw_count")
+        .and_then(Value::as_i64)
+        .filter(|count| *count >= 1)
+        .ok_or_else(|| {
+            malformed("prior_predictive_draws header needs a positive integer draw_count")
+        })?;
+    let seed = header
+        .get("seed")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| malformed("prior_predictive_draws header needs an integer seed"))?;
+    if header.get("draws").and_then(Value::as_i64) != Some(draw_count)
+        || header
+            .get("settings")
+            .and_then(|settings| settings.get("num_draws"))
+            .and_then(Value::as_i64)
+            != Some(draw_count)
+    {
+        return Err(malformed(
+            "prior_predictive_draws header needs consistent draws, draw_count, and settings.num_draws fields",
+        ));
+    }
+    let expected_records = usize::try_from(draw_count)
+        .ok()
+        .and_then(|count| count.checked_add(2))
+        .ok_or_else(|| malformed("prior_predictive_draws draw_count is too large"))?;
+    if records.len() != expected_records {
+        return Err(malformed(format!(
+            "prior_predictive_draws artifact has {} records but draw_count {draw_count} requires {expected_records}",
+            records.len()
+        )));
+    }
+    for (draw_index, record) in records[1..records.len() - 1].iter().enumerate() {
+        if record
+            .get("prior_predictive_format")
+            .and_then(Value::as_str)
+            != Some("v0-provisional")
+            || record.get("draw_index").and_then(Value::as_i64) != Some(draw_index as i64)
+            || record.get("draw_count").and_then(Value::as_i64) != Some(draw_count)
+            || record.get("seed").and_then(Value::as_i64) != Some(seed)
+        {
+            return Err(malformed(format!(
+                "prior_predictive_draws draw record {draw_index} has inconsistent format, index, draw_count, or seed"
+            )));
+        }
+    }
+    let trailer = records
+        .last()
+        .and_then(|record| record.get("trailer"))
+        .ok_or_else(|| malformed("prior_predictive_draws artifact needs a trailer record"))?;
+    if trailer
+        .get("prior_predictive_format")
+        .and_then(Value::as_str)
+        != Some("v0-provisional")
+        || trailer.get("draw_count").and_then(Value::as_i64) != Some(draw_count)
+        || trailer.get("draws").and_then(Value::as_i64) != Some(draw_count)
+        || trailer.get("seed").and_then(Value::as_i64) != Some(seed)
+        || trailer
+            .get("settings")
+            .and_then(|settings| settings.get("num_draws"))
+            .and_then(Value::as_i64)
+            != Some(draw_count)
+        || trailer
+            .get("model_data_fingerprint")
+            .and_then(Value::as_str)
+            != header.get("model_data_fingerprint").and_then(Value::as_str)
+    {
+        return Err(malformed(
+            "prior_predictive_draws trailer has inconsistent format, draw count, seed, or model/data fingerprint",
+        ));
+    }
+    Ok(header.clone())
+}
+
 fn validate_artifact(reference: &ArtifactRef, bytes: &[u8]) -> Result<(), Error> {
     match reference.kind {
         ArtifactKind::ModelIr => {
@@ -319,6 +422,9 @@ fn validate_artifact(reference: &ArtifactRef, bytes: &[u8]) -> Result<(), Error>
             }
             crate::protocol::diagnose_ndjson(text)?;
         }
+        ArtifactKind::PriorPredictiveDraws => {
+            prior_predictive_header(bytes)?;
+        }
         ArtifactKind::Diagnostics => {
             marker(bytes, "diagnostics_format")?;
         }
@@ -342,6 +448,68 @@ fn marker(bytes: &[u8], field: &str) -> Result<(), Error> {
         return Err(malformed(format!(
             "artifact needs {field} \"v0-provisional\""
         )));
+    }
+    Ok(())
+}
+
+fn validate_prior_predictive_execution_inputs(
+    manifest: &Manifest,
+    state: &VerifyState,
+) -> Result<(), Error> {
+    for execution in &manifest.executions {
+        if execution.outcome != Outcome::Completed {
+            continue;
+        }
+        let recipe = manifest
+            .recipes
+            .iter()
+            .find(|recipe| recipe.id == execution.recipe)
+            .expect("manifest relationships validated recipe references");
+        if recipe.operation != Operation::PriorPredictive {
+            continue;
+        }
+        let output = execution
+            .output
+            .as_ref()
+            .expect("completed execution has output");
+        let model = state
+            .object_bytes
+            .get(recipe.model.sha256.as_str())
+            .expect("direct model reference was loaded");
+        let data = state
+            .object_bytes
+            .get(recipe.data.sha256.as_str())
+            .expect("direct data reference was loaded");
+        let artifact = state
+            .object_bytes
+            .get(output.sha256.as_str())
+            .expect("direct output reference was loaded");
+        let model_text = std::str::from_utf8(model)
+            .map_err(|_| malformed("prior-predictive recipe model must be UTF-8"))?;
+        let data_text = std::str::from_utf8(data)
+            .map_err(|_| malformed("prior-predictive recipe data must be UTF-8"))?;
+        let header = prior_predictive_header(artifact)?;
+        let expected_fingerprint = model_data_fingerprint(model_text, data_text);
+        if header.get("model_data_fingerprint").and_then(Value::as_str)
+            != Some(expected_fingerprint.as_str())
+        {
+            return Err(malformed(format!(
+                "prior-predictive execution {:?} model/data fingerprint does not match its exact recipe model/data; mark the result historical and rerun",
+                execution.id
+            )));
+        }
+        for (name, recorded) in [
+            ("seed", header.get("seed")),
+            ("draws", header.get("draw_count")),
+        ] {
+            if recipe.settings.get(name).and_then(Value::as_i64) != recorded.and_then(Value::as_i64)
+            {
+                return Err(malformed(format!(
+                    "prior-predictive execution {:?} output contradicts recipe setting {name:?}; mark the result historical and rerun the exact recipe",
+                    execution.id
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -581,6 +749,10 @@ fn verify_recursive(
     checked(
         VerificationDimension::CurrentResults,
         validate_sample_execution_inputs(&manifest, state),
+    )?;
+    checked(
+        VerificationDimension::CurrentResults,
+        validate_prior_predictive_execution_inputs(&manifest, state),
     )?;
     if let Some(source) = &manifest.source {
         let parent_bytes = loaded_parent.ok_or_else(|| {

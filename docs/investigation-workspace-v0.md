@@ -13,6 +13,7 @@ bayesite investigation init \
   --data examples/investigation-counts/data.json --out study/
 bayesite investigation inspect study/
 bayesite investigation run study/ --recipe inspect-initial
+bayesite investigation run study/ --recipe prior-predictive-initial
 bayesite investigation run study/ --recipe sample-initial
 bayesite investigation run study/ --recipe diagnose-initial
 bayesite investigation run study/ --recipe check-initial
@@ -28,9 +29,14 @@ inventing a noncanonical fallback on an unmapped platform. Every inspect, run,
 and snapshot hashes the actual working bytes again; timestamps and remembered
 invalidation commands are not trusted.
 
-A recipe is one closed operation: `inspect`, `sample`, `diagnose`, or
-`posterior-check`. Sample settings explicitly include chains, warmup, draws,
-maximum tree depth, target acceptance, initial step size, and seed. Work is
+A recipe is one closed operation: `inspect`, `sample`, `prior-predictive`,
+`diagnose`, or `posterior-check`. Sample settings explicitly include chains,
+warmup, draws, maximum tree depth, target acceptance, initial step size, and
+seed. Prior-predictive settings are exactly `draws` in `1..=10000` and a
+non-negative integer `seed`; it takes the snapshot model/data and no fit. For a
+complete snapshot data object, declared inputs condition simulation while
+observed values are omitted from conditioning and remain covered by the exact
+model/data compatibility fingerprint. Work is
 sequential and bounded to eight chains and 10,000 warmup/draws per chain. No
 scheduler, retry, cache lookup, executable launch, or upstream auto-run occurs.
 
@@ -60,7 +66,10 @@ bayesite investigation export continuation/ --viewer \
 `fork` verifies first, restores the exact model/data references bound to the
 named decision (never the snapshot tip merely because it is newer), copies them
 as working bytes without writable hardlinks, imports the local source closure,
-and records both source snapshot and branch decision. It never writes the source bundle. Inherited evidence is shown as
+and records both source snapshot and branch decision. It never writes the
+source bundle. The continuation engine is taken from the nearest manifest in
+the verified ancestry that has a recipe; the existing typed error is returned
+only when no manifest in the closure pins one. Inherited evidence is shown as
 historical even before the model changes.
 
 The mutable workspace accepts `"model"` and `"data"` in a decision's `cites`
@@ -74,7 +83,9 @@ Human approval is recorded only when the editor explicitly supplies
 `"kind":"human_approval"`.
 
 Changing model, data, settings, seed, engine, or an upstream fit makes affected
-selections historical by recipe identity. A text-only reason change does not.
+selections historical by recipe identity. Prior-predictive evidence depends on
+model/data but never on a fit, and no downstream selection depends on it. A
+text-only reason change does not.
 Snapshotting an unrun but resolvable recipe records it as `incomplete`; it does
 not invent a completion or cancellation. Snapshot publication runs the full
 non-executing verifier against the prospective manifest before creating the

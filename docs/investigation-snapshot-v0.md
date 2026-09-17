@@ -30,7 +30,8 @@ Three identities remain separate:
    reference or `no-fit`; engine binary reference; capabilities reference;
    target; profile; and deterministic compact JSON for normalized settings.
    Sample settings include the resolved initial step size as well as chains,
-   warmup, draws, tree depth, target acceptance, and seed.
+   warmup, draws, tree depth, target acceptance, and seed. Prior-predictive
+   settings are the normalized draw count and seed and use the `no-fit` frame.
    The human recipe ID is not part of this identity.
 3. **Snapshot identity:** SHA-256 over
    `bayesite-investigation-snapshot-v0\0` followed by the exact received
@@ -56,8 +57,9 @@ The manifest has exactly these top-level fields:
   recorded from explicit input; it is not inferred or authenticated by a hash.
   Citation-only bytes are retained in the snapshot closure even if no recipe
   references them;
-- `recipes`: one of `inspect`, `sample`, `diagnose`, or `posterior-check`, with
-  typed inputs, normalized settings, recipe identity, and an exact engine
+- `recipes`: one of `inspect`, `sample`, `prior-predictive`, `diagnose`, or
+  `posterior-check`, with typed inputs, normalized settings, recipe identity,
+  and an exact engine
   identity (binary, verbatim capabilities object, target, profile);
 - `executions`: recipe identity plus `completed`, `failed`, `cancelled`,
   `unsupported`, or `incomplete`. Completed attempts require an output and no
@@ -68,12 +70,16 @@ The manifest has exactly these top-level fields:
 - `interpretation` and `unresolved_questions`.
 
 Numerical dependencies and decision reasons are intentionally distinct. There
-is no generic relation ontology and no merge operation.
+is no generic relation ontology and no merge operation. The closed artifact
+kinds include `prior_predictive_draws`, whose format label is
+`prior-predictive-v0-provisional-ndjson`.
 
 A current result must come from a completed execution whose recipe model/data
-match the snapshot inputs. Current downstream evidence must name the exact fit
-selected by current sample evidence. The format rejects multiple current
-results for one operation. Historical results remain available. A completed
+match the snapshot inputs. Prior-predictive evidence follows only that rule: it
+has no fit input and no downstream evidence depends on it. Other current
+downstream evidence must name the exact fit selected by current sample
+evidence. The format rejects multiple current results for one operation.
+Historical results remain available. A completed
 posterior check can expose a limitation without becoming an execution failure.
 
 ## Verification
@@ -99,8 +105,11 @@ error. This is fail-fast dimensional reporting, not an attempt to infer facts
 from untrusted partial traversal.
 
 It additionally rejects duplicate JSON fields and parses model, data,
-inspection, fit, diagnostics, check, capabilities, and replay artifacts to the
-depth their existing provisional contracts support. Investigation fits must
+inspection, fit, prior-predictive draws, diagnostics, check, capabilities, and
+replay artifacts to the depth their existing provisional contracts support.
+Prior-predictive verification checks the complete stream framing, the recorded
+seed and draw count, and the exact recipe model/data fingerprint. Investigation
+fits must
 carry the older exact-input model/data compatibility fingerprint, agree with
 the recipe's seed/chains/sampler settings, and have the parameter layout
 resolved from the separately hashed recipe inputs. That

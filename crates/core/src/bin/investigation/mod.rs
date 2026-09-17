@@ -20,7 +20,11 @@ use bayesite_core::investigation::{
 use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, Posterior};
-use bayesite_core::predictive::posterior_check_report_with_model_data_fingerprint;
+use bayesite_core::predictive::{
+    posterior_check_report_with_model_data_fingerprint,
+    prior_predictive_ndjson_lines_from_full_data_with_model_data_fingerprint,
+    PriorPredictiveSettings,
+};
 use bayesite_core::protocol;
 use bayesite_core::sampler::{sample, ChainDraws, Settings};
 
@@ -426,7 +430,7 @@ fn resolve_recipe(
                 })?
                 .clone(),
         ),
-        Operation::Inspect | Operation::Sample => None,
+        Operation::Inspect | Operation::Sample | Operation::PriorPredictive => None,
     };
     Recipe::new(
         config.id.clone(),
@@ -635,6 +639,21 @@ fn execute_recipe(
             )?
             .join("\n")
         }
+        Operation::PriorPredictive => {
+            let settings = PriorPredictiveSettings {
+                num_draws: setting_i64(&recipe.settings, "draws")? as usize,
+            };
+            let seed = setting_i64(&recipe.settings, "seed")? as u64;
+            let fingerprint = model_data_fingerprint(model_text, data_text);
+            prior_predictive_ndjson_lines_from_full_data_with_model_data_fingerprint(
+                meta,
+                data,
+                &settings,
+                seed,
+                &fingerprint,
+            )?
+            .join("\n")
+        }
         Operation::Diagnose => {
             let fit = std::str::from_utf8(
                 fit_bytes.ok_or_else(|| invalid("diagnose recipe needs fit bytes"))?,
@@ -667,6 +686,10 @@ fn output_description(operation: Operation) -> (ArtifactKind, &'static str) {
     match operation {
         Operation::Inspect => (ArtifactKind::Inspection, "inspection-v0-provisional"),
         Operation::Sample => (ArtifactKind::PosteriorDraws, "draws-v0-provisional-ndjson"),
+        Operation::PriorPredictive => (
+            ArtifactKind::PriorPredictiveDraws,
+            "prior-predictive-v0-provisional-ndjson",
+        ),
         Operation::Diagnose => (ArtifactKind::Diagnostics, "diagnostics-v0-provisional"),
         Operation::PosteriorCheck => (
             ArtifactKind::PosteriorCheck,
@@ -963,6 +986,22 @@ fn verify_command(path: &Path) -> Result<(), Error> {
     }
 }
 
+fn continuation_engine(source_root: &Path, manifest: &Manifest) -> Result<EngineIdentity, Error> {
+    let mut current = manifest.clone();
+    loop {
+        if let Some(recipe) = current.recipes.first() {
+            return Ok(recipe.engine.clone());
+        }
+        let Some(source) = &current.source else {
+            return Err(invalid(
+                "source snapshot has no pinned recipe engine to continue with",
+            ));
+        };
+        let bytes = store::read(source_root, &source.manifest)?;
+        current = Manifest::parse_bytes(&bytes)?;
+    }
+}
+
 fn fork(argv: &[String]) -> Result<(), Error> {
     let (positional, flags) = parse_flags(argv, "fork", 1, &["--at", "--out"])?;
     let source_root = Path::new(&positional[0]);
@@ -977,11 +1016,7 @@ fn fork(argv: &[String]) -> Result<(), Error> {
                 "source snapshot has no decision {at:?}; choose an exact recorded decision id"
             ))
         })?;
-    let engine = manifest
-        .recipes
-        .first()
-        .map(|recipe| recipe.engine.clone())
-        .ok_or_else(|| invalid("source snapshot has no pinned recipe engine to continue with"))?;
+    let engine = continuation_engine(source_root, &manifest)?;
     let manifest_bytes = read_bytes(&source_root.join("manifest.json"), "source manifest")?;
     let source_manifest = store::reference(
         &manifest_bytes,

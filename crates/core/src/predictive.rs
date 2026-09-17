@@ -1560,6 +1560,7 @@ fn header_value(
     settings: &PriorPredictiveSettings,
     seed: u64,
     declared_data: &[(String, DataValue)],
+    model_data_fingerprint: Option<&str>,
 ) -> Result<Value, Error> {
     let mut entries = prior_predictive_artifact_fields();
     entries.extend([
@@ -1637,6 +1638,12 @@ fn header_value(
             ),
         ),
     ]);
+    if let Some(fingerprint) = model_data_fingerprint {
+        entries.push((
+            "model_data_fingerprint".to_string(),
+            Value::Str(fingerprint.to_string()),
+        ));
+    }
     Ok(Value::Object(entries))
 }
 
@@ -2186,6 +2193,33 @@ pub fn prior_predictive_ndjson_lines(
     settings: &PriorPredictiveSettings,
     seed: u64,
 ) -> Result<Vec<String>, Error> {
+    prior_predictive_ndjson_lines_inner(meta, data, settings, seed, None)
+}
+
+/// Render investigation prior-predictive output from a complete bound data set.
+///
+/// Unlike the standalone operation's declared-input contract, investigation
+/// recipes identify the complete snapshot data object. Observed values are
+/// validated by the caller, omitted from simulation conditioning, and covered
+/// by the exact-input compatibility fingerprint.
+pub fn prior_predictive_ndjson_lines_from_full_data_with_model_data_fingerprint(
+    meta: ModelMeta,
+    data: Vec<(String, DataValue)>,
+    settings: &PriorPredictiveSettings,
+    seed: u64,
+    model_data_fingerprint: &str,
+) -> Result<Vec<String>, Error> {
+    let data = declared_data_from_full(&meta, &full_data_map(&data)?)?;
+    prior_predictive_ndjson_lines_inner(meta, data, settings, seed, Some(model_data_fingerprint))
+}
+
+fn prior_predictive_ndjson_lines_inner(
+    meta: ModelMeta,
+    data: Vec<(String, DataValue)>,
+    settings: &PriorPredictiveSettings,
+    seed: u64,
+    model_data_fingerprint: Option<&str>,
+) -> Result<Vec<String>, Error> {
     validate_reportable_seed(seed, "prior-predictive artifact")?;
     validate_reportable_draw_count(settings.num_draws, "prior-predictive artifact")?;
     let declared_data = data.clone();
@@ -2196,6 +2230,7 @@ pub fn prior_predictive_ndjson_lines(
         settings,
         seed,
         &declared_data,
+        model_data_fingerprint,
     )?)?);
     for (draw_id, draw) in run.draws.iter().enumerate() {
         let values = Value::Object(
@@ -2273,6 +2308,12 @@ pub fn prior_predictive_ndjson_lines(
         ),
         ("sites".to_string(), Value::Int(run.sites.len() as i64)),
     ]);
+    if let Some(fingerprint) = model_data_fingerprint {
+        trailer_entries.push((
+            "model_data_fingerprint".to_string(),
+            Value::Str(fingerprint.to_string()),
+        ));
+    }
     lines.push(json::write(&Value::Object(vec![(
         "trailer".to_string(),
         Value::Object(trailer_entries),

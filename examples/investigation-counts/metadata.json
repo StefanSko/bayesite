@@ -21,6 +21,11 @@
       "settings": {}
     },
     {
+      "id": "prior-predictive-initial",
+      "operation": "prior-predictive",
+      "settings": {"draws": 200, "seed": 20260915}
+    },
+    {
       "id": "sample-initial",
       "operation": "sample",
       "settings": {

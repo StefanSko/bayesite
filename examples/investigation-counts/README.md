@@ -56,7 +56,10 @@ $B posterior-check --model examples/investigation-counts/poisson.json \
 ```
 
 The standalone sample command uses its recorded default initial step size of
-`1.0`; the investigation recipe spells that value out.
+`1.0`; the investigation recipe spells that value out. The investigation's
+`prior-predictive-initial` recipe records 200 draws with seed `20260915`; its
+result is stored in the workspace object store and is not one of the committed
+`evidence/` files.
 
 `evidence/engine.json` records the exact executable digest, verbatim
 `capabilities` document, target, and release profile used for the committed
@@ -71,6 +74,7 @@ $B investigation init --metadata examples/investigation-counts/metadata.json \
   --model examples/investigation-counts/poisson.json \
   --data examples/investigation-counts/data.json --out study/
 $B investigation run study/ --recipe inspect-initial
+$B investigation run study/ --recipe prior-predictive-initial
 $B investigation run study/ --recipe sample-initial
 $B investigation run study/ --recipe diagnose-initial
 $B investigation run study/ --recipe check-initial

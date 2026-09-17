@@ -19,9 +19,13 @@ versioned on their own.
   stale-result handling, static evidence viewer/export, and count-data recipient
   protocol/example as the foundation for immutable, forkable investigation
   handoffs.
+- Add recorded `prior-predictive` investigation recipes and verified
+  `prior_predictive_draws` evidence.
 
 ### Changed
 
+- Let `investigation fork` recover its pinned engine from the nearest ancestor
+  when the verified top-level manifest has no recipes.
 - Bind each investigation decision to exact model/data inputs so `fork --at`
   restores the named branch point; use canonical Rust target triples, require
   an explicit recipient protocol for generic viewer export, render numerical

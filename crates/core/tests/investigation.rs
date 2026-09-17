@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::process::Command;
 
+use bayesite_core::fingerprint::model_data_fingerprint;
 use bayesite_core::inspect::inspect_json;
 use bayesite_core::investigation::identity::{artifact_digest, snapshot_digest};
 use bayesite_core::investigation::manifest::{
@@ -11,6 +12,10 @@ use bayesite_core::investigation::verify_bundle;
 use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::data_from_json;
+use bayesite_core::predictive::{
+    prior_predictive_ndjson_lines_from_full_data_with_model_data_fingerprint,
+    PriorPredictiveSettings,
+};
 
 fn reference(bytes: &[u8], kind: ArtifactKind, format: &str) -> ArtifactRef {
     ArtifactRef {
@@ -107,6 +112,68 @@ fn fixture_bundle() -> (Vec<u8>, HashMap<String, Vec<u8>>, Manifest) {
         objects.insert(artifact_digest(&bytes).0, bytes);
     }
     (manifest_bytes, objects, manifest)
+}
+
+fn prior_predictive_bundle() -> (Vec<u8>, HashMap<String, Vec<u8>>, Manifest) {
+    let (_, mut objects, mut manifest) = fixture_bundle();
+    let model = objects
+        .get(manifest.model.sha256.as_str())
+        .expect("model object")
+        .clone();
+    let data = objects
+        .get(manifest.data.sha256.as_str())
+        .expect("data object")
+        .clone();
+    let model_text = std::str::from_utf8(&model).unwrap();
+    let data_text = std::str::from_utf8(&data).unwrap();
+    let meta = decode_model(&json::parse(model_text).unwrap()).unwrap();
+    let bound_data = data_from_json(&json::parse(data_text).unwrap()).unwrap();
+    let fingerprint = model_data_fingerprint(model_text, data_text);
+    let output = format!(
+        "{}\n",
+        prior_predictive_ndjson_lines_from_full_data_with_model_data_fingerprint(
+            meta,
+            bound_data,
+            &PriorPredictiveSettings { num_draws: 2 },
+            17,
+            &fingerprint,
+        )
+        .unwrap()
+        .join("\n")
+    )
+    .into_bytes();
+    let output_ref = reference(
+        &output,
+        ArtifactKind::PriorPredictiveDraws,
+        "prior-predictive-v0-provisional-ndjson",
+    );
+    let engine = manifest.recipes[0].engine.clone();
+    let recipe = Recipe::new(
+        "prior-predictive-initial".into(),
+        Operation::PriorPredictive,
+        manifest.model.clone(),
+        manifest.data.clone(),
+        None,
+        engine,
+        json::parse(r#"{"draws":2,"seed":17}"#).unwrap(),
+    )
+    .unwrap();
+    manifest.recipes = vec![recipe.clone()];
+    manifest.executions = vec![Execution {
+        id: "execution-prior-predictive".into(),
+        recipe: recipe.id.clone(),
+        recipe_sha256: recipe.sha256.clone(),
+        outcome: Outcome::Completed,
+        output: Some(output_ref.clone()),
+        error: None,
+    }];
+    manifest.evidence = vec![EvidenceSelection {
+        name: "prior-predictive".into(),
+        execution: "execution-prior-predictive".into(),
+        status: EvidenceStatus::Current,
+    }];
+    objects.insert(output_ref.sha256.0.clone(), output);
+    (manifest.to_bytes().unwrap(), objects, manifest)
 }
 
 #[test]
@@ -281,6 +348,77 @@ fn rejects_marker_only_and_duplicate_marker_inspection_artifacts() {
 }
 
 #[test]
+fn verifies_prior_predictive_settings_and_exact_inputs() {
+    let (bytes, objects, _) = prior_predictive_bundle();
+    verify_bundle(&bytes, |reference| {
+        objects
+            .get(reference.as_str())
+            .cloned()
+            .ok_or_else(|| panic!("missing test object"))
+    })
+    .unwrap();
+}
+
+#[test]
+fn rejects_malformed_or_contradictory_prior_predictive_outputs() {
+    let (_, objects, manifest) = prior_predictive_bundle();
+    let valid_output = objects
+        .get(
+            manifest.executions[0]
+                .output
+                .as_ref()
+                .unwrap()
+                .sha256
+                .as_str(),
+        )
+        .unwrap();
+    let valid_text = String::from_utf8(valid_output.clone()).unwrap();
+    let wrong_seed = valid_text
+        .replacen("\"seed\":17", "\"seed\":18", 1)
+        .into_bytes();
+    let wrong_fingerprint = valid_text
+        .replacen(
+            "\"model_data_fingerprint\":\"sha256:",
+            "\"model_data_fingerprint\":\"sha256:0",
+            1,
+        )
+        .into_bytes();
+    for output in [
+        br#"{"prior_predictive_format":"v0-provisional"}"#.to_vec(),
+        br#"{"prior_predictive_format":"v0-provisional","prior_predictive_format":"unsupported"}"#
+            .to_vec(),
+        wrong_seed,
+        wrong_fingerprint,
+    ] {
+        let mut objects = objects.clone();
+        let mut manifest = manifest.clone();
+        let output_ref = reference(
+            &output,
+            ArtifactKind::PriorPredictiveDraws,
+            "prior-predictive-v0-provisional-ndjson",
+        );
+        manifest.executions[0].output = Some(output_ref.clone());
+        objects.insert(output_ref.sha256.0.clone(), output);
+        let bytes = manifest.to_bytes().unwrap();
+        let error = verify_bundle(&bytes, |reference| {
+            objects
+                .get(reference.as_str())
+                .cloned()
+                .ok_or_else(|| panic!("missing test object"))
+        })
+        .unwrap_err();
+        assert!(
+            error.message.contains("prior_predictive")
+                || error.message.contains("duplicate")
+                || error.message.contains("recipe setting \"seed\"")
+                || error.message.contains("model/data fingerprint"),
+            "{}",
+            error.message
+        );
+    }
+}
+
+#[test]
 fn rejects_current_fit_from_different_exact_model_bytes() {
     let root = format!("{}/../..", env!("CARGO_MANIFEST_DIR"));
     let poisson_path = format!("{root}/examples/investigation-counts/poisson.json");
@@ -439,6 +577,26 @@ fn ancestry_limit_counts_manifests_not_zero_based_edges() {
     })
     .unwrap_err();
     assert!(error.message.contains("16-manifest"));
+}
+
+#[test]
+fn prior_predictive_fixed_identity_vector_is_stable_and_has_no_fit() {
+    let (_, _, manifest) = fixture_bundle();
+    let recipe = Recipe::new(
+        "prior-predictive-initial".into(),
+        Operation::PriorPredictive,
+        manifest.model.clone(),
+        manifest.data.clone(),
+        None,
+        manifest.recipes[0].engine.clone(),
+        json::parse(r#"{"seed":20260915,"draws":200}"#).unwrap(),
+    )
+    .unwrap();
+    assert!(recipe.fit.is_none());
+    assert_eq!(
+        recipe.sha256.as_str(),
+        "07f21d4ead335d6031a076fbd28a17b06014cffe748f6e128354baafb025544e"
+    );
 }
 
 #[test]

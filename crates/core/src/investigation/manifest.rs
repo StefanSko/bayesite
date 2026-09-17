@@ -118,6 +118,7 @@ pub enum ArtifactKind {
     Data,
     Inspection,
     PosteriorDraws,
+    PriorPredictiveDraws,
     Diagnostics,
     PosteriorCheck,
     EngineBinary,
@@ -133,6 +134,7 @@ impl ArtifactKind {
             Self::Data => "data",
             Self::Inspection => "inspection",
             Self::PosteriorDraws => "posterior_draws",
+            Self::PriorPredictiveDraws => "prior_predictive_draws",
             Self::Diagnostics => "diagnostics",
             Self::PosteriorCheck => "posterior_check",
             Self::EngineBinary => "engine_binary",
@@ -148,6 +150,7 @@ impl ArtifactKind {
             "data" => Ok(Self::Data),
             "inspection" => Ok(Self::Inspection),
             "posterior_draws" => Ok(Self::PosteriorDraws),
+            "prior_predictive_draws" => Ok(Self::PriorPredictiveDraws),
             "diagnostics" => Ok(Self::Diagnostics),
             "posterior_check" => Ok(Self::PosteriorCheck),
             "engine_binary" => Ok(Self::EngineBinary),
@@ -263,6 +266,7 @@ impl EngineIdentity {
 pub enum Operation {
     Inspect,
     Sample,
+    PriorPredictive,
     Diagnose,
     PosteriorCheck,
 }
@@ -272,6 +276,7 @@ impl Operation {
         match self {
             Self::Inspect => "inspect",
             Self::Sample => "sample",
+            Self::PriorPredictive => "prior-predictive",
             Self::Diagnose => "diagnose",
             Self::PosteriorCheck => "posterior-check",
         }
@@ -281,10 +286,11 @@ impl Operation {
         match value {
             "inspect" => Ok(Self::Inspect),
             "sample" => Ok(Self::Sample),
+            "prior-predictive" => Ok(Self::PriorPredictive),
             "diagnose" => Ok(Self::Diagnose),
             "posterior-check" => Ok(Self::PosteriorCheck),
             other => Err(malformed(format!(
-                "{context} operation {other:?} is unsupported; use inspect, sample, diagnose, or posterior-check"
+                "{context} operation {other:?} is unsupported; use inspect, sample, prior-predictive, diagnose, or posterior-check"
             ))),
         }
     }
@@ -293,6 +299,7 @@ impl Operation {
         match self {
             Self::Inspect => ArtifactKind::Inspection,
             Self::Sample => ArtifactKind::PosteriorDraws,
+            Self::PriorPredictive => ArtifactKind::PriorPredictiveDraws,
             Self::Diagnose => ArtifactKind::Diagnostics,
             Self::PosteriorCheck => ArtifactKind::PosteriorCheck,
         }
@@ -381,6 +388,27 @@ fn normalized_settings(operation: Operation, value: &Value, context: &str) -> Re
                 ("max_treedepth".into(), Value::Int(max_treedepth)),
                 ("target_accept".into(), Value::Float(target_accept)),
                 ("initial_step_size".into(), Value::Float(initial_step_size)),
+                ("seed".into(), Value::Int(seed)),
+            ]))
+        }
+        Operation::PriorPredictive => {
+            checked_object(value, context, &["draws", "seed"], &["draws", "seed"])?;
+            let draws = value
+                .get("draws")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| malformed(format!("{context}.draws must be an integer")))?;
+            if !(1..=10_000).contains(&draws) {
+                return Err(malformed(format!("{context}.draws must be in 1..=10000")));
+            }
+            let seed = value
+                .get("seed")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| malformed(format!("{context}.seed must be an integer")))?;
+            if seed < 0 {
+                return Err(malformed(format!("{context}.seed must be non-negative")));
+            }
+            Ok(Value::Object(vec![
+                ("draws".into(), Value::Int(draws)),
                 ("seed".into(), Value::Int(seed)),
             ]))
         }
