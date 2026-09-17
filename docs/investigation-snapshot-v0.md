@@ -87,6 +87,13 @@ network access. It reports separately:
 - whether a replay report is recorded; and
 - the computed snapshot ID.
 
+On failure it exits nonzero but also writes one bounded report to standard
+output. Each dimension is `true`, `false`, or `null` when a prior failed
+boundary prevented that check, and `findings` names the first failed dimension
+with its typed repair message. Standard error retains the ordinary typed CLI
+error. This is fail-fast dimensional reporting, not an attempt to infer later
+facts from untrusted earlier state.
+
 It additionally rejects duplicate JSON fields and parses model, data,
 inspection, fit, diagnostics, check, capabilities, and replay artifacts to the
 depth their existing provisional contracts support. Investigation fits must

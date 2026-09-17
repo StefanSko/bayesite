@@ -98,7 +98,7 @@ pub fn insert(
     Ok(reference)
 }
 
-pub fn read_digest(root: &Path, digest: &Digest) -> Result<Vec<u8>, Error> {
+pub fn read_unverified_digest(root: &Path, digest: &Digest) -> Result<Vec<u8>, Error> {
     let path = object_path(root, digest);
     let metadata = fs::metadata(&path).map_err(|error| {
         host_error(format!(
@@ -120,6 +120,11 @@ pub fn read_digest(root: &Path, digest: &Digest) -> Result<Vec<u8>, Error> {
             path
         ))
     })?;
+    Ok(bytes)
+}
+
+pub fn read_digest(root: &Path, digest: &Digest) -> Result<Vec<u8>, Error> {
+    let bytes = read_unverified_digest(root, digest)?;
     let actual = artifact_digest(&bytes);
     if actual != *digest {
         return Err(host_error(format!(

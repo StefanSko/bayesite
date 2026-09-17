@@ -778,27 +778,49 @@ fn verify_detects_tampered_object_and_does_not_run_engine() {
         "--out",
         bundle.to_str().unwrap(),
     ]);
-    let object = std::fs::read_dir(bundle.join("objects/sha256"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+    let manifest =
+        json::parse(&std::fs::read_to_string(bundle.join("manifest.json")).unwrap()).unwrap();
+    let model_digest = manifest
+        .get("inputs")
+        .and_then(|inputs| inputs.get("model"))
+        .and_then(|model| model.get("sha256"))
+        .and_then(Value::as_str)
+        .unwrap();
+    let object = bundle.join("objects/sha256").join(model_digest);
     let mut bytes = std::fs::read(&object).unwrap();
     bytes.push(b'!');
     std::fs::write(object, bytes).unwrap();
     let output = run(&["investigation", "verify", bundle.to_str().unwrap()]);
     assert!(!output.status.success());
+    let report = json::parse(String::from_utf8(output.stdout).unwrap().trim()).unwrap();
+    assert_eq!(
+        report.get("verification_complete"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(report.get("schema_valid"), Some(&Value::Bool(true)));
+    assert_eq!(
+        report.get("reference_closure_valid"),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(
+        report.get("object_integrity_valid"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(report.get("current_results_valid"), Some(&Value::Null));
+    let finding = report
+        .get("findings")
+        .and_then(Value::as_array)
+        .and_then(|findings| findings.first())
+        .unwrap();
+    assert_eq!(
+        finding.get("dimension").and_then(Value::as_str),
+        Some("object_integrity")
+    );
     let error = json::parse(String::from_utf8(output.stderr).unwrap().trim()).unwrap();
     assert_eq!(
         error.get("error_format").and_then(Value::as_str),
         Some("v0-provisional")
     );
-    assert!(error
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap()
-        .contains("object"));
 
     for path in [workspace, bundle] {
         let _ = std::fs::remove_dir_all(path);

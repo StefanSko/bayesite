@@ -71,8 +71,113 @@ impl Verification {
             ),
             ("verification_executes_recipes".into(), Value::Bool(false)),
             ("authenticity_verified".into(), Value::Bool(false)),
+            ("verification_complete".into(), Value::Bool(true)),
+            ("findings".into(), Value::Array(vec![])),
         ])
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationDimension {
+    FormatSchema,
+    ReferenceClosure,
+    ObjectIntegrity,
+    CurrentResults,
+}
+
+impl VerificationDimension {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FormatSchema => "format_schema",
+            Self::ReferenceClosure => "reference_closure",
+            Self::ObjectIntegrity => "object_integrity",
+            Self::CurrentResults => "current_results",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationFailure {
+    pub dimension: VerificationDimension,
+    pub error: Error,
+}
+
+impl VerificationFailure {
+    fn new(dimension: VerificationDimension, error: Error) -> Self {
+        Self { dimension, error }
+    }
+
+    pub fn to_value(&self, manifest_bytes: &[u8]) -> Value {
+        let (schema, closure, integrity, current) = match self.dimension {
+            VerificationDimension::FormatSchema => {
+                (Value::Bool(false), Value::Null, Value::Null, Value::Null)
+            }
+            VerificationDimension::ReferenceClosure => (
+                Value::Bool(true),
+                Value::Bool(false),
+                Value::Null,
+                Value::Null,
+            ),
+            VerificationDimension::ObjectIntegrity => (
+                Value::Bool(true),
+                Value::Bool(true),
+                Value::Bool(false),
+                Value::Null,
+            ),
+            VerificationDimension::CurrentResults => (
+                Value::Bool(true),
+                Value::Bool(true),
+                Value::Bool(true),
+                Value::Bool(false),
+            ),
+        };
+        Value::Object(vec![
+            (
+                "verification_format".into(),
+                Value::Str("v0-provisional".into()),
+            ),
+            (
+                "snapshot_id".into(),
+                Value::Str(snapshot_digest(manifest_bytes).prefixed()),
+            ),
+            ("verification_complete".into(), Value::Bool(false)),
+            ("schema_valid".into(), schema),
+            ("reference_closure_valid".into(), closure),
+            ("object_integrity_valid".into(), integrity),
+            ("current_results_valid".into(), current),
+            ("engine_artifacts_available".into(), Value::Null),
+            ("replay_recorded".into(), Value::Null),
+            ("object_count".into(), Value::Null),
+            ("ancestry_depth".into(), Value::Null),
+            ("verification_executes_recipes".into(), Value::Bool(false)),
+            ("authenticity_verified".into(), Value::Bool(false)),
+            (
+                "findings".into(),
+                Value::Array(vec![Value::Object(vec![
+                    (
+                        "dimension".into(),
+                        Value::Str(self.dimension.as_str().into()),
+                    ),
+                    ("error".into(), Value::Str(self.error.kind.name().into())),
+                    ("message".into(), Value::Str(self.error.message.clone())),
+                ])]),
+            ),
+        ])
+    }
+}
+
+fn checked<T>(
+    dimension: VerificationDimension,
+    result: Result<T, Error>,
+) -> Result<T, VerificationFailure> {
+    result.map_err(|error| VerificationFailure::new(dimension, error))
+}
+
+fn verification_error(
+    dimension: VerificationDimension,
+    message: impl Into<String>,
+) -> VerificationFailure {
+    VerificationFailure::new(dimension, malformed(message))
 }
 
 fn reject_duplicate_json_fields(value: &Value, context: &str) -> Result<(), Error> {
@@ -390,51 +495,71 @@ fn verify_recursive(
     depth: usize,
     loader: &mut impl FnMut(&Digest) -> Result<Vec<u8>, Error>,
     state: &mut VerifyState,
-) -> Result<Manifest, Error> {
+) -> Result<Manifest, VerificationFailure> {
     if depth >= MAX_ANCESTRY {
-        return Err(malformed(format!(
-            "snapshot ancestry exceeds the {MAX_ANCESTRY}-manifest limit"
-        )));
+        return Err(verification_error(
+            VerificationDimension::ReferenceClosure,
+            format!("snapshot ancestry exceeds the {MAX_ANCESTRY}-manifest limit"),
+        ));
     }
     state.max_depth = state.max_depth.max(depth);
     let snapshot = snapshot_digest(manifest_bytes);
     if !state.snapshots.insert(snapshot.0.clone()) {
-        return Err(malformed(format!(
-            "snapshot ancestry cycle detected at {}",
-            snapshot.prefixed()
-        )));
+        return Err(verification_error(
+            VerificationDimension::ReferenceClosure,
+            format!(
+                "snapshot ancestry cycle detected at {}",
+                snapshot.prefixed()
+            ),
+        ));
     }
-    let manifest = Manifest::parse_bytes(manifest_bytes)?;
+    let manifest = checked(
+        VerificationDimension::FormatSchema,
+        Manifest::parse_bytes(manifest_bytes),
+    )?;
     let mut loaded_parent: Option<Vec<u8>> = None;
     for reference in manifest.direct_references() {
         let key = reference.sha256.as_str().to_string();
-        let bytes = loader(&reference.sha256)?;
+        let bytes = checked(
+            VerificationDimension::ReferenceClosure,
+            loader(&reference.sha256),
+        )?;
         if bytes.len() != reference.bytes {
-            return Err(malformed(format!(
-                "object {} has {} bytes but its reference requires {}",
-                reference.sha256.prefixed(),
-                bytes.len(),
-                reference.bytes
-            )));
+            return Err(verification_error(
+                VerificationDimension::ObjectIntegrity,
+                format!(
+                    "object {} has {} bytes but its reference requires {}",
+                    reference.sha256.prefixed(),
+                    bytes.len(),
+                    reference.bytes
+                ),
+            ));
         }
         let actual = artifact_digest(&bytes);
         if actual != reference.sha256 {
-            return Err(malformed(format!(
-                "object integrity failure for {}; exact bytes hash to {}",
-                reference.sha256.prefixed(),
-                actual.prefixed()
-            )));
+            return Err(verification_error(
+                VerificationDimension::ObjectIntegrity,
+                format!(
+                    "object integrity failure for {}; exact bytes hash to {}",
+                    reference.sha256.prefixed(),
+                    actual.prefixed()
+                ),
+            ));
         }
         if state.objects.insert(key.clone()) && state.objects.len() > MAX_OBJECTS {
-            return Err(malformed(format!(
-                "bundle exceeds the {MAX_OBJECTS}-object limit"
-            )));
+            return Err(verification_error(
+                VerificationDimension::ReferenceClosure,
+                format!("bundle exceeds the {MAX_OBJECTS}-object limit"),
+            ));
         }
         state
             .object_bytes
             .entry(key)
             .or_insert_with(|| bytes.clone());
-        validate_artifact(reference, &bytes)?;
+        checked(
+            VerificationDimension::CurrentResults,
+            validate_artifact(reference, &bytes),
+        )?;
         state.replay_recorded |= reference.kind == ArtifactKind::ReplayReport;
         state.engine_available |= reference.kind == ArtifactKind::EngineBinary;
         if manifest
@@ -445,26 +570,38 @@ fn verify_recursive(
             loaded_parent = Some(bytes);
         }
     }
-    validate_sample_execution_inputs(&manifest, state)?;
+    checked(
+        VerificationDimension::CurrentResults,
+        validate_sample_execution_inputs(&manifest, state),
+    )?;
     if let Some(source) = &manifest.source {
         let parent_bytes = loaded_parent.ok_or_else(|| {
-            malformed("source manifest was not available in the verified object closure")
+            verification_error(
+                VerificationDimension::ReferenceClosure,
+                "source manifest was not available in the verified object closure",
+            )
         })?;
         let parent_snapshot = snapshot_digest(&parent_bytes);
         if parent_snapshot != source.snapshot_id {
-            return Err(malformed(format!(
-                "source snapshot identity mismatch: manifest computes to {}, expected {}",
-                parent_snapshot.prefixed(),
-                source.snapshot_id.prefixed()
-            )));
+            return Err(verification_error(
+                VerificationDimension::ReferenceClosure,
+                format!(
+                    "source snapshot identity mismatch: manifest computes to {}, expected {}",
+                    parent_snapshot.prefixed(),
+                    source.snapshot_id.prefixed()
+                ),
+            ));
         }
         let parent = verify_recursive(&parent_bytes, depth + 1, loader, state)?;
         if parent.decision(&source.decision).is_none() {
-            return Err(malformed(format!(
-                "source decision {:?} does not exist in parent snapshot {}",
-                source.decision,
-                source.snapshot_id.prefixed()
-            )));
+            return Err(verification_error(
+                VerificationDimension::ReferenceClosure,
+                format!(
+                    "source decision {:?} does not exist in parent snapshot {}",
+                    source.decision,
+                    source.snapshot_id.prefixed()
+                ),
+            ));
         }
     }
     for decision in &manifest.decisions {
@@ -473,34 +610,44 @@ fn verify_recursive(
                 continue;
             }
             let bytes = loader(citation).map_err(|_| {
-                malformed(format!(
-                    "decision {:?} cites missing artifact {}; restore its exact bytes",
-                    decision.id,
-                    citation.prefixed()
-                ))
+                verification_error(
+                    VerificationDimension::ReferenceClosure,
+                    format!(
+                        "decision {:?} cites missing artifact {}; restore its exact bytes",
+                        decision.id,
+                        citation.prefixed()
+                    ),
+                )
             })?;
             if bytes.len() > manifest::MAX_OBJECT_BYTES {
-                return Err(malformed(format!(
-                    "cited object {} exceeds the {}-byte limit",
-                    citation.prefixed(),
-                    manifest::MAX_OBJECT_BYTES
-                )));
+                return Err(verification_error(
+                    VerificationDimension::ObjectIntegrity,
+                    format!(
+                        "cited object {} exceeds the {}-byte limit",
+                        citation.prefixed(),
+                        manifest::MAX_OBJECT_BYTES
+                    ),
+                ));
             }
             let actual = artifact_digest(&bytes);
             if actual != *citation {
-                return Err(malformed(format!(
-                    "decision {:?} citation integrity failure: expected {}, exact bytes hash to {}",
-                    decision.id,
-                    citation.prefixed(),
-                    actual.prefixed()
-                )));
+                return Err(verification_error(
+                    VerificationDimension::ObjectIntegrity,
+                    format!(
+                        "decision {:?} citation integrity failure: expected {}, exact bytes hash to {}",
+                        decision.id,
+                        citation.prefixed(),
+                        actual.prefixed()
+                    ),
+                ));
             }
             if state.objects.insert(citation.as_str().to_string())
                 && state.objects.len() > MAX_OBJECTS
             {
-                return Err(malformed(format!(
-                    "bundle exceeds the {MAX_OBJECTS}-object limit"
-                )));
+                return Err(verification_error(
+                    VerificationDimension::ReferenceClosure,
+                    format!("bundle exceeds the {MAX_OBJECTS}-object limit"),
+                ));
             }
             state
                 .object_bytes
@@ -512,11 +659,12 @@ fn verify_recursive(
 }
 
 /// Verify exact manifest bytes and all local/ancestral objects without running
-/// any recipe or following a network link.
-pub fn verify_bundle(
+/// any recipe or following a network link, retaining the failed dimension for
+/// machine-readable CLI reports.
+pub fn verify_bundle_detailed(
     manifest_bytes: &[u8],
     mut loader: impl FnMut(&Digest) -> Result<Vec<u8>, Error>,
-) -> Result<(Manifest, Verification), Error> {
+) -> Result<(Manifest, Verification), VerificationFailure> {
     let mut state = VerifyState {
         objects: HashSet::new(),
         object_bytes: HashMap::new(),
@@ -538,4 +686,11 @@ pub fn verify_bundle(
         ancestry_depth: state.max_depth,
     };
     Ok((manifest, verification))
+}
+
+pub fn verify_bundle(
+    manifest_bytes: &[u8],
+    loader: impl FnMut(&Digest) -> Result<Vec<u8>, Error>,
+) -> Result<(Manifest, Verification), Error> {
+    verify_bundle_detailed(manifest_bytes, loader).map_err(|failure| failure.error)
 }

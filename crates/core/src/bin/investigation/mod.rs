@@ -14,7 +14,7 @@ use bayesite_core::investigation::manifest::{
     ArtifactKind, ArtifactRef, EngineIdentity, EvidenceSelection, EvidenceStatus, Execution,
     Manifest, Operation, Outcome, Recipe, Source,
 };
-use bayesite_core::investigation::verify_bundle;
+use bayesite_core::investigation::{verify_bundle, verify_bundle_detailed};
 use bayesite_core::ir::decode_model;
 use bayesite_core::json::{self, Value};
 use bayesite_core::model::{data_from_json, Posterior};
@@ -889,7 +889,9 @@ fn snapshot(argv: &[String]) -> Result<(), Error> {
     // A supported publication must be verifiable before any destination is
     // created. This also applies the total ancestry bound to the prospective
     // manifest rather than publishing an unusable seventeenth generation.
-    verify_bundle(&manifest_bytes, |digest| store::read_digest(root, digest))?;
+    verify_bundle(&manifest_bytes, |digest| {
+        store::read_unverified_digest(root, digest)
+    })?;
 
     create_fresh_directory(out, "snapshot bundle")?;
     let result = (|| {
@@ -924,12 +926,22 @@ fn snapshot(argv: &[String]) -> Result<(), Error> {
 
 fn verify(path: &Path) -> Result<(Manifest, bayesite_core::investigation::Verification), Error> {
     let manifest_bytes = read_bytes(&path.join("manifest.json"), "bundle manifest")?;
-    verify_bundle(&manifest_bytes, |digest| store::read_digest(path, digest))
+    verify_bundle(&manifest_bytes, |digest| {
+        store::read_unverified_digest(path, digest)
+    })
 }
 
 fn verify_command(path: &Path) -> Result<(), Error> {
-    let (_, report) = verify(path)?;
-    emit(&report.to_value())
+    let manifest_bytes = read_bytes(&path.join("manifest.json"), "bundle manifest")?;
+    match verify_bundle_detailed(&manifest_bytes, |digest| {
+        store::read_unverified_digest(path, digest)
+    }) {
+        Ok((_, report)) => emit(&report.to_value()),
+        Err(failure) => {
+            emit(&failure.to_value(&manifest_bytes))?;
+            Err(failure.error)
+        }
+    }
 }
 
 fn fork(argv: &[String]) -> Result<(), Error> {
