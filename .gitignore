@@ -3,3 +3,6 @@
 /tools/bench/fingerprint/target/
 /demo/bayesite_core.wasm
 __pycache__/
+/experiments/investigation-agent/node_modules/
+/experiments/investigation-agent/dist/
+.investigation-agent/
