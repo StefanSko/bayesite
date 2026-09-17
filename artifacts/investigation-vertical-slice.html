@@ -78,7 +78,7 @@ density_accounting.transform_jacobians</pre></div>
     <div class="panel"><strong>Snapshot identity</strong><code>sha256(domain || manifest bytes)</code><small>Exact manifest encoding is part of the durable object.</small></div>
   </div>
   <div class="split">
-    <div class="panel"><h3>Two connected graphs</h3><div class="graph"><div><div class="graph-title">Computation</div><p>Model, data, engine, settings, seed, upstream fit → output.</p></div><div><div class="graph-title">Investigation</div><p>Decision, parent, reason, cited artifact digests.</p></div></div><p class="small">Reason-only citations remain in closure even when no recipe consumes them.</p></div>
+    <div class="panel"><h3>Two connected graphs</h3><div class="graph"><div><div class="graph-title">Computation</div><p>Model, data, engine, canonical target, settings, seed, upstream fit → output.</p></div><div><div class="graph-title">Investigation</div><p>Decision, parent, reason, exact branch-point model/data, and cited artifact digests.</p></div></div><p class="small">Reason-only citations remain in closure even when no recipe consumes them.</p></div>
     <div class="panel technical"><h3>Store layout</h3><pre>snapshot/
   manifest.json
   objects/
@@ -95,7 +95,7 @@ publish manifest last</pre></div>
 </section>
 
 <section class="step" id="step-03">
-  <div class="step-head"><div class="step-no">03</div><div><div class="kicker">Continuation workflow CLI</div><h2>Make change explicit; keep history visible.</h2><p class="step-sub">A mutable workspace supports authoring. A snapshot supports durable handoff. Forking copies exact source closure and editable input bytes without ever writing the parent.</p></div></div>
+  <div class="step-head"><div class="step-no">03</div><div><div class="kicker">Continuation workflow CLI</div><h2>Make change explicit; keep history visible.</h2><p class="step-sub">A mutable workspace supports authoring. A snapshot supports durable handoff. Forking restores the exact model/data bytes bound to the named decision without ever writing the parent.</p></div></div>
   <div class="lineage"><div class="snapshot"><b>sha256: original</b><span>Poisson evidence · current</span><small>immutable parent</small></div><div class="big-arrow">→</div><div class="snapshot"><b>sha256: continuation</b><span>Negative-binomial experiment · current</span><small>source points to original; inherited evidence historical</small></div></div>
   <div class="split">
     <div class="panel"><h3>Lifecycle</h3><pre>investigation init
@@ -125,7 +125,7 @@ textContent for untrusted strings
 No innerHTML · eval · CDN · framework
 No browser engine execution
 WebCrypto absent → visibly unverified</pre></div>
-    <div class="panel"><h3>Portable export</h3><div class="files">published/<br>├── index.html · viewer.js · style.css<br>├── entry.json (snapshot + asset hashes)<br>├── bundle/ (exact verified closure)<br>├── downloads/bayesite-engine<br>├── PROTOCOL.md · CONTINUING.md<br>├── IR-FORMAT.md · IR-TAGS.md<br>├── LICENSE · NOTICE<br>└── PUBLIC-DATA-CONFIRMATION.txt</div></div>
+    <div class="panel"><h3>Portable export</h3><div class="files">published/<br>├── index.html · viewer.js · style.css<br>├── entry.json (snapshot + asset hashes)<br>├── bundle/ (exact verified closure)<br>├── downloads/bayesite-engine<br>├── PROTOCOL.md (explicit publication input)<br>├── CONTINUING.md<br>├── IR-FORMAT.md · IR-TAGS.md<br>├── LICENSE · NOTICE<br>└── PUBLIC-DATA-CONFIRMATION.txt</div></div>
   </div>
   <div class="callout warn"><strong>Publication is deliberate.</strong> Export requires <code>--public-data-confirmed</code>, but labels that choice honestly: it is not a privacy scan, signature, or scientific approval.</div>
 </section>

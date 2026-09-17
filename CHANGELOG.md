@@ -20,6 +20,13 @@ versioned on their own.
   protocol/example as the foundation for immutable, forkable investigation
   handoffs.
 
+### Changed
+
+- Bind each investigation decision to exact model/data inputs so `fork --at`
+  restores the named branch point; use canonical Rust target triples, require
+  an explicit recipient protocol for generic viewer export, render numerical
+  and ancestral evidence, and report verification failures by dimension.
+
 ## [0.4.0] - 2026-07-20
 
 ### Added

@@ -476,6 +476,10 @@ fn inspect_workspace(path: &Path) -> Result<(), Error> {
     let (model_bytes, data_bytes) = current_inputs(path)?;
     validate_model_data(&model_bytes, &data_bytes)?;
     let (model, data) = insert_inputs(path, &model_bytes, &data_bytes)?;
+    // Loading resolves missing decision inputs against the current working
+    // bytes. Persist that one-time binding before a later edit can rebind the
+    // same scientific decision to a different branch state.
+    workspace::save(path, &workspace)?;
     let fit = current_sample(&workspace, &model, &data)?.cloned();
     let recipes = workspace
         .recipes
@@ -884,6 +888,7 @@ fn snapshot(argv: &[String]) -> Result<(), Error> {
     let (model_bytes, data_bytes) = current_inputs(root)?;
     validate_model_data(&model_bytes, &data_bytes)?;
     let (model, data) = insert_inputs(root, &model_bytes, &data_bytes)?;
+    workspace::save(root, &workspace)?;
     let manifest = collect_manifest(root, &workspace, model, data)?;
     let manifest_bytes = manifest.to_bytes()?;
     // A supported publication must be verifiable before any destination is

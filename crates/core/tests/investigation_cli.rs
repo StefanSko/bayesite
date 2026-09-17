@@ -252,6 +252,72 @@ fn fork_restores_inputs_bound_to_the_named_decision_not_snapshot_tip() {
 }
 
 #[test]
+fn inspecting_a_new_decision_freezes_its_branch_inputs_once() {
+    let author = temp_dir("freeze-author");
+    let original = temp_dir("freeze-original");
+    let continuation_workspace = temp_dir("freeze-workspace");
+    let continuation = temp_dir("freeze-continuation");
+    let branch = temp_dir("freeze-branch");
+    initialize(&author);
+    success(&[
+        "investigation",
+        "snapshot",
+        author.to_str().unwrap(),
+        "--out",
+        original.to_str().unwrap(),
+    ]);
+    success(&[
+        "investigation",
+        "fork",
+        original.to_str().unwrap(),
+        "--at",
+        "initial-likelihood",
+        "--out",
+        continuation_workspace.to_str().unwrap(),
+    ]);
+    let negative = std::fs::read(example("negative-binomial.json")).unwrap();
+    std::fs::write(continuation_workspace.join("inputs/model.json"), &negative).unwrap();
+    add_continuation_records(&continuation_workspace);
+    success(&[
+        "investigation",
+        "inspect",
+        continuation_workspace.to_str().unwrap(),
+    ]);
+    let mut later_tip = negative.clone();
+    later_tip.extend_from_slice(b" \n");
+    std::fs::write(continuation_workspace.join("inputs/model.json"), later_tip).unwrap();
+    success(&[
+        "investigation",
+        "snapshot",
+        continuation_workspace.to_str().unwrap(),
+        "--out",
+        continuation.to_str().unwrap(),
+    ]);
+    success(&[
+        "investigation",
+        "fork",
+        continuation.to_str().unwrap(),
+        "--at",
+        "alternative-likelihood",
+        "--out",
+        branch.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        std::fs::read(branch.join("inputs/model.json")).unwrap(),
+        negative
+    );
+    for path in [
+        author,
+        original,
+        continuation_workspace,
+        continuation,
+        branch,
+    ] {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
+#[test]
 fn export_requires_and_copies_an_explicit_recipient_protocol() {
     let workspace = temp_dir("protocol-author");
     let bundle = temp_dir("protocol-bundle");
