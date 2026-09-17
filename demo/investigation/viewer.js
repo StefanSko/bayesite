@@ -175,7 +175,62 @@
     const recipe = requireArray(manifest.recipes, "recipes").find(item => item.id === execution.recipe);
     return recipe ? { execution, recipe, output: execution.output } : null;
   }
+  function diagnosticRows(report) {
+    const rhat = requireObject(report.rhat, "diagnostics rhat");
+    const ess = requireObject(report.ess, "diagnostics ess");
+    const parameters = Array.from(new Set([...Object.keys(rhat), ...Object.keys(ess)]));
+    if (parameters.length > MAX_RECORDS) throw new Error(`diagnostics exceeds ${MAX_RECORDS} parameters`);
+    return parameters.map(parameter => ({ parameter, rhat: rhat[parameter], ess: ess[parameter] }));
+  }
+  function evidenceRows(manifest, ancestors) {
+    const rows = requireArray(manifest.evidence, "evidence").map(evidence => ({
+      name: evidence.name,
+      status: evidence.status,
+      origin: "current snapshot",
+      manifest,
+      linked: outputFor(manifest, evidence),
+    }));
+    for (const ancestor of ancestors) {
+      for (const evidence of requireArray(ancestor.manifest.evidence, "source evidence")) {
+        rows.push({
+          name: evidence.name,
+          status: "historical",
+          origin: `source sha256:${ancestor.snapshotId}`,
+          manifest: ancestor.manifest,
+          linked: outputFor(ancestor.manifest, evidence),
+        });
+        if (rows.length > MAX_RECORDS) throw new Error(`combined evidence exceeds ${MAX_RECORDS} records`);
+      }
+    }
+    return rows;
+  }
+  function recorded(value) {
+    return value !== null && typeof value === "object" ? JSON.stringify(value) : value;
+  }
   function prettyExpression(value) { return JSON.stringify(value); }
+
+  async function loadAncestry(manifest, rootSnapshotId) {
+    const ancestors = [];
+    const seen = new Set([rootSnapshotId]);
+    let current = manifest;
+    let verified = true;
+    while (current.source) {
+      if (ancestors.length >= 15) throw new Error("Snapshot ancestry exceeds the 16-manifest viewer limit");
+      const source = requireObject(current.source, "source");
+      if (!digestPattern.test(source.snapshot_id || "")) throw new Error("Source snapshot ID is not lowercase SHA-256");
+      if (seen.has(source.snapshot_id)) throw new Error("Snapshot ancestry cycle detected");
+      const loaded = await loadObject(source.manifest, "source manifest");
+      verified = verified && loaded.verified;
+      const parent = parseJsonStrict(decode(loaded.bytes, "source manifest"));
+      if (parent.investigation_snapshot !== "v0-provisional") throw new Error("Unsupported source investigation snapshot format");
+      const computed = await sha256(joinBytes(SNAPSHOT_DOMAIN, loaded.bytes));
+      if (computed !== null && computed !== source.snapshot_id) throw new Error("Source snapshot identity mismatch");
+      seen.add(source.snapshot_id);
+      ancestors.push({ snapshotId: source.snapshot_id, manifest: parent });
+      current = parent;
+    }
+    return { ancestors, verified };
+  }
 
   async function renderModel(manifest) {
     const root = document.getElementById("model-summary"); clear(root);
@@ -218,26 +273,29 @@
     return loaded.verified;
   }
 
-  async function renderEvidence(manifest) {
+  async function renderEvidence(manifest, ancestors) {
     const root = document.getElementById("evidence"); clear(root);
-    const rows = [];
+    const evidence = evidenceRows(manifest, ancestors);
     let allVerified = true;
-    for (const evidence of requireArray(manifest.evidence, "evidence")) {
-      const linked = outputFor(manifest, evidence);
-      rows.push([evidence.name, linked ? linked.recipe.operation : "unavailable", evidence.status, linked ? linked.execution.outcome : "missing"]);
-    }
-    root.append(table(["Evidence", "Operation", "Status", "Outcome"], rows));
-    for (const evidence of manifest.evidence) {
-      const linked = outputFor(manifest, evidence);
+    root.append(table(["Evidence", "Operation", "Status", "Origin", "Outcome"], evidence.map(row => [
+      row.name, row.linked ? row.linked.recipe.operation : "unavailable", row.status,
+      row.origin, row.linked ? row.linked.execution.outcome : "missing",
+    ])));
+    for (const row of evidence) {
+      const linked = row.linked;
       if (!linked || !["diagnose", "posterior-check"].includes(linked.recipe.operation)) continue;
       const loaded = await loadObject(linked.output, `${linked.recipe.operation} output`); allVerified = allVerified && loaded.verified;
       const report = parseJsonStrict(decode(loaded.bytes, `${linked.recipe.operation} output`));
-      const card = el("div", undefined, "card"); card.append(el("h3", `${evidence.name} · ${evidence.status}`));
+      const card = el("div", undefined, "card");
+      card.append(el("h3", `${row.name} · ${row.status}`), el("p", row.origin, "small"));
       if (linked.recipe.operation === "diagnose") {
         card.append(facts([
           ["Source draws", report.source_draw_count], ["Chains", report.source_chain_count],
-          ["R-hat statistic", report.rhat_statistic], ["ESS statistic", report.ess_statistic],
+          ["R-hat definition", report.rhat_statistic], ["ESS definition", report.ess_statistic],
         ]));
+        card.append(table(["Parameter", "R-hat value", "ESS value"], diagnosticRows(report).map(item => [
+          item.parameter, recorded(item.rhat), recorded(item.ess),
+        ])));
       } else {
         const checks = requireArray(report.checks, "posterior checks");
         card.append(table(["Site", "Statistic", "Observed", "Replicated mean", "Replicated range"], checks.map(check => {
@@ -266,7 +324,7 @@
     ])));
   }
 
-  function renderContinuation(manifest) {
+  function renderContinuation(manifest, ancestors) {
     const root = document.getElementById("continuation"); clear(root);
     if (!manifest.source) {
       root.append(el("p", "This snapshot is an investigation root. A continuation can branch from any recorded decision."));
@@ -279,7 +337,12 @@
       ["Current model", `sha256:${manifest.inputs.model.sha256}`],
       ["Current data", `sha256:${manifest.inputs.data.sha256}`],
     ]));
-    root.append(el("p", "The parent manifest and evidence are retained in this bundle. They are lineage, not current evidence for changed inputs.", "small"));
+    const comparison = evidenceRows(manifest, ancestors).map(row => [
+      row.name, row.status, row.origin, row.linked ? row.linked.recipe.operation : "unavailable",
+    ]);
+    root.append(el("h3", "New evidence beside retained evidence"));
+    root.append(table(["Evidence", "Status", "Snapshot", "Operation"], comparison));
+    root.append(el("p", "Parent evidence is retained as historical lineage, not silently promoted to current evidence for changed inputs.", "small"));
   }
 
   function renderReproduce(manifest, entry) {
@@ -303,7 +366,7 @@
       ["Pinned executable", `sha256:${engine.sha256}`], ["Bundle", "bundle/ (copy the directory exactly)"],
     ]));
     const download = el("a", "Download pinned engine for the published target"); download.href = "downloads/bayesite-engine"; download.download = "bayesite";
-    const protocol = el("a", "Read the frozen recipient protocol"); protocol.href = "PROTOCOL.md";
+    const protocol = el("a", "Read the investigation-specific recipient protocol"); protocol.href = "PROTOCOL.md";
     const guide = el("a", "Read continuation instructions"); guide.href = "CONTINUING.md";
     const ir = el("a", "Read the raw Bayeswire format"); ir.href = "IR-FORMAT.md";
     const tags = el("a", "Read the node-tag reference"); tags.href = "IR-TAGS.md";
@@ -335,14 +398,17 @@
     const computed = digest === null ? null : `sha256:${digest}`;
     const supplied = new URLSearchParams(location.search).get("snapshot") || entry.snapshot_id;
     if (computed !== null && supplied !== computed) throw new Error(`Snapshot identity mismatch: computed ${computed}, expected ${supplied}`);
+    const rootSnapshotId = (computed || supplied || "").replace(/^sha256:/, "");
+    if (!digestPattern.test(rootSnapshotId)) throw new Error("Expected snapshot ID is not lowercase SHA-256");
+    const ancestry = await loadAncestry(manifest, rootSnapshotId);
 
     document.getElementById("question").textContent = text(manifest.question);
     document.getElementById("estimand").textContent = text(requireObject(manifest.estimand, "estimand").description);
     document.getElementById("snapshot-id").textContent = computed || `supplied ${supplied}`;
     const modelVerified = await renderModel(manifest);
-    const evidenceVerified = await renderEvidence(manifest);
-    renderHistory(manifest); renderContinuation(manifest); renderReproduce(manifest, entry);
-    if (computed !== null && modelVerified && evidenceVerified) {
+    const evidenceVerified = await renderEvidence(manifest, ancestry.ancestors);
+    renderHistory(manifest); renderContinuation(manifest, ancestry.ancestors); renderReproduce(manifest, entry);
+    if (computed !== null && modelVerified && evidenceVerified && ancestry.verified) {
       integrity.textContent = "Manifest identity + displayed objects verified";
       integrity.className = "badge good";
     } else {
@@ -353,7 +419,9 @@
     document.getElementById("content").hidden = false;
   }
 
-  globalThis.BAYESITE_VIEWER_TEST = { parseJsonStrict, referencePath, safeIdentifier };
+  globalThis.BAYESITE_VIEWER_TEST = {
+    parseJsonStrict, referencePath, safeIdentifier, diagnosticRows, evidenceRows,
+  };
   if (typeof document !== "undefined") {
     start().catch(error => {
       const status = document.getElementById("integrity"); status.textContent = "Integrity/display failure"; status.className = "badge bad";
