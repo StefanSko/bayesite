@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import {
@@ -239,10 +249,26 @@ test("gate: app closes", async () => {
   try {
     const firstHost = new HostApi(root, { engine: engineBinary });
     const proposal = await submit(firstHost, "persist pending");
-    const first = firstHost.listProposals(true);
-    const second = new HostApi(root, { engine: engineBinary }).listProposals(true);
-    assert.deepEqual(second, first);
-    assert.equal(second.find((item) => item.proposal_id === proposal.proposal_id)?.status, "pending");
+    const proposalPath = resolve(
+      root,
+      ".investigation-agent/proposals",
+      proposal.proposal_id,
+      "proposal.json",
+    );
+    const firstRecord = firstHost.showProposal(proposal.proposal_id);
+    const firstBytes = readFileSync(proposalPath);
+
+    const secondHost = new HostApi(root, { engine: engineBinary });
+    const secondRecord = secondHost.showProposal(proposal.proposal_id);
+    const secondBytes = readFileSync(proposalPath);
+    assert.deepEqual(secondRecord, firstRecord);
+    assert.deepEqual(secondBytes, firstBytes);
+    assert.deepEqual(secondRecord, {
+      proposal: firstRecord.proposal,
+      review: null,
+      attempts: [],
+      status: "pending",
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -278,13 +304,19 @@ test("gate: duplicate", async () => {
     const firstReview = host.approve(proposal.proposal_id, "yes");
     const reviewPath = resolve(root, ".investigation-agent/proposals", proposal.proposal_id, "review.json");
     const reviewBytes = readFileSync(reviewPath);
+    const reviewStat = statSync(reviewPath);
     const secondReview = host.approve(proposal.proposal_id, "different note ignored");
+    const secondReviewStat = statSync(reviewPath);
     assert.deepEqual(secondReview, firstReview);
     assert.deepEqual(readFileSync(reviewPath), reviewBytes);
+    assert.deepEqual(
+      { mtimeMs: secondReviewStat.mtimeMs, size: secondReviewStat.size },
+      { mtimeMs: reviewStat.mtimeMs, size: reviewStat.size },
+    );
     await host.execute(proposal.proposal_id);
     await assert.rejects(host.execute(proposal.proposal_id), assertKind("Refused"));
     assert.equal(readFileSync(resolve(attemptDirectory(root, proposal.proposal_id), "1.json"), "utf8").includes("completed"), true);
-    assert.equal(existsSync(resolve(attemptDirectory(root, proposal.proposal_id), "2.json")), false);
+    assert.deepEqual(readdirSync(attemptDirectory(root, proposal.proposal_id)).sort(), ["1.json"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -293,16 +325,51 @@ test("gate: duplicate", async () => {
 test("gate: conversation lost", async () => {
   const root = copyFixture(baseline, "conversation-lost");
   try {
-    const host = new HostApi(root, { engine: engineBinary });
-    const proposal = await submit(host, "durable host state");
-    host.approve(proposal.proposal_id);
-    await host.execute(proposal.proposal_id);
+    const created = await scripted(root, [
+      fauxAssistantMessage(
+        fauxToolCall("submit_proposal", {
+          action: interpretationAction("durable host state"),
+          rationale: "durable host state",
+          cites: ["check-initial"],
+        }),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("The proposal remains in durable host state."),
+    ]);
+    await created.session.prompt("Submit a durable proposal.");
+    const proposal = created.host.listProposals(true).find((item) => item.status === "pending");
+    assert.ok(proposal);
+    created.host.approve(proposal.proposal_id);
+    await created.host.execute(proposal.proposal_id);
+
+    const directory = resolve(root, ".investigation-agent/proposals", proposal.proposal_id);
+    const paths = [
+      resolve(directory, "proposal.json"),
+      resolve(directory, "review.json"),
+      resolve(directory, "attempts/1.json"),
+    ];
+    const recordBefore = created.host.showProposal(proposal.proposal_id);
+    const bytesBefore = paths.map((path) => readFileSync(path));
+    created.session.dispose();
     rmSync(resolve(root, ".investigation-agent/sessions"), { recursive: true, force: true });
+
     const fresh = new HostApi(root, { engine: engineBinary });
-    const shown = fresh.showProposal(proposal.proposal_id);
-    assert.equal(shown.status, "executed");
-    assert.equal((shown.attempts as unknown[]).length, 1);
-    assert.equal((shown.review as { decision: string }).decision, "approved");
+    const recordAfter = fresh.showProposal(proposal.proposal_id);
+    const bytesAfter = paths.map((path) => readFileSync(path));
+    assert.deepEqual(recordAfter, recordBefore);
+    for (let index = 0; index < paths.length; index++) {
+      assert.deepEqual(bytesAfter[index], bytesBefore[index]);
+    }
+
+    const restarted = await scripted(root, [fauxAssistantMessage("A new conversation sees durable host state.")]);
+    try {
+      assert.deepEqual(restarted.host.showProposal(proposal.proposal_id), recordBefore);
+      assert.ok(
+        restarted.host.listProposals(true).some((item) => item.proposal_id === proposal.proposal_id),
+      );
+    } finally {
+      restarted.session.dispose();
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

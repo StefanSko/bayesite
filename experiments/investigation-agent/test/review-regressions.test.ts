@@ -54,7 +54,12 @@ test("failed slash execute reports the recorded attempt to the agent and continu
   try {
     const host = new HostApi(root, { engine: engineBinary });
     const proposal = await host.submitProposal({
-      action: { type: "snapshot", workspace: "study", out: "appeared-after-submit" },
+      action: {
+        type: "fork",
+        source_bundle: "original",
+        at: "initial-likelihood",
+        out: "appeared-after-submit",
+      },
       rationale: "Exercise a recorded execution failure.",
       cites: ["check-initial"],
     });
@@ -475,7 +480,10 @@ test("successful chat execution prints the resulting investigation phase", async
       async () => {},
       { stdout: (text) => output.push(text), stderr: () => {} },
     );
-    assert.equal((JSON.parse(output.at(-1) as string) as { phase: string }).phase, "snapshot_ready");
+    assert.equal(
+      (JSON.parse(output.at(-1) as string) as { phase: string }).phase,
+      "diagnostics_decision_required",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

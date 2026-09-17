@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import { CandidateStore } from "./candidates.js";
 import { Engine } from "./engine.js";
-import { assertActionAllowed, type InvestigationPhase } from "./phase.js";
+import { assertActionAllowed, parseThresholdReason, type InvestigationPhase } from "./phase.js";
 import {
   HostError,
   SubmitProposalArgumentsSchema,
@@ -45,7 +45,9 @@ export class ProposalStore {
     private readonly store: RootStore,
     private readonly engine: Engine,
     private readonly candidates: CandidateStore,
-    private readonly resolvePhase: (path: string) => Promise<InvestigationPhase>,
+    private readonly resolvePhase: (
+      path: string,
+    ) => Promise<{ phase: InvestigationPhase; thresholdDecisionId: string | null }>,
   ) {}
 
   async submit(arguments_: unknown): Promise<{ proposal_id: string; status: "pending_human_review" }> {
@@ -63,6 +65,15 @@ export class ProposalStore {
       args.action.decision.cites.forEach((citation, index) =>
         assertDecisionCitation(citation, `decision.cites[${index}]`),
       );
+      if (
+        args.action.decision.reason.trimStart().startsWith("thresholds") &&
+        parseThresholdReason(args.action.decision.reason) === null
+      ) {
+        throw new HostError(
+          "MalformedArguments",
+          "threshold decision reason must use: thresholds: rhat<=NUMBER ess>=NUMBER divergences<=NUMBER (any nonempty subset)",
+        );
+      }
     }
     if (args.action.type === "run_recipe") {
       assertIdentifier(args.action.recipe.id, "recipe.id");
@@ -316,7 +327,7 @@ export class ProposalStore {
         ) {
           throw new HostError("CandidateRejected", `decision parent does not exist: ${action.decision.parent}`);
         }
-        assertActionAllowed(await this.resolvePhase(action.workspace), action);
+        await this.assertAllowedInCurrentPhase(action);
         return this.store.workspacePreconditions(action.workspace);
       }
       case "run_recipe": {
@@ -338,7 +349,7 @@ export class ProposalStore {
         ) {
           throw new HostError("RecipeConflict", `recipe ${action.recipe.id} conflicts; use a new recipe id`);
         }
-        assertActionAllowed(await this.resolvePhase(action.workspace), action);
+        await this.assertAllowedInCurrentPhase(action);
         return this.store.workspacePreconditions(action.workspace);
       }
       case "snapshot": {
@@ -349,7 +360,7 @@ export class ProposalStore {
           throw new HostError("InvalidPath", "snapshot output must not be inside its mutable workspace");
         }
         if (existsSync(out)) throw new HostError("Refused", `output already exists: ${action.out}`);
-        assertActionAllowed(await this.resolvePhase(action.workspace), action);
+        await this.assertAllowedInCurrentPhase(action);
         return this.store.workspacePreconditions(action.workspace);
       }
       case "record_decision": {
@@ -364,13 +375,20 @@ export class ProposalStore {
         ) {
           throw new HostError("Refused", `decision parent does not exist: ${action.decision.parent}`);
         }
-        assertActionAllowed(await this.resolvePhase(action.workspace), action);
+        await this.assertAllowedInCurrentPhase(action);
         return this.store.workspacePreconditions(action.workspace);
       }
       case "record_interpretation":
-        assertActionAllowed(await this.resolvePhase(action.workspace), action);
+        await this.assertAllowedInCurrentPhase(action);
         return this.store.workspacePreconditions(action.workspace);
     }
+  }
+
+  private async assertAllowedInCurrentPhase(
+    action: Exclude<InvestigationAction, { type: "fork" }>,
+  ): Promise<void> {
+    const current = await this.resolvePhase(action.workspace);
+    assertActionAllowed(current.phase, action, current.thresholdDecisionId);
   }
 
   private async assertCurrentPreconditions(proposal: ProposalDocument): Promise<void> {

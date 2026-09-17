@@ -1,4 +1,4 @@
-import type { InvestigationPhase } from "./phase.js";
+import type { DiagnosticsThresholds, InvestigationPhase } from "./phase.js";
 
 export interface NextStep {
   step: string;
@@ -16,6 +16,8 @@ export interface OrientationFacts {
   inheritedHistorical: boolean;
   historicalOperations: Array<{ name: string; operation: string }>;
   phase?: InvestigationPhase;
+  diagnosticsThresholds?: DiagnosticsThresholds | null;
+  simulationWaiverRecorded?: boolean;
 }
 
 export function nextSteps(facts: OrientationFacts): NextStep[] {
@@ -71,21 +73,38 @@ export function nextSteps(facts: OrientationFacts): NextStep[] {
   }
 
   if (facts.diagnostics) {
-    const highRhat = facts.diagnostics.per_parameter.some((item) => item.rhat !== null && item.rhat > 1.01);
-    if (highRhat || facts.diagnostics.divergences > 0) {
+    const thresholds = facts.diagnosticsThresholds;
+    if (facts.phase === "diagnostics_decision_required" && thresholds?.threshold_decision === null) {
+      steps.push({
+        step: "record-thresholds",
+        operation: "record_decision",
+        why: `Current diagnostics report max R-hat ${formatMetric(thresholds.max_rhat)}, min ESS ${formatMetric(thresholds.min_ess)}, and ${thresholds.divergences} divergences; record approved thresholds, using the conventional values 1.01, 400, 0 as a starting point (rhat<=1.01 ess>=400 divergences<=0).`,
+      });
+    } else if (facts.phase === "diagnostics_decision_required") {
       steps.push({
         step: "resolve-diagnostics-thresholds",
         operation: "record_decision",
-        why: `Current diagnostics report ${facts.diagnostics.divergences} divergences${highRhat ? " and an R-hat above 1.01" : ""}; revise the run or record a diagnostics-citing recommendation and explicit human waiver.`,
+        why: `Current diagnostics exceed recorded threshold decision ${thresholds?.threshold_decision ?? "unknown"}; revise the run or record a diagnostics-citing waiver with explicit human approval.`,
       });
     }
-    if (!facts.check && facts.phase !== "diagnostics_decision_required") {
+    if (!facts.check && facts.phase === "check_required") {
       steps.push({
         step: "check-posterior",
         operation: "posterior-check",
-        why: "Current diagnostics exist, but no current posterior check exists.",
+        why: "Current diagnostics satisfy an approved threshold decision or have an approved diagnostics waiver, but no current posterior check exists.",
       });
     }
+  }
+
+  if (
+    (facts.phase === "sample_required" || facts.phase === "check_required") &&
+    facts.simulationWaiverRecorded !== true
+  ) {
+    steps.push({
+      step: "simulation-unsupported",
+      operation: "record_decision",
+      why: "no prior-predictive or recovery evidence can be recorded by this format version; record a waiver decision (reason starting with 'waiver:') with human approval to proceed knowingly",
+    });
   }
 
   if (facts.check) {
@@ -104,4 +123,8 @@ export function nextSteps(facts: OrientationFacts): NextStep[] {
     });
   }
   return steps;
+}
+
+function formatMetric(value: number | null): string {
+  return value === null ? "unavailable" : String(value);
 }

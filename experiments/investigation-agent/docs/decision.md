@@ -18,7 +18,7 @@ where it was silent. The host is runtime-independent TypeScript; the agent
 receives four closed-schema tools through Pi with discovery disabled and our
 own system prompt. Evidence:
 
-- 50 offline tests against the real engine and Pi's faux model provider, one
+- 52 offline tests against the real engine and Pi's faux model provider, one
   named test per contract gate, plus orientation, end-to-end, and regression
   tests from an automated review loop (six gate reviews at xhigh reasoning).
 - An independent read-only review (GPT-6 Astra, medium reasoning) found no
@@ -78,8 +78,9 @@ host suggested next operations but did not make prerequisites enforceable. The
 runtime now derives an explicit phase from current engine-verified evidence and
 rejects out-of-phase posterior checking and snapshotting with `PhaseRefused`.
 The added `record_decision` action separates an agent's diagnostics
-recommendation from a human waiver. A recommendation alone leaves exceeded
-R-hat/divergence thresholds blocked; only its explicitly requested
+thresholds and recommendations from a human waiver. Thresholds are themselves
+approved decisions rather than hard-coded verdicts. A recommendation alone
+leaves exceeded recorded thresholds blocked; only its explicitly requested
 `human_approval` child advances the phase. The same review pass added staged
 mutation validation, identifier/parent checks, subprocess and tool budgets,
 SIGINT turn abort, bounded UTF-8 evidence, and output-ancestor protection.

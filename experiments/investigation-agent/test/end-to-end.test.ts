@@ -146,20 +146,36 @@ test("scripted end-to-end: fork, prepare, adopt, run, decide, and snapshot with 
     assert.equal(afterDiagnostics.phase, "diagnostics_decision_required");
     const diagnosticsEvidence = await host.readEvidence({ path: "alternative", name: "diagnose-alternative" });
     const diagnosticsDigest = (diagnosticsEvidence.sha256 as string).replace(/^sha256:/, "");
+    await submitAndExecute(
+      {
+        type: "record_decision",
+        workspace: "alternative",
+        decision: {
+          id: "alternative-diagnostic-thresholds",
+          parent: "alternative-likelihood",
+          reason: "thresholds: rhat<=1.01 ess>=400 divergences<=0",
+          cites: [diagnosticsDigest],
+        },
+      },
+      true,
+    );
+    const afterThresholds = await host.readInvestigation({ path: "alternative" });
+    assert.equal(afterThresholds.phase, "diagnostics_decision_required");
+    assert.equal(
+      (afterThresholds.phase_facts as { threshold_decision: string }).threshold_decision,
+      "alternative-diagnostic-thresholds",
+    );
     await submitAndExecute({
       type: "record_decision",
       workspace: "alternative",
       decision: {
         id: "recommend-diagnostics-waiver",
-        parent: "alternative-likelihood",
-        reason: "Recommend continuing only for the bounded posterior check.",
+        parent: "alternative-diagnostic-thresholds",
+        reason: "waiver: continue only for the bounded posterior check",
         cites: [diagnosticsDigest],
       },
     });
-    assert.equal(
-      (await host.readInvestigation({ path: "alternative" })).phase,
-      "diagnostics_decision_required",
-    );
+    assert.equal((await host.readInvestigation({ path: "alternative" })).phase, "diagnostics_decision_required");
     await assert.rejects(
       host.submitProposal({
         action: { type: "run_recipe", workspace: "alternative", recipe: recipes[3], target },
@@ -175,7 +191,7 @@ test("scripted end-to-end: fork, prepare, adopt, run, decide, and snapshot with 
         decision: {
           id: "accept-diagnostics-for-check",
           parent: "recommend-diagnostics-waiver",
-          reason: "The human explicitly accepts the current diagnostics for a bounded posterior check.",
+          reason: "waiver: the human explicitly accepts the current diagnostics for a bounded posterior check",
           cites: [diagnosticsDigest],
         },
       },

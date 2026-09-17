@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { CandidateStore, inspectionSummary } from "./candidates.js";
 import { Engine } from "./engine.js";
 import { nextSteps } from "./orientation.js";
-import { derivePhase, type InvestigationPhase } from "./phase.js";
+import { allowedActions, derivePhase, type InvestigationPhase } from "./phase.js";
 import { ProposalStore } from "./proposals.js";
 import { HostError, ReadEvidenceArgumentsSchema, ReadInvestigationArgumentsSchema, malformedUnless } from "./types.js";
 import {
@@ -49,7 +49,14 @@ export class HostApi {
     this.candidates = new CandidateStore(this.root, this.engine);
     this.proposals = new ProposalStore(this.root, this.engine, this.candidates, async (path) => {
       const orientation = await this.readInvestigation({ path });
-      return orientation.phase as InvestigationPhase;
+      const thresholds = orientation.diagnostics_thresholds as JsonObject | null;
+      return {
+        phase: orientation.phase as InvestigationPhase,
+        thresholdDecisionId:
+          thresholds && typeof thresholds.threshold_decision === "string"
+            ? thresholds.threshold_decision
+            : null,
+      };
     });
   }
 
@@ -192,6 +199,30 @@ export class HostApi {
       decisions: arrayAt(loaded.document, "decisions"),
       ...(diagnosticsSha256 ? { diagnosticsSha256 } : {}),
     });
+    const estimand = objectAt(loaded.document, "estimand");
+    const estimandParameter = typeof estimand.parameter === "string" ? estimand.parameter : null;
+    const freeSlots = inspectionPublic?.free_slots;
+    const estimandIsFreeSlot = inspectionPublic === null
+      ? null
+      : Array.isArray(freeSlots) && estimandParameter !== null
+        ? freeSlots.some(
+            (slot) =>
+              slot === estimandParameter ||
+              (typeof slot === "object" && slot !== null && (slot as JsonObject).name === estimandParameter),
+          )
+        : false;
+    const historicalEvidence = loaded.evidence
+      .filter((entry) => entry.status === "historical")
+      .map((entry) => entry.name);
+    const waiverDecision = phase.decision_facts.waiver?.id ?? null;
+    const phaseFacts = {
+      simulation_evidence: waiverDecision === null
+        ? "unsupported in investigation format; no waiver recorded"
+        : `unsupported in investigation format; waiver recorded in decision ${waiverDecision}`,
+      historical_evidence: historicalEvidence,
+      threshold_decision: phase.decision_facts.threshold?.id ?? null,
+      estimand_is_free_slot: estimandIsFreeSlot,
+    };
     const recipesCurrent = allRecipesAreCurrent(loaded);
     const historicalOperations = loaded.evidence
       .filter((entry) => entry.status === "historical" && entry.operation)
@@ -206,6 +237,8 @@ export class HostApi {
       inheritedHistorical: historicalOperations.length > 0,
       historicalOperations,
       phase: phase.phase,
+      diagnosticsThresholds: phase.diagnostics_thresholds,
+      simulationWaiverRecorded: waiverDecision !== null,
     });
     const proposalSummaries = this.proposals
       .list(true)
@@ -218,6 +251,8 @@ export class HostApi {
       state_sha256: loaded.preconditions.state_sha256,
       engine_target: loaded.preconditions.engine_target,
       phase: phase.phase,
+      allowed_actions: allowedActions(phase.phase),
+      phase_facts: phaseFacts,
       diagnostics_thresholds: phase.diagnostics_thresholds,
       evidence: publicEvidence,
       inspection: inspectionPublic,

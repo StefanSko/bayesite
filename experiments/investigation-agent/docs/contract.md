@@ -104,8 +104,9 @@ facts and options only, never verdicts. Minimum rule set:
 | inspection has structural discrepancies | fix the model before sampling; record why |
 | current inspection, no current fit | run the sample recipe |
 | current fit, no current diagnostics | run the diagnose recipe |
-| diagnostics with any R-hat > 1.01 or divergences > 0 | record a decision; consider settings or a reparameterisation |
-| current diagnostics, no current check | run the posterior-check recipe |
+| current diagnostics, no approved `thresholds:` decision | record thresholds; report current max R-hat, min ESS, and divergences |
+| diagnostics exceed the approved threshold decision, no approved diagnostics-citing `waiver:` | record a waiver or consider settings/reparameterisation |
+| current diagnostics satisfy approved thresholds or have an approved waiver, no current check | run the posterior-check recipe |
 | check present | discuss what it does and does not support; consider a decision and fork |
 | every recipe current | snapshot |
 | inherited evidence historical and no new fit | list the recipes to rerun |
@@ -292,15 +293,29 @@ with approvals issued through the host CLI functions.
 - A fork or snapshot output is refused with `InvalidPath` when any existing
   ancestor inside the root is a workspace or bundle, including one unrelated
   to the source.
-- Orientation includes `phase` and `diagnostics_thresholds`. Workspace phases
-  are `inspect_required`, `model_revision_required`, `sample_required`,
-  `diagnose_required`, `diagnostics_decision_required`, `check_required`, and
-  `snapshot_ready`; bundles are `fork_required`. The phase is derived from
-  current verified evidence, never supplied by the model.
+- Orientation includes `phase`, `diagnostics_thresholds`, `allowed_actions`,
+  and `phase_facts`. Workspace phases are `inspect_required`,
+  `model_revision_required`, `sample_required`, `diagnose_required`,
+  `diagnostics_decision_required`, `check_required`, and `snapshot_ready`;
+  bundles are `fork_required`. The phase is derived from current verified
+  evidence, never supplied by the model. `allowed_actions` is produced by the
+  same rules execution uses; recipe entries are written as
+  `run_recipe:<operation>`, and a bundle reports only `fork`.
+- `phase_facts` contains `simulation_evidence`, the ordered historical evidence
+  names, the newest approved `thresholds:` decision id or null, and whether the
+  estimand parameter names a current inspection free slot (null without an
+  inspection). An approved `waiver:` decision changes `simulation_evidence`
+  from "no waiver recorded" to name that decision.
 - Actions are phase-checked and return `PhaseRefused` with repair guidance when
-  prerequisites are absent. In particular, posterior-check is blocked when a
-  current diagnostic has R-hat strictly above 1.01 or any divergence, and
-  snapshot is allowed only in `snapshot_ready`.
+  prerequisites are absent. After diagnostics, an approved decision must record
+  a nonempty subset of `rhat<=NUMBER`, `ess>=NUMBER`, and
+  `divergences<=NUMBER` in a whitespace-tolerant reason beginning
+  `thresholds:`. Until then the phase remains `diagnostics_decision_required`.
+  The host applies the recorded values mechanically. An exceeded threshold
+  decision requires an approved `waiver:` decision citing the current
+  diagnostics artifact; a recommendation without its `human_approval` child
+  does not count. Refusals identify the threshold decision or its absence.
+  Snapshot remains allowed only in `snapshot_ready`.
 - `record_decision` is the sixth action:
   `{"type":"record_decision","workspace":"alternative","decision":{"id":"…","parent":"…","reason":"…","cites":["<bare artifact digest>"]}}`.
   Execution stages and then appends it as `agent_recommendation` and runs
@@ -311,6 +326,17 @@ with approvals issued through the host CLI functions.
   into that record with `--record-human-approval`, now valid for both
   `adopt_candidate` and `record_decision`; the chat `/approve` command accepts
   the same flag. Successful chat execution prints the resulting path and phase.
+
+In `sample_required` and `check_required`, orientation also reports the
+informational `simulation-unsupported` next step until any approved `waiver:`
+decision exists. It records that prior-predictive or recovery evidence cannot be
+represented by this format version, but does not block an action.
+
+**Amended after review (gate follow-up).** The durability gates now compare the
+complete proposal/review/attempt records and their raw bytes across independent
+hosts and deleted Pi sessions. The duplicate gate additionally proves that a
+second approval leaves review file metadata unchanged and that two execute
+calls leave exactly one attempt entry.
 
 The typed error-kind list therefore also includes `PhaseRefused`.
 
