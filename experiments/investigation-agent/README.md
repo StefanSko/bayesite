@@ -51,9 +51,14 @@ npm run chat -- /path/to/root --public-data-confirmed \
 
 The chat refuses to initialize a model without `--public-data-confirmed`,
 because workspace model, data, and evidence can be sent to the selected model
-provider. Its slash commands are `/proposals`, `/show`, `/approve`, `/reject`,
-`/execute`, `/orient`, and `/quit`; they are handled by the host and are never
-sent to the model.
+provider. Its slash commands are `/help`, `/orient <path>`, `/proposals [--all]`,
+`/show <id> [--json]`, `/approve <id> [--record-human-approval] [note]`,
+`/reject <id> [reason]`, `/execute <id>`, and `/quit`; they are handled by the
+host and are never sent to the model. Output is human-readable; add `--json`
+to `/show`, `/proposals`, or `/orient` for the raw records. After every
+execution the host reports the outcome and the new phase to the agent, which
+proposes the next single action; pending proposals are listed after each turn
+as the menu to approve, execute, or reject.
 
 `BAYESITE_BIN` overrides the host CLI's engine path. Without it, the host uses
 the repository's `target/release/bayesite` relative to this package.

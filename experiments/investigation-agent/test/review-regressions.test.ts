@@ -480,10 +480,7 @@ test("successful chat execution prints the resulting investigation phase", async
       async () => {},
       { stdout: (text) => output.push(text), stderr: () => {} },
     );
-    assert.equal(
-      (JSON.parse(output.at(-1) as string) as { phase: string }).phase,
-      "diagnostics_decision_required",
-    );
+    assert.match(output.join(""), /phase: diagnostics_decision_required/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
