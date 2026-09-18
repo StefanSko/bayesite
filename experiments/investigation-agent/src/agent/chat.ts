@@ -44,6 +44,19 @@ export async function runChat(argv: readonly string[]): Promise<void> {
     }
   });
   const readline = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  const modelLabel = `${session.model?.provider ?? "?"}/${session.model?.id ?? "?"}`;
+  process.stdout.write(
+    `investigation agent ready\n  root:  ${host.root.root}\n  model: ${modelLabel}\n` +
+      `  type a message, or /orient <path>, /proposals, /show <id>, /approve <id> [--record-human-approval] [note], /reject <id> [note], /execute <id>, /quit\n`,
+  );
+  readline.setPrompt("> ");
+  let closed = false;
+  readline.on("close", () => {
+    closed = true;
+  });
+  const showPrompt = (): void => {
+    if (!closed) readline.prompt();
+  };
   let turnActive = false;
   let turnInterrupted = false;
   const promptSession = async (text: string): Promise<void> => {
@@ -68,17 +81,29 @@ export async function runChat(argv: readonly string[]): Promise<void> {
   };
   readline.on("SIGINT", onSigint);
   try {
+    showPrompt();
     for await (const raw of readline) {
       const line = raw.trim();
-      if (!line) continue;
-      if (line.startsWith("/")) {
-        const quit = await handleSlashCommand(line, host, async (attempt) => {
-          await promptSession(`[host] ${JSON.stringify(attempt)}`);
-        });
-        if (quit) break;
-      } else {
-        await promptSession(line);
+      if (!line) {
+        showPrompt();
+        continue;
       }
+      try {
+        if (line.startsWith("/")) {
+          const quit = await handleSlashCommand(line, host, async (attempt) => {
+            await promptSession(`[host] ${JSON.stringify(attempt)}`);
+          });
+          if (quit) break;
+        } else {
+          await promptSession(line);
+        }
+      } catch (error) {
+        const typed = error instanceof HostError
+          ? error
+          : new HostError("Refused", error instanceof Error ? error.message : String(error));
+        process.stderr.write(`${JSON.stringify(typed.toJSON())}\n`);
+      }
+      showPrompt();
     }
   } finally {
     readline.off("SIGINT", onSigint);
